@@ -1,0 +1,19 @@
+name: runner-smoke
+
+on:
+  push:
+    paths:
+      - .github/workflows/runner-smoke.yml
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, xauusd-bot]
+    steps:
+      - name: Host and Docker check
+        run: |
+          hostname
+          whoami
+          docker --version
+          docker compose version
+          echo "runner smoke OK"
