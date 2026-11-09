@@ -16,4 +16,4 @@ jobs:
           whoami
           docker --version
           docker compose version
-          echo "runner smoke OK"
+          echo "runner smoke OK — public repo actions enabled"

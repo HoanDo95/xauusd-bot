@@ -22,20 +22,17 @@ jobs:
   deploy:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: [self-hosted, xauusd-bot]
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Login GHCR (only if packages are private)
-        env:
-          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+      - name: Login GHCR with the workflow token
         run: |
-          if [ -n "$GHCR_READ_TOKEN" ]; then
-            echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          else
-            echo "No GHCR_READ_TOKEN secret; assuming public packages."
-          fi
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Sync compose files (never .env or data/)
         run: |
