@@ -1,0 +1,12 @@
+node_modules
+dist
+rust-backend/target
+rust-backend/data
+.env
+.env.*
+.git
+*.log
+README.md
+server.ts
+metadata.json
+next.config.mjs

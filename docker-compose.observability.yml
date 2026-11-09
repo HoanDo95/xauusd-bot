@@ -1,0 +1,23 @@
+# Optional: browser log viewer for the two containers.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d dozzle
+# Open http://xauusd-bot:8081 inside the tailnet.
+services:
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: xauusd-dozzle
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      DOZZLE_FILTER: "name=xauusd-"
+    mem_limit: 64m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"

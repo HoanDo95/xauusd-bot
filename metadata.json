@@ -1,0 +1,6 @@
+{
+  "name": "Gold Signal Bot",
+  "description": "XAU/USD Sniper engine: 1 real signal/day, free Binance PAXG candles, ForexFactory news kill switch, EMA50 trend and Telegram alerts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

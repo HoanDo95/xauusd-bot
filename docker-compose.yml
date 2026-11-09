@@ -1,0 +1,63 @@
+name: xauusd-bot
+
+services:
+  api:
+    image: ghcr.io/hoando95/xauusd-bot-api:${TAG:-local}
+    build:
+      context: ./rust-backend
+      dockerfile: Dockerfile
+    container_name: xauusd-api
+    restart: unless-stopped
+    env_file:
+      - ./rust-backend/.env
+    environment:
+      PORT: "8090"
+      RUST_LOG: info
+      TZ: Asia/Ho_Chi_Minh
+    # Keep the container UID aligned with the host owner of ./data.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "127.0.0.1:8090:8090"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8090/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    mem_limit: 512m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  web:
+    image: ghcr.io/hoando95/xauusd-bot-web:${TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: xauusd-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 64m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,75 @@
+name: deploy
+
+# CD: runs ON the xauusd-bot server via a self-hosted runner
+# (label: xauusd-bot). The runner dials OUT; no inbound SSH needed.
+# The server only pulls GHCR images and restarts compose services.
+
+on:
+  workflow_run:
+    workflows: [build-push]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+env:
+  DEPLOY_DIR: /home/jason/xauusd-bot
+
+jobs:
+  deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: [self-hosted, xauusd-bot]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Login GHCR (only if packages are private)
+        env:
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+        run: |
+          if [ -n "$GHCR_READ_TOKEN" ]; then
+            echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          else
+            echo "No GHCR_READ_TOKEN secret; assuming public packages."
+          fi
+
+      - name: Sync compose files (never .env or data/)
+        run: |
+          rsync -a --delete \
+            --exclude '.env' \
+            --exclude '.env.*' \
+            --exclude 'data' \
+            --exclude 'node_modules' \
+            --exclude 'dist' \
+            --exclude 'target' \
+            --exclude '.git' \
+            "$GITHUB_WORKSPACE/" "$DEPLOY_DIR/"
+
+      - name: Pull + restart (API then dashboard)
+        working-directory: ${{ env.DEPLOY_DIR }}
+        run: |
+          TAG="${{ github.event.workflow_run.head_sha || github.sha }}" \
+            docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull api web
+          TAG="${{ github.event.workflow_run.head_sha || github.sha }}" \
+            docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d --remove-orphans
+
+      - name: Smoke (fail deploy on red)
+        working-directory: ${{ env.DEPLOY_DIR }}
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/api/health >/dev/null; then
+              echo "health OK after ${i} attempt(s)"
+              break
+            fi
+            echo "waiting for API/web... ($i/30)"
+            sleep 5
+          done
+          curl -fsS http://127.0.0.1:3000/api/health | head -c 240; echo
+          docker compose ps
+
+      - name: Cleanup dangling images (never volumes)
+        run: docker image prune -f

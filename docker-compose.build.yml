@@ -1,0 +1,7 @@
+# Local build overlay (no registry needed).
+# Usage: docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+services:
+  api:
+    image: xauusd-bot-api:local
+  web:
+    image: xauusd-bot-web:local
