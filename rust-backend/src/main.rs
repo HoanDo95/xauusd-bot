@@ -117,13 +117,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await;
             if !fresh_candles.is_empty() {
                 // Cập nhật TP1/TP2/SL cho các tín hiệu đang mở trước khi ghi đè nến.
-                let updated = {
+                let updates = {
                     let mut signals = scanner_state.signals.write().await;
                     gold_signal_bot::tracker::evaluate_active_signals(&mut signals, &fresh_candles)
                 };
                 *scanner_state.candles.write().await = fresh_candles;
-                if updated > 0 {
-                    info!("📈 Đã cập nhật {} tín hiệu theo TP/SL", updated);
+                if !updates.is_empty() {
+                    info!("📈 Đã cập nhật {} tín hiệu theo TP/SL", updates.len());
+                    for update in updates.iter().filter(|signal| !signal.is_simulated) {
+                        let telegram = scanner_state.telegram.read().await.clone();
+                        if let Err(err) = telegram.send_outcome_alert(update).await {
+                            warn!("⚠️ Không gửi được Telegram outcome: {}", err);
+                        }
+                    }
                     if let Err(err) = persist_state(&scanner_state).await {
                         warn!("⚠️ Không lưu được kết quả TP/SL: {}", err);
                     }

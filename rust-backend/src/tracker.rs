@@ -35,12 +35,12 @@ fn round2(value: f64) -> f64 {
 /// - Nếu cùng một cây nến vừa quét SL vừa chạm TP1 → tính SL (kịch bản xấu nhất).
 /// - Sau khi đã chạm TP1, nếu sau đó chạm SL thì giữ TP1Hit (đã chốt lời),
 ///   nhưng nếu chạm TP2 trước thì nâng lên TP2Hit.
-pub fn evaluate_active_signals(signals: &mut [Signal], candles: &[Candle]) -> usize {
+pub fn evaluate_active_signals(signals: &mut [Signal], candles: &[Candle]) -> Vec<Signal> {
     if candles.is_empty() {
-        return 0;
+        return Vec::new();
     }
 
-    let mut updated = 0usize;
+    let mut updates = Vec::new();
 
     for signal in signals.iter_mut() {
         if !matches!(
@@ -130,11 +130,11 @@ pub fn evaluate_active_signals(signals: &mut [Signal], candles: &[Candle]) -> us
         if changed {
             signal.status = status;
             signal.outcome_at = Some(Utc::now());
-            updated += 1;
+            updates.push(signal.clone());
         }
     }
 
-    updated
+    updates
 }
 
 /// Tính hiệu suất từ lịch sử tín hiệu. Chỉ tính lệnh THẬT (`!is_simulated`).
@@ -293,9 +293,9 @@ mod tests {
             candle(3, 110.5, 116.0, 110.0, 115.5),
         ];
 
-        let updated = evaluate_active_signals(&mut signals, &candles);
+        let updates = evaluate_active_signals(&mut signals, &candles);
 
-        assert_eq!(updated, 1);
+        assert_eq!(updates.len(), 1);
         assert_eq!(signals[0].status, SignalStatus::Target2Hit);
         assert!(signals[0].outcome_at.is_some());
     }
@@ -335,9 +335,9 @@ mod tests {
         let mut signals = vec![signal(SignalType::Buy, 100.0, 95.0, 110.0, 115.0, 10)];
         let candles = vec![candle(10, 100.0, 111.0, 94.0, 100.0)];
 
-        let updated = evaluate_active_signals(&mut signals, &candles);
+        let updates = evaluate_active_signals(&mut signals, &candles);
 
-        assert_eq!(updated, 0);
+        assert_eq!(updates.len(), 0);
         assert_eq!(signals[0].status, SignalStatus::Active);
     }
 

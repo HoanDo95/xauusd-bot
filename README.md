@@ -25,6 +25,7 @@ A production-oriented XAU/USD signal engine with **100% free market data**, a ha
   signals are excluded.
 - **Telegram alerts**: HTML format with entry, SL, TP1, TP2, R:R, lot size, volume
   rationale, and a risk warning.
+- **Outcome alerts**: follow-up Telegram messages when TP1, TP2, or SL is hit.
 - **Dashboard**: dark trading UI, live candles, quota status, signal history,
   config, TradingView webhook sandbox.
 

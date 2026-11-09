@@ -1,4 +1,4 @@
-use crate::models::{Signal, SignalType};
+use crate::models::{Signal, SignalStatus, SignalType};
 use reqwest::Client;
 use serde_json::json;
 use tracing::{error, info};
@@ -129,6 +129,103 @@ impl TelegramNotifier {
         }
     }
 
+    /// Định dạng tin nhắn cập nhật kết quả TP1/TP2/SL.
+    pub fn format_outcome_message(signal: &Signal) -> String {
+        let (icon, label) = match signal.status {
+            SignalStatus::Target1Hit => ("✅", "TP1 HIT"),
+            SignalStatus::Target2Hit => ("🚀", "TP2 HIT"),
+            SignalStatus::StopLossHit => ("🛑", "STOP LOSS HIT"),
+            SignalStatus::Cancelled => ("⚪", "CANCELLED"),
+            SignalStatus::Active => ("ℹ️", "UPDATE"),
+        };
+
+        let risk = (signal.entry_price - signal.stop_loss).abs();
+        let r = if risk > f64::EPSILON {
+            match signal.status {
+                SignalStatus::Target1Hit => {
+                    (signal.take_profit_1 - signal.entry_price).abs() / risk
+                }
+                SignalStatus::Target2Hit => {
+                    (signal.take_profit_2 - signal.entry_price).abs() / risk
+                }
+                SignalStatus::StopLossHit => -1.0,
+                _ => 0.0,
+            }
+        } else {
+            0.0
+        };
+
+        let outcome_time = signal
+            .outcome_at
+            .map(|time| time.format("%Y-%m-%d %H:%M UTC").to_string())
+            .unwrap_or_else(|| "vừa xong".to_string());
+
+        format!(
+            "{} <b>{} | {} {}</b>\n\
+             ━━━━━━━━━━━━━━━━━━━━━━\n\
+             🆔 <code>{}</code>\n\
+             💵 Entry: <code>${:.2}</code>\n\
+             🎯 TP1: <code>${:.2}</code> | 🚀 TP2: <code>${:.2}</code> | 🛑 SL: <code>${:.2}</code>\n\
+             📊 Kết quả: <b>{:+.2}R</b>\n\
+             ⏱ Thời điểm: {}\n\
+             ━━━━━━━━━━━━━━━━━━━━━━\n\
+             ⚠️ <i>Quản lý rủi ro kỷ luật. Đây không phải lời khuyên đầu tư.</i>",
+            icon,
+            label,
+            Self::escape_html(&signal.symbol),
+            signal.signal_type,
+            signal.id,
+            signal.entry_price,
+            signal.take_profit_1,
+            signal.take_profit_2,
+            signal.stop_loss,
+            r,
+            outcome_time
+        )
+    }
+
+    /// Gửi thông báo TP1/TP2/SL khi trạng thái tín hiệu thay đổi.
+    pub async fn send_outcome_alert(&self, signal: &Signal) -> Result<i64, String> {
+        if self.bot_token.is_empty() || self.chat_id.is_empty() {
+            info!(
+                "⚠️ [Telegram Simulator] Outcome {} (chưa cấu hình token)",
+                signal.id
+            );
+            return Ok(1001);
+        }
+
+        let text = Self::format_outcome_message(signal);
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
+        let payload = json!({
+            "chat_id": self.chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true
+        });
+
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+                    let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
+                    info!("✅ Đã gửi outcome Telegram! Message ID: {}", msg_id);
+                    Ok(msg_id)
+                } else {
+                    let err_text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Lỗi không xác định".into());
+                    error!("❌ Telegram outcome API lỗi: {}", err_text);
+                    Err(format!("Telegram API Error: {}", err_text))
+                }
+            }
+            Err(err) => {
+                error!("❌ Không thể gửi outcome tới Telegram: {}", err);
+                Err(format!("Network Error: {}", err))
+            }
+        }
+    }
+
     /// Gửi tin nhắn kiểm tra kết nối (Test Connection)
     pub async fn send_test_ping(&self) -> Result<String, String> {
         if self.bot_token.is_empty() || self.chat_id.is_empty() {
@@ -206,6 +303,19 @@ mod tests {
             TelegramNotifier::escape_html("a < b & c > d"),
             "a &lt; b &amp; c &gt; d"
         );
+    }
+
+    #[test]
+    fn format_outcome_message_labels_tp1() {
+        let mut signal = sample_signal();
+        signal.status = SignalStatus::Target1Hit;
+        signal.outcome_at = Some(Utc::now());
+
+        let message = TelegramNotifier::format_outcome_message(&signal);
+
+        assert!(message.contains("TP1 HIT"));
+        assert!(message.contains("+2.00R"));
+        assert!(!message.contains("<script>"));
     }
 
     #[test]

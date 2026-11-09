@@ -56,16 +56,22 @@ pub async fn persist_state(state: &AppState) -> Result<(), String> {
 /// Cập nhật TP1/TP2/SL cho các tín hiệu đang mở dựa trên nến hiện có.
 async fn evaluate_outcomes(state: &AppState) -> usize {
     let candles = state.candles.read().await.clone();
-    let updated = {
+    let updates = {
         let mut signals = state.signals.write().await;
         evaluate_active_signals(&mut signals, &candles)
     };
-    if updated > 0 {
+    if !updates.is_empty() {
+        for update in updates.iter().filter(|signal| !signal.is_simulated) {
+            let telegram = state.telegram.read().await.clone();
+            if let Err(err) = telegram.send_outcome_alert(update).await {
+                warn!("⚠️ Không gửi được Telegram outcome: {}", err);
+            }
+        }
         if let Err(err) = persist_state(state).await {
             warn!("⚠️ Không lưu được kết quả TP/SL: {}", err);
         }
     }
-    updated
+    updates.len()
 }
 
 /// Khởi tạo Axum Router với đầy đủ REST Endpoints, TradingView Webhook & Daily Scheduler
