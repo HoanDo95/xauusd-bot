@@ -995,10 +995,13 @@ async fn simulate_setup(
         macro_bias: "NEUTRAL".to_string(),
         ..config
     };
+    // Dùng giá live thật (nếu có) để kiểm tra đúng logic drift/entry mode.
+    // Nếu chưa có live price, fallback về close của nến giả lập.
+    let actual_live_price = *state.live_price.read().await;
     let detected_signal = GoldMarketAnalyzer::analyze_market_with_live_price(
         &candles_snapshot,
         &sim_config,
-        Some(new_candle.close),
+        actual_live_price.or(Some(new_candle.close)),
         now_ms,
     );
 
