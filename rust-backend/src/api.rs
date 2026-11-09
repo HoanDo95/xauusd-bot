@@ -921,10 +921,14 @@ async fn simulate_setup(
     let setup_type = payload.setup_type.to_uppercase();
     let new_candle = match setup_type.as_str() {
         "BUY_PINBAR" => {
+            // Chọn hỗ trợ gần giá live nhất trong ±20$ để kịch bản test thực tế,
+            // tránh dùng một vùng cản quá xa khiến entry trông sai lệch.
             let support_price = supports
-                .first()
+                .iter()
+                .filter(|zone| zone.price < last_close && last_close - zone.price <= 20.0)
+                .max_by(|a, b| a.price.total_cmp(&b.price))
                 .map(|zone| zone.price)
-                .unwrap_or(last_close - 6.0);
+                .unwrap_or(last_close - 2.0);
             let open = support_price + 2.5;
             let low = support_price - 1.2;
             let close = support_price + 3.8;
@@ -941,9 +945,11 @@ async fn simulate_setup(
         }
         "SELL_PINBAR" => {
             let resistance_price = resistances
-                .first()
+                .iter()
+                .filter(|zone| zone.price > last_close && zone.price - last_close <= 20.0)
+                .min_by(|a, b| a.price.total_cmp(&b.price))
                 .map(|zone| zone.price)
-                .unwrap_or(last_close + 6.0);
+                .unwrap_or(last_close + 2.0);
             let open = resistance_price - 2.5;
             let high = resistance_price + 1.4;
             let close = resistance_price - 3.5;
