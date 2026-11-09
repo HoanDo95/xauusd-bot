@@ -13,18 +13,28 @@ concurrency:
 jobs:
   rust:
     name: Rust (fmt + clippy + tests)
-    runs-on: ubuntu-latest
+    # Self-hosted to avoid GitHub-hosted billing/minutes restrictions.
+    runs-on: [self-hosted, xauusd-bot]
     defaults:
       run:
         working-directory: rust-backend
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+
+      - name: Add Rust toolchain to PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Toolchain check
+        run: |
+          cargo --version
+          rustc --version
+          cargo fmt --version
+          cargo clippy --version
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust-backend
+
       - name: Format check
         run: cargo fmt --check
       - name: Clippy (deny warnings)
@@ -34,13 +44,14 @@ jobs:
 
   web:
     name: Web (lint + build)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, xauusd-bot]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - run: node --version
       - run: npm ci --no-audit --no-fund
       - run: npm run lint
       - run: npm run build

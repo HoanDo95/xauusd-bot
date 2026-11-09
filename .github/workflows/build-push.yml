@@ -23,7 +23,8 @@ env:
 jobs:
   images:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
+    # Self-hosted build: no GitHub-hosted minutes, no billing block.
+    runs-on: [self-hosted, xauusd-bot]
     permissions:
       contents: read
       packages: write
