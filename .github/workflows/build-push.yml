@@ -1,7 +1,7 @@
 name: build-push
 
-# Cloud build (GitHub-hosted): build API + dashboard images and push to GHCR.
-# The deploy server only pulls images; it never compiles Rust or runs npm build.
+# Build API + dashboard images on the self-hosted runner and push to GHCR.
+# The deploy server pulls images; it never compiles on the deploy step.
 # Triggered after CI is green (same pattern as edgepool).
 
 on:
@@ -17,13 +17,14 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  # GHCR requires lowercase image names. Update if the repo owner differs.
+  # GHCR requires lowercase image names.
   OWNER_LC: hoando95
+  SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
   images:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-    # Self-hosted build: no GitHub-hosted minutes, no billing block.
+    # Self-hosted: no GitHub-hosted minutes, no billing block.
     runs-on: [self-hosted, xauusd-bot]
     permissions:
       contents: read
@@ -33,40 +34,36 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Login GHCR
+        run: |
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Build + push Rust API
-        uses: docker/build-push-action@v6
-        with:
-          context: rust-backend
-          file: rust-backend/Dockerfile
-          push: true
-          tags: |
-            ghcr.io/${{ env.OWNER_LC }}/xauusd-bot-api:main
-            ghcr.io/${{ env.OWNER_LC }}/xauusd-bot-api:${{ github.event.workflow_run.head_sha || github.sha }}
-          cache-from: type=gha,scope=xauusd-api
-          cache-to: type=gha,scope=xauusd-api,mode=max
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${OWNER_LC}/xauusd-bot-api"
+          docker build \
+            -f rust-backend/Dockerfile \
+            -t "${IMAGE}:main" \
+            -t "${IMAGE}:${SHA}" \
+            rust-backend
+          docker push "${IMAGE}:main"
+          docker push "${IMAGE}:${SHA}"
 
       - name: Build + push dashboard
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.web
-          push: true
-          tags: |
-            ghcr.io/${{ env.OWNER_LC }}/xauusd-bot-web:main
-            ghcr.io/${{ env.OWNER_LC }}/xauusd-bot-web:${{ github.event.workflow_run.head_sha || github.sha }}
-          cache-from: type=gha,scope=xauusd-web
-          cache-to: type=gha,scope=xauusd-web,mode=max
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${OWNER_LC}/xauusd-bot-web"
+          docker build \
+            -f Dockerfile.web \
+            -t "${IMAGE}:main" \
+            -t "${IMAGE}:${SHA}" \
+            .
+          docker push "${IMAGE}:main"
+          docker push "${IMAGE}:${SHA}"
 
       - name: Summary
         run: |
           echo "## GHCR images" >> "$GITHUB_STEP_SUMMARY"
-          echo "- ghcr.io/${OWNER_LC}/xauusd-bot-api:main + :${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- ghcr.io/${OWNER_LC}/xauusd-bot-web:main + :${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ghcr.io/${OWNER_LC}/xauusd-bot-api:main + :${SHA}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ghcr.io/${OWNER_LC}/xauusd-bot-web:main + :${SHA}" >> "$GITHUB_STEP_SUMMARY"
