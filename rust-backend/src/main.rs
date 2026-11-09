@@ -2,18 +2,86 @@ use axum::http::HeaderValue;
 use chrono::Utc;
 use gold_signal_bot::analyzer::GoldMarketAnalyzer;
 use gold_signal_bot::api::{create_router, persist_state, AppState};
-use gold_signal_bot::market_feed::MarketDataFeed;
+use gold_signal_bot::market_feed::{MarketDataFeed, MarketFeedSnapshot};
+use gold_signal_bot::models::BotConfig;
 use gold_signal_bot::news_filter::{ImpactLevel, NewsFilterConfig, NewsFilterService};
 use gold_signal_bot::scheduler::DailyScheduler;
 use gold_signal_bot::storage::PersistentStore;
 use gold_signal_bot::telegram::TelegramNotifier;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
+
+/// Cache spot XAU/USD 300s (~288 calls/day), an toàn cho TwelveData free tier.
+const SPOT_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+async fn resolve_spot_price(
+    market_feed: &MarketDataFeed,
+    cache: &mut Option<(f64, Instant)>,
+) -> Option<f64> {
+    if let Some((price, fetched_at)) = *cache {
+        if fetched_at.elapsed() < SPOT_CACHE_TTL {
+            return Some(price);
+        }
+    }
+
+    let price = market_feed.fetch_spot_xau_usd().await?;
+    *cache = Some((price, Instant::now()));
+    Some(price)
+}
+
+/// PAXG basis = spot XAU/USD − (live PAXG − broker offset thủ công).
+fn compute_spot_basis(
+    snapshot: &MarketFeedSnapshot,
+    spot_price: f64,
+    broker_price_offset: f64,
+) -> Option<f64> {
+    let raw_live = snapshot
+        .live_price
+        .or_else(|| snapshot.candles.last().map(|candle| candle.close))?;
+
+    if !spot_price.is_finite() || spot_price <= 0.0 || !raw_live.is_finite() {
+        return None;
+    }
+
+    let basis = spot_price - (raw_live - broker_price_offset);
+    basis.is_finite().then(|| basis.clamp(-100.0, 100.0))
+}
+
+/// Căn snapshot Binance PAXG về spot XAU/USD. Trả (spot, basis) nếu áp dụng thành công.
+async fn apply_spot_basis(
+    snapshot: &mut MarketFeedSnapshot,
+    config: &BotConfig,
+    market_feed: &MarketDataFeed,
+    cache: &mut Option<(f64, Instant)>,
+) -> Option<(f64, f64)> {
+    if !config.use_auto_spot_basis || snapshot.source != "BINANCE_PAXG" {
+        return None;
+    }
+
+    let spot_price = resolve_spot_price(market_feed, cache).await?;
+    let basis = compute_spot_basis(snapshot, spot_price, config.broker_price_offset)?;
+    MarketDataFeed::shift_snapshot_prices(snapshot, basis);
+    info!("🌐 Spot basis: spot={:.2}, basis={:+.2}", spot_price, basis);
+    Some((spot_price, basis))
+}
+
+/// Migration: build cũ tự động đổi `data_source` sang TWELVEDATA khi có key.
+/// TwelveData `time_series` không có volume nên OHLCV phải quay lại Binance PAXG;
+/// TwelveData chỉ còn là giá spot tham chiếu.
+fn migrate_ohlcv_source_to_binance(config: &mut BotConfig) {
+    if config.data_source.eq_ignore_ascii_case("TWELVEDATA") {
+        warn!(
+            "⚠️ data_source=TWELVEDATA từ cấu hình cũ không có volume — chuyển OHLCV sang BINANCE_PAXG (TwelveData chỉ dùng spot basis)."
+        );
+        config.data_source = "BINANCE_PAXG".to_string();
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,15 +120,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if config.webhook_passphrase.trim().is_empty() {
         config.webhook_passphrase = env_webhook_passphrase;
     }
+    migrate_ohlcv_source_to_binance(&mut config);
 
-    // 3. Nguồn dữ liệu thật: Binance PAXGUSDT (mặc định) hoặc TwelveData XAU/USD
+    // 3. OHLCV + volume luôn lấy từ Binance PAXGUSDT. TwelveData chỉ là giá spot
+    // tham chiếu để tự động căn basis PAXG → XAU/USD (time_series không có volume).
     let market_feed = MarketDataFeed::new();
-    if market_feed.has_twelve_data_key() && config.data_source.eq_ignore_ascii_case("BINANCE_PAXG")
-    {
-        config.data_source = "TWELVEDATA".to_string();
-    }
+    let mut cached_spot: Option<(f64, Instant)> = None;
 
-    let initial_snapshot = market_feed
+    let mut initial_snapshot = market_feed
         .fetch_market_snapshot(
             config.timeframe,
             300,
@@ -68,11 +135,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.broker_price_offset,
         )
         .await;
+
+    let initial_spot = apply_spot_basis(
+        &mut initial_snapshot,
+        &config,
+        &market_feed,
+        &mut cached_spot,
+    )
+    .await;
+    let (initial_spot_price, initial_spot_basis) = match initial_spot {
+        Some((spot, basis)) => (Some(spot), Some(basis)),
+        None => (None, None),
+    };
+
     if initial_snapshot.source == "FALLBACK_SEED" {
         warn!(
             "⚠️ Không có dữ liệu thị trường thật lúc khởi động — dùng nến fallback cho UI, KHÔNG phân tích."
         );
+    } else if initial_snapshot.source == "BINANCE_PAXG"
+        && config.use_auto_spot_basis
+        && initial_spot_basis.is_none()
+    {
+        warn!("⚠️ Không có spot XAU/USD lúc khởi động — chỉ dùng broker offset thủ công.");
     }
+
     let initial_live_price = initial_snapshot.live_price;
     let initial_data_source = initial_snapshot.source.clone();
     let initial_candles = initial_snapshot.candles;
@@ -106,6 +192,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         market_feed: Arc::new(market_feed),
         live_price: Arc::new(RwLock::new(initial_live_price)),
         active_data_source: Arc::new(RwLock::new(initial_data_source)),
+        spot_price: Arc::new(RwLock::new(initial_spot_price)),
+        spot_basis: Arc::new(RwLock::new(initial_spot_basis)),
         sent_session_alerts: Arc::new(RwLock::new(persisted.sent_session_alerts)),
     };
 
@@ -120,7 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // 6.1 Luôn refresh nến thật đã đóng cửa (kể cả khi bot tạm dừng).
             let config = scanner_state.config.read().await.clone();
-            let snapshot = scanner_state
+            let mut snapshot = scanner_state
                 .market_feed
                 .fetch_market_snapshot(
                     config.timeframe,
@@ -129,6 +217,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     config.broker_price_offset,
                 )
                 .await;
+
+            // 6.1b Căn PAXG về spot XAU/USD trước khi tracker/analyzer nhìn thấy giá.
+            let applied_spot = apply_spot_basis(
+                &mut snapshot,
+                &config,
+                &scanner_state.market_feed,
+                &mut cached_spot,
+            )
+            .await;
+            let (scan_spot_price, scan_spot_basis) = match applied_spot {
+                Some((spot, basis)) => (Some(spot), Some(basis)),
+                None => (None, None),
+            };
+            *scanner_state.spot_price.write().await = scan_spot_price;
+            *scanner_state.spot_basis.write().await = scan_spot_basis;
 
             // Không bao giờ phân tích/tracker trên nến giả fallback.
             if snapshot.source == "FALLBACK_SEED" {
@@ -342,4 +445,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gold_signal_bot::models::{Candle, Timeframe};
+
+    fn snapshot(live_price: Option<f64>, last_close: f64) -> MarketFeedSnapshot {
+        MarketFeedSnapshot {
+            candles: vec![Candle {
+                timestamp: 1,
+                open: last_close,
+                high: last_close,
+                low: last_close,
+                close: last_close,
+                volume: 100.0,
+                timeframe: Timeframe::M15,
+            }],
+            source: "BINANCE_PAXG".to_string(),
+            live_price,
+        }
+    }
+
+    #[test]
+    fn spot_basis_uses_live_price_and_removes_manual_offset() {
+        let snapshot = snapshot(Some(4106.10), 4100.0);
+        let basis = compute_spot_basis(&snapshot, 4111.17, 2.0).expect("finite basis");
+        assert!((basis - 7.07).abs() < 1e-9);
+    }
+
+    #[test]
+    fn spot_basis_falls_back_to_last_close_and_clamps() {
+        let snapshot = snapshot(None, 4000.0);
+        let basis = compute_spot_basis(&snapshot, 4500.0, 0.0).expect("finite basis");
+        assert_eq!(basis, 100.0);
+
+        assert_eq!(compute_spot_basis(&snapshot, 0.0, 0.0), None);
+        assert_eq!(compute_spot_basis(&snapshot, f64::NAN, 0.0), None);
+    }
+
+    #[test]
+    fn legacy_twelvedata_ohlcv_config_migrates_to_binance() {
+        let mut config = BotConfig {
+            data_source: "TWELVEDATA".to_string(),
+            ..BotConfig::default()
+        };
+        migrate_ohlcv_source_to_binance(&mut config);
+        assert_eq!(config.data_source, "BINANCE_PAXG");
+
+        let mut already_binance = BotConfig::default();
+        migrate_ohlcv_source_to_binance(&mut already_binance);
+        assert_eq!(already_binance.data_source, "BINANCE_PAXG");
+    }
 }

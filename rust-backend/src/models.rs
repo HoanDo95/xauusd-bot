@@ -257,6 +257,10 @@ pub struct BotConfig {
     /// Chênh lệch giá broker so với nguồn dữ liệu (USD), cộng vào mọi giá.
     #[serde(default)]
     pub broker_price_offset: f64,
+    /// Tự động căn giá PAXG (Binance) về giá spot XAU/USD tham chiếu.
+    /// TwelveData/gold-api chỉ cung cấp giá spot, không thay thế OHLCV + volume.
+    #[serde(default = "default_true")]
+    pub use_auto_spot_basis: bool,
     /// Sai lệch tối đa giữa giá live và giá đóng nến để vào MARKET (USD).
     #[serde(default = "default_max_entry_drift_points")]
     pub max_entry_drift_points: f64,
@@ -299,6 +303,10 @@ fn default_session_alerts_enabled() -> bool {
     true
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_session_alert_lead_minutes() -> i64 {
     60
 }
@@ -331,6 +339,7 @@ impl Default for BotConfig {
             webhook_passphrase: String::new(),
             entry_mode: default_entry_mode(),
             broker_price_offset: 0.0,
+            use_auto_spot_basis: true,
             max_entry_drift_points: default_max_entry_drift_points(),
             max_candle_age_secs: default_max_candle_age_secs(),
             session_alerts_enabled: default_session_alerts_enabled(),
@@ -390,6 +399,7 @@ impl BotConfig {
         }
         .to_string();
         self.broker_price_offset = finite_or(self.broker_price_offset, 0.0).clamp(-100.0, 100.0);
+        // Boolean toggle: no numeric clamp needed; false is a valid explicit choice.
         self.max_entry_drift_points = finite_or(self.max_entry_drift_points, 2.5).clamp(0.5, 10.0);
         self.max_candle_age_secs = self.max_candle_age_secs.clamp(30, 900);
         self.session_alert_lead_minutes = self.session_alert_lead_minutes.clamp(15, 120);
@@ -563,6 +573,26 @@ mod tests {
         let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
         assert!(config.session_alerts_enabled);
         assert_eq!(config.session_alert_lead_minutes, 60);
+    }
+
+    #[test]
+    fn spot_basis_defaults_true_and_is_backward_compatible() {
+        let defaults = BotConfig::default();
+        assert!(defaults.use_auto_spot_basis);
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        object.remove("use_auto_spot_basis");
+
+        let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(config.use_auto_spot_basis);
+
+        let disabled = BotConfig {
+            use_auto_spot_basis: false,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert!(!disabled.use_auto_spot_basis);
     }
 }
 

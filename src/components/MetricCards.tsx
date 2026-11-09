@@ -13,6 +13,8 @@ interface Props {
   dataSource?: string;
   trendBias?: TrendBias;
   ema50?: number;
+  spotPrice?: number | null;
+  spotBasis?: number | null;
 }
 
 function feedLabel(dataSource?: string): string {
@@ -33,6 +35,8 @@ export const MetricCards: React.FC<Props> = ({
   dataSource,
   trendBias,
   ema50,
+  spotPrice,
+  spotBasis,
 }) => {
   // Statistics calculations — only REAL signals count toward performance.
   const liveSignals = signals.filter((s) => !s.is_simulated);
@@ -106,6 +110,24 @@ export const MetricCards: React.FC<Props> = ({
             <span>EMA50:</span>
             <span className="text-white font-bold tabular-nums">${ema50.toFixed(2)}</span>
             <span className={`font-bold ${trendColor}`}>{trendBias ?? 'NEUTRAL'}</span>
+          </div>
+        )}
+
+        {typeof spotBasis === 'number' && (
+          <div
+            className="flex items-center gap-2 px-3.5 py-2 rounded-xl border border-violet-500/40 bg-violet-500/10 text-violet-300 text-xs font-mono"
+            title="PAXG (Binance) đã được căn về giá spot XAU/USD tham chiếu; cache 300 giây."
+          >
+            <span className="text-base leading-none">🌐</span>
+            <span>
+              Spot basis:{' '}
+              <span className="font-bold tabular-nums">
+                {spotBasis >= 0 ? '+' : '-'}${Math.abs(spotBasis).toFixed(2)}
+              </span>
+            </span>
+            {typeof spotPrice === 'number' && (
+              <span className="text-violet-400/80 tabular-nums">spot ${spotPrice.toFixed(2)}</span>
+            )}
           </div>
         )}
       </div>

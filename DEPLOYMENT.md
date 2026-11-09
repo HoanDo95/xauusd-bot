@@ -222,8 +222,14 @@ always use the free EMA50/200 heuristic, so the bot works fully without any AI
 key. Configure it in `rust-backend/.env` and restart the API container:
 
 ```bash
-# "" = auto-detect, "none" = disabled, "gemini", or "openrouter"
+# "" = auto-detect, "none" = disabled, or opencode_go | gemini | openrouter
 AI_PROVIDER=""
+# OpenCode Go (recommended): OpenAI-compatible, default model Gemini 4 Argon.
+OPENCODE_GO_API_KEY=""
+OPENCODE_GO_BASE_URL="https://opencode.ai/inference/go/openai/v1"
+OPENCODE_GO_MODEL="gemini-4-argon"
+# Model alternatives: "deepseek-v4.1-flash" (cheap/reasoning),
+# "glm-5.3-flash" (fast/cheap).
 GEMINI_API_KEY=""
 GEMINI_MODEL="gemini-2.5-flash"
 OPENROUTER_API_KEY=""
@@ -233,11 +239,20 @@ docker compose restart api
 docker compose logs -f api   # logs provider/model, never the key
 ```
 
-- Auto-detect order: `GEMINI_API_KEY` first, then `OPENROUTER_API_KEY`.
+- Auto-detect order: `OPENCODE_GO_API_KEY` first, then `GEMINI_API_KEY`, then
+  `OPENROUTER_API_KEY`. `AI_PROVIDER=none` disables AI explicitly.
+- OpenCode Go uses the OpenAI-compatible endpoint
+  `https://opencode.ai/inference/go/openai/v1` (override with
+  `OPENCODE_GO_BASE_URL`). Default model is `gemini-4-argon`; tested
+  alternatives are `deepseek-v4.1-flash` and `glm-5.3-flash`. Requests include
+  `User-Agent: xauusd-bot/1.0` and `x-opencode-session: xauusd-macro-<UTC date>`.
+- The scheduler makes one AI call per day at 07:00 (pressing the manual Daily
+  Cron trigger adds one more). No key, `AI_PROVIDER=none`, or an AI error falls
+  back to the deterministic EMA50/200 report; signals are unaffected.
+- Keep the API key only in the environment / `rust-backend/.env`. It is never
+  logged or committed; edit `.env` on the server and restart the API container.
 - Gemini uses the OpenAI-compatible endpoint
   (`https://generativelanguage.googleapis.com/v1beta/openai`).
-- No key, `AI_PROVIDER=none`, or an AI error falls back to the deterministic
-  EMA50/200 report; signals are unaffected.
 - The daily report bias is advisory only. It is shown in the dashboard but is
   **never** written to `config.macro_bias`, so `AUTO` stays dynamic and an
   explicit `BULLISH`/`BEARISH`/`NEUTRAL` setting is preserved.
@@ -260,3 +275,28 @@ passphrase, TwelveData key, AI provider/model, `PORT`, `RUST_LOG`). After editin
 docker compose restart api
 docker compose logs -f api
 ```
+
+## 16. PAXG → XAU/USD spot basis calibration
+
+Binance `PAXGUSDT` remains the only OHLCV + volume feed. `TWELVEDATA_API_KEY` is
+optional and now powers **only** the XAU/USD spot reference used to calibrate the
+PAXG premium/discount; TwelveData `time_series` has no volume and is not used for
+candles. The spot quote is cached 300s (~288 calls/day) and falls back to
+`https://api.gold-api.com/price/XAU` when TwelveData fails.
+
+Set it in `rust-backend/.env`, then restart the API so the environment is reloaded:
+
+```bash
+# rust-backend/.env
+TWELVEDATA_API_KEY="your_twelvedata_api_key_here"
+
+docker compose restart api
+docker compose logs -f api   # look for: 🌐 Spot basis: spot=..., basis=+...
+```
+
+`use_auto_spot_basis` (default true) is dashboard config in
+`data/bot_state.json`; no restart is needed to toggle it. A legacy persisted
+`data_source = "TWELVEDATA"` is migrated back to `BINANCE_PAXG` on startup.
+`broker_price_offset` still applies on top. If both spot providers fail,
+`spotBasis` is `null` and the engine continues with Binance PAXG + the manual
+offset.

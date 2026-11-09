@@ -45,11 +45,38 @@ A production-oriented XAU/USD signal engine with **100% free market data**, a ha
 | Data | Source | Key |
 |---|---|---|
 | Gold OHLCV + volume | Binance `PAXGUSDT` public API | none |
-| Spot `XAU/USD` (optional) | TwelveData free tier | optional |
+| Spot `XAU/USD` reference (basis only) | TwelveData free `/price`, fallback `gold-api.com` | optional |
 | US high-impact calendar | ForexFactory public JSON | none |
 | Trend | EMA50/200 computed locally | none |
-| Daily macro commentary (optional) | Gemini or OpenRouter | optional |
+| Daily macro commentary (optional) | OpenCode Go (default), Gemini or OpenRouter | optional |
 | Alerts | Telegram Bot API | `@BotFather` token |
+
+### PAXG → XAU/USD spot basis calibration
+
+Binance `PAXGUSDT` is the OHLCV + volume source, but PAXG can trade at a
+**$5–$11 premium/discount** versus spot XAU/USD. With
+`use_auto_spot_basis` enabled (default true), each scan:
+
+1. Fetches the spot reference from TwelveData
+   `https://api.twelvedata.com/price?symbol=XAU/USD&apikey=...` when
+   `TWELVEDATA_API_KEY` is set.
+2. Falls back to the free `https://api.gold-api.com/price/XAU` endpoint if
+   TwelveData is missing or fails.
+3. Computes `basis = spot − (live PAXG − broker_price_offset)`, clamps it to
+   ±100 USD, and shifts every closed OHLC candle plus the live price by that
+   basis (rounded to 2 decimals).
+4. Logs `🌐 Spot basis: spot=4111.17, basis=+5.07` and exposes
+   `spotPrice`, `spotBasis` and `priceSource` on `/api/health` and
+   `/api/candles`.
+
+The spot quote is cached for **300 seconds** (~288 calls/day, safely inside the
+TwelveData free tier of 800/day). TwelveData `time_series` is deliberately
+**not** used for OHLCV because it has no volume. On startup, a legacy persisted
+`data_source = "TWELVEDATA"` (from the old auto-switch) is migrated back to
+`BINANCE_PAXG`. The manual `broker_price_offset` remains supported and is
+applied before the auto basis; turn `use_auto_spot_basis` off to use only the
+manual offset. If both spot providers fail, the engine keeps Binance PAXG
+candles with the manual offset and reports `spotBasis: null`.
 
 ### Optional AI macro report
 
@@ -57,16 +84,27 @@ AI is **optional** and only decorates the once-a-day (07:00) macro report. Core
 signal generation — EMA50/200 trend, S/R zones, pinbar, volume and quota — never
 calls an AI API.
 
-- `AI_PROVIDER` is optional and case-insensitive: `GEMINI`, `OPENROUTER`, or
-  `NONE`. Leave it empty to auto-detect: `GEMINI_API_KEY` → Gemini, else
+- `AI_PROVIDER` is optional and case-insensitive: `OPENCODE_GO`, `GEMINI`,
+  `OPENROUTER`, or `NONE`. Leave it empty to auto-detect:
+  `OPENCODE_GO_API_KEY` → OpenCode Go, else `GEMINI_API_KEY` → Gemini, else
   `OPENROUTER_API_KEY` → OpenRouter, else no AI. `NONE` forces the free path.
+- **OpenCode Go** (recommended) uses the OpenAI-compatible endpoint
+  `https://opencode.ai/inference/go/openai/v1` (override with
+  `OPENCODE_GO_BASE_URL`) and `OPENCODE_GO_MODEL` (default `gemini-4-argon`,
+  best reasoning). Tested alternatives: `deepseek-v4.1-flash`
+  (cheap/reasoning) and `glm-5.3-flash` (fast/cheap). Requests send
+  `User-Agent: xauusd-bot/1.0` and a per-day
+  `x-opencode-session: xauusd-macro-<UTC date>` header.
 - Gemini uses its OpenAI-compatible endpoint
   (`https://generativelanguage.googleapis.com/v1beta/openai`) with
   `GEMINI_MODEL` (default `gemini-2.5-flash`).
 - OpenRouter is supported with `OPENROUTER_MODEL` (default
   `anthropic/claude-3.5-sonnet`, the previous behaviour).
-- No key or a failed AI call = deterministic EMA50/200 report. Signals never
-  depend on the AI provider.
+- The scheduled AI report is **one call per day** at 07:00 (the manual Daily
+  Cron trigger makes one extra call if pressed). No key or a failed AI call =
+  deterministic EMA50/200 report. Signals never depend on the AI provider.
+- The key lives only in the environment / `rust-backend/.env`; it is never
+  logged or committed.
 - The daily report bias is **advisory only**. The cron never writes it into
   `config.macro_bias`, so `AUTO` keeps following EMA50/200 dynamically; an
   explicit `BULLISH`/`BEARISH`/`NEUTRAL` choice is preserved.
@@ -80,7 +118,8 @@ calls an AI API.
 | `BREAKOUT` | Places a stop entry 0.5 USD beyond the signal candle high (buy) or low (sell). |
 
 `broker_price_offset` (USD, −100…100) is added to candles, live price and signal
-levels so the dashboard matches the broker feed. A closed candle older than
+levels so the dashboard matches the broker feed; with `use_auto_spot_basis`, the
+PAXG→spot basis is layered on top automatically. A closed candle older than
 `max_candle_age_secs` (30–900s, default 120s) is rejected. When both market feeds
 fail, the engine labels data `FALLBACK_SEED`, shows it for the UI, and **never**
 analyses or tracks it. Simulated setups are stored with `is_simulated=true` and
@@ -167,8 +206,8 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `GET` | `/api/health` | Health, live price, feed source, daily quota, kill switch |
-| `GET` | `/api/candles` | Live + last closed price, S/R zones, EMA50/200, trend, `dataSource` |
+| `GET` | `/api/health` | Health, live price, feed source, spot basis/price source, daily quota, kill switch |
+| `GET` | `/api/candles` | Live + last closed price, S/R zones, EMA50/200, trend, `dataSource`, `spotPrice`, `spotBasis`, `priceSource` |
 | `GET` | `/api/signals` | Signal history + performance stats |
 | `GET` | `/api/stats` | Win rate, avg R, net R, profit factor (real signals only) |
 | `GET/POST` | `/api/config` | Read/update sanitized bot config |

@@ -8,10 +8,13 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 const FOREX_FACTORY_CALENDAR_URL: &str = "https://nfs.faireconomy.media/ff_calendar_thisweek.json";
+const OPENCODE_GO_API_BASE: &str = "https://opencode.ai/inference/go/openai/v1";
 const GEMINI_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 const OPENROUTER_API_BASE: &str = "https://openrouter.ai/api/v1";
+const DEFAULT_OPENCODE_GO_MODEL: &str = "gemini-4-argon";
 const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
 const DEFAULT_OPENROUTER_MODEL: &str = "anthropic/claude-3.5-sonnet";
+const OPENCODE_GO_USER_AGENT: &str = "xauusd-bot/1.0";
 
 /// Nhà cung cấp AI tùy chọn cho báo cáo vĩ mô ngày.
 ///
@@ -19,6 +22,7 @@ const DEFAULT_OPENROUTER_MODEL: &str = "anthropic/claude-3.5-sonnet";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiProvider {
     None,
+    OpenCodeGo,
     Gemini,
     OpenRouter,
 }
@@ -27,16 +31,25 @@ impl AiProvider {
     /// Xác định provider từ `AI_PROVIDER` và các key hiện có.
     ///
     /// Hàm thuần (pure) để test được mà không cần sửa process env:
-    /// - `AI_PROVIDER` hợp lệ (`NONE`/`GEMINI`/`OPENROUTER`, không phân biệt hoa thường)
+    /// - `AI_PROVIDER` hợp lệ
+    ///   (`NONE`/`OPENCODE_GO`/`GEMINI`/`OPENROUTER`, không phân biệt hoa thường)
     ///   được ưu tiên tuyệt đối.
-    /// - Rỗng hoặc không hợp lệ → auto-detect: Gemini trước, rồi OpenRouter.
-    pub fn from_env_values(ai_provider: &str, gemini_key: &str, openrouter_key: &str) -> Self {
+    /// - Rỗng hoặc không hợp lệ → auto-detect: OpenCode Go trước, rồi Gemini, rồi OpenRouter.
+    pub fn from_env_values(
+        ai_provider: &str,
+        opencode_go_key: &str,
+        gemini_key: &str,
+        openrouter_key: &str,
+    ) -> Self {
         match ai_provider.trim().to_ascii_uppercase().as_str() {
             "NONE" => Self::None,
+            "OPENCODE_GO" => Self::OpenCodeGo,
             "GEMINI" => Self::Gemini,
             "OPENROUTER" => Self::OpenRouter,
             _ => {
-                if !gemini_key.trim().is_empty() {
+                if !opencode_go_key.trim().is_empty() {
+                    Self::OpenCodeGo
+                } else if !gemini_key.trim().is_empty() {
                     Self::Gemini
                 } else if !openrouter_key.trim().is_empty() {
                     Self::OpenRouter
@@ -50,6 +63,7 @@ impl AiProvider {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::None => "none",
+            Self::OpenCodeGo => "opencode_go",
             Self::Gemini => "gemini",
             Self::OpenRouter => "openrouter",
         }
@@ -68,6 +82,22 @@ struct AiSettings {
     api_key: String,
     api_base: String,
     model: String,
+}
+
+/// Giá trị env đầu vào cho [`DailyScheduler::resolve_ai_settings`].
+///
+/// Dùng struct thay vì nhiều tham số để tránh `clippy::too_many_arguments`;
+/// `Default` trả về chuỗi rỗng cho mọi trường.
+#[derive(Default)]
+struct AiEnvConfig<'a> {
+    ai_provider: &'a str,
+    opencode_go_key: &'a str,
+    opencode_go_base: &'a str,
+    opencode_go_model: &'a str,
+    gemini_key: &'a str,
+    gemini_model: &'a str,
+    openrouter_key: &'a str,
+    openrouter_model: &'a str,
 }
 
 fn resolve_model(value: &str, default: &str) -> String {
@@ -112,13 +142,25 @@ impl DailyScheduler {
     /// Chỉ log provider/model — tuyệt đối không log API key.
     pub fn from_env() -> Self {
         let read = |name: &str| std::env::var(name).unwrap_or_default();
-        let settings = Self::resolve_ai_settings(
-            &read("AI_PROVIDER"),
-            &read("GEMINI_API_KEY"),
-            &read("OPENROUTER_API_KEY"),
-            &read("GEMINI_MODEL"),
-            &read("OPENROUTER_MODEL"),
-        );
+        let ai_provider = read("AI_PROVIDER");
+        let opencode_go_key = read("OPENCODE_GO_API_KEY");
+        let opencode_go_base = read("OPENCODE_GO_BASE_URL");
+        let opencode_go_model = read("OPENCODE_GO_MODEL");
+        let gemini_key = read("GEMINI_API_KEY");
+        let gemini_model = read("GEMINI_MODEL");
+        let openrouter_key = read("OPENROUTER_API_KEY");
+        let openrouter_model = read("OPENROUTER_MODEL");
+
+        let settings = Self::resolve_ai_settings(AiEnvConfig {
+            ai_provider: &ai_provider,
+            opencode_go_key: &opencode_go_key,
+            opencode_go_base: &opencode_go_base,
+            opencode_go_model: &opencode_go_model,
+            gemini_key: &gemini_key,
+            gemini_model: &gemini_model,
+            openrouter_key: &openrouter_key,
+            openrouter_model: &openrouter_model,
+        });
 
         let scheduler = Self {
             http_client: Self::build_http_client(),
@@ -139,24 +181,28 @@ impl DailyScheduler {
     }
 
     /// Hàm thuần resolve provider + key + base + model (test không cần env/network).
-    fn resolve_ai_settings(
-        ai_provider: &str,
-        gemini_key: &str,
-        openrouter_key: &str,
-        gemini_model: &str,
-        openrouter_model: &str,
-    ) -> AiSettings {
-        let provider = AiProvider::from_env_values(ai_provider, gemini_key, openrouter_key);
+    fn resolve_ai_settings(config: AiEnvConfig<'_>) -> AiSettings {
+        let provider = AiProvider::from_env_values(
+            config.ai_provider,
+            config.opencode_go_key,
+            config.gemini_key,
+            config.openrouter_key,
+        );
         let (api_key, api_base, model) = match provider {
+            AiProvider::OpenCodeGo => (
+                config.opencode_go_key.trim().to_string(),
+                resolve_model(config.opencode_go_base, OPENCODE_GO_API_BASE),
+                resolve_model(config.opencode_go_model, DEFAULT_OPENCODE_GO_MODEL),
+            ),
             AiProvider::Gemini => (
-                gemini_key.trim().to_string(),
+                config.gemini_key.trim().to_string(),
                 GEMINI_API_BASE.to_string(),
-                resolve_model(gemini_model, DEFAULT_GEMINI_MODEL),
+                resolve_model(config.gemini_model, DEFAULT_GEMINI_MODEL),
             ),
             AiProvider::OpenRouter => (
-                openrouter_key.trim().to_string(),
+                config.openrouter_key.trim().to_string(),
                 OPENROUTER_API_BASE.to_string(),
-                resolve_model(openrouter_model, DEFAULT_OPENROUTER_MODEL),
+                resolve_model(config.openrouter_model, DEFAULT_OPENROUTER_MODEL),
             ),
             AiProvider::None => (String::new(), String::new(), String::new()),
         };
@@ -199,6 +245,7 @@ impl DailyScheduler {
     /// Nhãn nguồn báo cáo để log mà không lộ key.
     pub fn report_source(&self) -> &'static str {
         match self.provider {
+            AiProvider::OpenCodeGo if self.has_ai_credentials() => "OpenCode Go AI",
             AiProvider::Gemini if self.has_ai_credentials() => "Gemini AI",
             AiProvider::OpenRouter if self.has_ai_credentials() => "OpenRouter AI",
             _ => "EMA50/200 (fallback)",
@@ -480,6 +527,11 @@ impl DailyScheduler {
         )
     }
 
+    /// Session id gửi kèm OpenCode Go request (một phiên/ngày UTC).
+    fn opencode_session_id(now: DateTime<Utc>) -> String {
+        now.format("xauusd-macro-%Y-%m-%d").to_string()
+    }
+
     async fn request_ai_report(
         &self,
         prompt: &str,
@@ -503,15 +555,19 @@ impl DailyScheduler {
             "temperature": 0.2
         });
 
-        let response = match self
+        let mut request = self
             .http_client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.ai_api_key))
-            .header("Content-Type", "application/json")
-            .json(&payload)
-            .send()
-            .await
-        {
+            .header("Content-Type", "application/json");
+
+        if self.provider == AiProvider::OpenCodeGo {
+            request = request
+                .header("User-Agent", OPENCODE_GO_USER_AGENT)
+                .header("x-opencode-session", Self::opencode_session_id(Utc::now()));
+        }
+
+        let response = match request.json(&payload).send().await {
             Ok(response) => response,
             Err(err) => {
                 warn!(
@@ -712,54 +768,138 @@ mod tests {
         assert!(!report.gold_range_forecast.is_empty());
     }
 
-    #[test]
-    fn ai_provider_auto_detects_from_keys() {
-        assert_eq!(
-            AiProvider::from_env_values("", "gemini-key", ""),
-            AiProvider::Gemini
-        );
-        assert_eq!(
-            AiProvider::from_env_values("", "", "openrouter-key"),
-            AiProvider::OpenRouter
-        );
-        // Cả hai key: Gemini được ưu tiên theo yêu cầu.
-        assert_eq!(
-            AiProvider::from_env_values("", "gemini-key", "openrouter-key"),
-            AiProvider::Gemini
-        );
-        assert_eq!(AiProvider::from_env_values("", "", ""), AiProvider::None);
+    fn ai_env<'a>(
+        ai_provider: &'a str,
+        opencode_go_key: &'a str,
+        gemini_key: &'a str,
+        openrouter_key: &'a str,
+    ) -> AiEnvConfig<'a> {
+        AiEnvConfig {
+            ai_provider,
+            opencode_go_key,
+            gemini_key,
+            openrouter_key,
+            ..Default::default()
+        }
     }
 
     #[test]
-    fn ai_provider_explicit_env_overrides_auto_detect() {
+    fn ai_provider_auto_detects_from_keys() {
         assert_eq!(
-            AiProvider::from_env_values("OPENROUTER", "gemini-key", "openrouter-key"),
-            AiProvider::OpenRouter
-        );
-        assert_eq!(
-            AiProvider::from_env_values("  openrouter  ", "gemini-key", "openrouter-key"),
-            AiProvider::OpenRouter
-        );
-        assert_eq!(
-            AiProvider::from_env_values("Gemini", "", "openrouter-key"),
+            AiProvider::from_env_values("", "", "gemini-key", ""),
             AiProvider::Gemini
         );
         assert_eq!(
-            AiProvider::from_env_values("none", "gemini-key", "openrouter-key"),
+            AiProvider::from_env_values("", "", "", "openrouter-key"),
+            AiProvider::OpenRouter
+        );
+        // Gemini vẫn được ưu tiên hơn OpenRouter khi chỉ có hai key này.
+        assert_eq!(
+            AiProvider::from_env_values("", "", "gemini-key", "openrouter-key"),
+            AiProvider::Gemini
+        );
+        assert_eq!(
+            AiProvider::from_env_values("", "", "", ""),
             AiProvider::None
         );
     }
 
     #[test]
+    fn ai_provider_auto_detect_prefers_opencode_go_key() {
+        assert_eq!(
+            AiProvider::from_env_values("", "opencode-go-key", "", ""),
+            AiProvider::OpenCodeGo
+        );
+        assert_eq!(
+            AiProvider::from_env_values("", "opencode-go-key", "gemini-key", "openrouter-key"),
+            AiProvider::OpenCodeGo
+        );
+        // Key toàn khoảng trắng không được coi là đã cấu hình.
+        assert_eq!(
+            AiProvider::from_env_values("", "   ", "gemini-key", ""),
+            AiProvider::Gemini
+        );
+    }
+
+    #[test]
+    fn ai_provider_explicit_env_overrides_auto_detect() {
+        assert_eq!(
+            AiProvider::from_env_values("OPENCODE_GO", "", "gemini-key", "openrouter-key"),
+            AiProvider::OpenCodeGo
+        );
+        assert_eq!(
+            AiProvider::from_env_values(
+                "  opencode_go  ",
+                "opencode-go-key",
+                "gemini-key",
+                "openrouter-key"
+            ),
+            AiProvider::OpenCodeGo
+        );
+        assert_eq!(
+            AiProvider::from_env_values("OPENROUTER", "opencode-go-key", "gemini-key", ""),
+            AiProvider::OpenRouter
+        );
+        assert_eq!(
+            AiProvider::from_env_values("  openrouter  ", "", "gemini-key", "openrouter-key"),
+            AiProvider::OpenRouter
+        );
+        assert_eq!(
+            AiProvider::from_env_values("Gemini", "opencode-go-key", "", "openrouter-key"),
+            AiProvider::Gemini
+        );
+        assert_eq!(
+            AiProvider::from_env_values("none", "opencode-go-key", "gemini-key", "openrouter-key"),
+            AiProvider::None
+        );
+    }
+
+    #[test]
+    fn resolve_ai_settings_for_opencode_go_defaults_and_overrides() {
+        let defaults = DailyScheduler::resolve_ai_settings(ai_env("", "opencode-go-key", "", ""));
+        assert_eq!(defaults.provider, AiProvider::OpenCodeGo);
+        assert_eq!(defaults.api_key, "opencode-go-key");
+        assert_eq!(defaults.api_base, OPENCODE_GO_API_BASE);
+        assert_eq!(defaults.model, DEFAULT_OPENCODE_GO_MODEL);
+
+        let custom = DailyScheduler::resolve_ai_settings(AiEnvConfig {
+            ai_provider: "OPENCODE_GO",
+            opencode_go_key: " opencode-go-key ",
+            opencode_go_base: " https://example.test/v1 ",
+            opencode_go_model: "glm-5.3-flash",
+            ..Default::default()
+        });
+        assert_eq!(custom.provider, AiProvider::OpenCodeGo);
+        assert_eq!(custom.api_key, "opencode-go-key");
+        assert_eq!(custom.api_base, "https://example.test/v1");
+        assert_eq!(custom.model, "glm-5.3-flash");
+    }
+
+    #[test]
+    fn opencode_session_id_uses_utc_date() {
+        let now = DateTime::parse_from_rfc3339("2026-11-10T23:30:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        assert_eq!(
+            DailyScheduler::opencode_session_id(now),
+            "xauusd-macro-2026-11-10"
+        );
+    }
+
+    #[test]
     fn resolve_ai_settings_for_gemini_uses_openai_compatible_base() {
-        let defaults = DailyScheduler::resolve_ai_settings("", "gemini-key", "", "", "");
+        let defaults = DailyScheduler::resolve_ai_settings(ai_env("", "", "gemini-key", ""));
         assert_eq!(defaults.provider, AiProvider::Gemini);
         assert_eq!(defaults.api_key, "gemini-key");
         assert_eq!(defaults.api_base, GEMINI_API_BASE);
         assert_eq!(defaults.model, DEFAULT_GEMINI_MODEL);
 
-        let custom =
-            DailyScheduler::resolve_ai_settings("GEMINI", " gemini-key ", "", "gemini-2.5-pro", "");
+        let custom = DailyScheduler::resolve_ai_settings(AiEnvConfig {
+            ai_provider: "GEMINI",
+            gemini_key: " gemini-key ",
+            gemini_model: "gemini-2.5-pro",
+            ..Default::default()
+        });
         assert_eq!(custom.provider, AiProvider::Gemini);
         assert_eq!(custom.api_key, "gemini-key");
         assert_eq!(custom.model, "gemini-2.5-pro");
@@ -767,26 +907,25 @@ mod tests {
 
     #[test]
     fn resolve_ai_settings_for_openrouter_keeps_legacy_defaults() {
-        let defaults = DailyScheduler::resolve_ai_settings("", "", "openrouter-key", "", "");
+        let defaults = DailyScheduler::resolve_ai_settings(ai_env("", "", "", "openrouter-key"));
         assert_eq!(defaults.provider, AiProvider::OpenRouter);
         assert_eq!(defaults.api_key, "openrouter-key");
         assert_eq!(defaults.api_base, OPENROUTER_API_BASE);
         assert_eq!(defaults.model, "anthropic/claude-3.5-sonnet");
 
-        let custom = DailyScheduler::resolve_ai_settings(
-            "openrouter",
-            "",
-            "openrouter-key",
-            "",
-            "openai/gpt-4o-mini",
-        );
+        let custom = DailyScheduler::resolve_ai_settings(AiEnvConfig {
+            ai_provider: "openrouter",
+            openrouter_key: "openrouter-key",
+            openrouter_model: "openai/gpt-4o-mini",
+            ..Default::default()
+        });
         assert_eq!(custom.provider, AiProvider::OpenRouter);
         assert_eq!(custom.model, "openai/gpt-4o-mini");
     }
 
     #[test]
     fn resolve_ai_settings_for_none_has_no_key_or_endpoint() {
-        let settings = DailyScheduler::resolve_ai_settings("", "", "", "", "");
+        let settings = DailyScheduler::resolve_ai_settings(ai_env("", "", "", ""));
         assert_eq!(settings.provider, AiProvider::None);
         assert!(settings.api_key.is_empty());
         assert!(settings.api_base.is_empty());

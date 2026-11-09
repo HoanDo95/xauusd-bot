@@ -24,6 +24,9 @@ export interface CandlesResponse {
   ema200?: number;
   trendBias?: TrendBias;
   dataSource?: string;
+  priceSource?: string;
+  spotPrice?: number | null;
+  spotBasis?: number | null;
 }
 
 export interface SignalsResponse {
@@ -52,6 +55,9 @@ export interface HealthResponse {
   dailyQuotaReached: boolean;
   dataSource: string;
   dataSourceLabel: string;
+  priceSource?: string;
+  spotPrice?: number | null;
+  spotBasis?: number | null;
   livePrice?: number | null;
   ema50?: number;
   trendBias?: TrendBias;

@@ -106,6 +106,7 @@ interface BotConfig {
   webhook_passphrase: string;
   entry_mode: 'MARKET' | 'LIMIT_RETEST' | 'BREAKOUT';
   broker_price_offset: number;
+  use_auto_spot_basis: boolean;
   max_entry_drift_points: number;
   max_candle_age_secs: number;
 }
@@ -235,6 +236,7 @@ const DEFAULT_CONFIG: BotConfig = {
   webhook_passphrase: process.env.WEBHOOK_PASSPHRASE || '',
   entry_mode: 'MARKET',
   broker_price_offset: 0,
+  use_auto_spot_basis: true,
   max_entry_drift_points: 2.5,
   max_candle_age_secs: 120,
 };
@@ -334,6 +336,10 @@ function normalizeConfig(input: Partial<BotConfig>): BotConfig {
       numeric(input.broker_price_offset, base.broker_price_offset),
       -100,
       100
+    ),
+    use_auto_spot_basis: booleanOr(
+      input.use_auto_spot_basis,
+      base.use_auto_spot_basis
     ),
     max_entry_drift_points: clamp(
       numeric(input.max_entry_drift_points, base.max_entry_drift_points),

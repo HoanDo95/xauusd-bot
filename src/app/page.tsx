@@ -59,6 +59,7 @@ const DEFAULT_CONFIG: BotConfig = {
   data_source: 'BINANCE_PAXG',
   entry_mode: 'MARKET',
   broker_price_offset: 0,
+  use_auto_spot_basis: true,
   max_entry_drift_points: 2.5,
   max_candle_age_secs: 120,
 };
@@ -74,6 +75,8 @@ export default function DashboardPage() {
   const [ema50, setEma50] = useState<number>(0);
   const [trendBias, setTrendBias] = useState<TrendBias>('NEUTRAL');
   const [dataSource, setDataSource] = useState<string>('BINANCE_PAXG');
+  const [spotPrice, setSpotPrice] = useState<number | null>(null);
+  const [spotBasis, setSpotBasis] = useState<number | null>(null);
 
   const [signals, setSignals] = useState<Signal[]>([]);
   const [signalsToday, setSignalsToday] = useState<number>(0);
@@ -100,6 +103,8 @@ export default function DashboardPage() {
         if (typeof data.ema50 === 'number') setEma50(data.ema50);
         if (data.trendBias) setTrendBias(data.trendBias);
         if (data.dataSource) setDataSource(data.dataSource);
+        setSpotPrice(typeof data.spotPrice === 'number' ? data.spotPrice : null);
+        setSpotBasis(typeof data.spotBasis === 'number' ? data.spotBasis : null);
       }
     } catch (err) {
       console.error('Lỗi tải dữ liệu nến:', err);
@@ -279,6 +284,8 @@ export default function DashboardPage() {
           dataSource={dataSource}
           trendBias={trendBias}
           ema50={ema50}
+          spotPrice={spotPrice}
+          spotBasis={spotBasis}
         />
 
         {/* Tab 1: Live Trading Desk & Candlestick Monitor */}

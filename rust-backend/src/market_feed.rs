@@ -65,6 +65,83 @@ impl MarketDataFeed {
         self.twelve_data_api_key.is_some()
     }
 
+    /// Lấy giá spot XAU/USD tham chiếu (không volume) để tự động căn basis PAXG.
+    /// - Ưu tiên TwelveData `/price` nếu có `TWELVEDATA_API_KEY`.
+    /// - Fallback miễn phí `https://api.gold-api.com/price/XAU`.
+    pub async fn fetch_spot_xau_usd(&self) -> Option<f64> {
+        if let Some(api_key) = self.twelve_data_api_key.as_deref() {
+            let url = format!(
+                "https://api.twelvedata.com/price?symbol=XAU/USD&apikey={}",
+                api_key
+            );
+            match self.fetch_spot_price_url(&url, "TwelveData XAU/USD").await {
+                Some(price) => {
+                    info!("🌐 [MarketFeed] Spot XAU/USD (TwelveData): {:.2}", price);
+                    return Some(price);
+                }
+                None => {
+                    warn!("⚠️ TwelveData spot XAU/USD không khả dụng, thử gold-api.com.");
+                }
+            }
+        }
+
+        match self
+            .fetch_spot_price_url("https://api.gold-api.com/price/XAU", "gold-api.com XAU")
+            .await
+        {
+            Some(price) => {
+                info!("🌐 [MarketFeed] Spot XAU/USD (gold-api.com): {:.2}", price);
+                Some(price)
+            }
+            None => {
+                warn!("⚠️ Không lấy được giá spot XAU/USD từ mọi nguồn.");
+                None
+            }
+        }
+    }
+
+    async fn fetch_spot_price_url(&self, url: &str, provider: &str) -> Option<f64> {
+        let response = match self.client.get(url).send().await {
+            Ok(response) => response,
+            Err(err) => {
+                warn!("⚠️ {} spot request lỗi: {}", provider, err);
+                return None;
+            }
+        };
+
+        if !response.status().is_success() {
+            warn!("⚠️ {} spot HTTP {}", provider, response.status());
+            return None;
+        }
+
+        let payload: Value = match response.json().await {
+            Ok(payload) => payload,
+            Err(err) => {
+                warn!("⚠️ {} spot JSON lỗi: {}", provider, err);
+                return None;
+            }
+        };
+
+        let price = Self::parse_spot_price_json(&payload);
+        if price.is_none() {
+            warn!(
+                "⚠️ {} spot payload không có giá hợp lệ: {}",
+                provider, payload
+            );
+        }
+        price
+    }
+
+    /// Parse `{"price":"4111.17"}` hoặc `{"price":4111.17}`; chỉ nhận giá hữu hạn > 0.
+    pub(crate) fn parse_spot_price_json(body: &serde_json::Value) -> Option<f64> {
+        let price = value_to_f64(body.get("price")?)?;
+        if price.is_finite() && price > 0.0 {
+            Some(price)
+        } else {
+            None
+        }
+    }
+
     /// Kéo nến VÀ CHỈ trả về các cây nến đã đóng cửa hoàn tất (anti-repaint).
     /// Wrapper tương thích cho các caller cũ không cần live price.
     pub async fn fetch_closed_gold_candles(
@@ -174,14 +251,23 @@ impl MarketDataFeed {
         } else {
             0.0
         };
+        Self::shift_snapshot_prices(snapshot, offset);
+    }
+
+    /// Dịch toàn bộ OHLC đã đóng + giá live theo basis spot (PAXG → XAU/USD),
+    /// làm tròn 2 chữ số. Basis không hữu hạn hoặc bằng 0 là no-op.
+    pub fn shift_snapshot_prices(snapshot: &mut MarketFeedSnapshot, basis: f64) {
+        if !basis.is_finite() || basis == 0.0 {
+            return;
+        }
 
         for candle in &mut snapshot.candles {
-            candle.open = round2(candle.open + offset);
-            candle.high = round2(candle.high + offset);
-            candle.low = round2(candle.low + offset);
-            candle.close = round2(candle.close + offset);
+            candle.open = round2(candle.open + basis);
+            candle.high = round2(candle.high + basis);
+            candle.low = round2(candle.low + basis);
+            candle.close = round2(candle.close + basis);
         }
-        snapshot.live_price = snapshot.live_price.map(|price| round2(price + offset));
+        snapshot.live_price = snapshot.live_price.map(|price| round2(price + basis));
     }
 
     async fn fetch_binance(
@@ -764,6 +850,89 @@ mod tests {
         assert!((snapshot.candles[0].low - 1997.37).abs() < 1e-9);
         assert!((snapshot.candles[0].close - 2004.71).abs() < 1e-9);
         assert_eq!(snapshot.live_price, Some(2005.7));
+    }
+
+    #[test]
+    fn test_parse_spot_price_accepts_string_and_number() {
+        assert_eq!(
+            MarketDataFeed::parse_spot_price_json(&json!({"price": "4111.17"})),
+            Some(4111.17)
+        );
+        assert_eq!(
+            MarketDataFeed::parse_spot_price_json(&json!({"price": 4111.17})),
+            Some(4111.17)
+        );
+    }
+
+    #[test]
+    fn test_parse_spot_price_rejects_invalid_payloads() {
+        assert_eq!(
+            MarketDataFeed::parse_spot_price_json(&json!({"price": "n/a"})),
+            None
+        );
+        assert_eq!(
+            MarketDataFeed::parse_spot_price_json(&json!({"price": 0})),
+            None
+        );
+        assert_eq!(
+            MarketDataFeed::parse_spot_price_json(&json!({"price": -1.0})),
+            None
+        );
+        assert_eq!(
+            MarketDataFeed::parse_spot_price_json(&json!({"message": "error"})),
+            None
+        );
+    }
+
+    #[test]
+    fn test_shift_snapshot_prices_applies_basis_to_candles_and_live_price() {
+        let mut snapshot = MarketFeedSnapshot {
+            candles: vec![Candle {
+                timestamp: 1,
+                open: 2000.1,
+                high: 2005.55,
+                low: 1995.0,
+                close: 2002.34,
+                volume: 100.0,
+                timeframe: Timeframe::M15,
+            }],
+            source: "BINANCE_PAXG".to_string(),
+            live_price: Some(2003.33),
+        };
+
+        MarketDataFeed::shift_snapshot_prices(&mut snapshot, 5.07);
+
+        assert!((snapshot.candles[0].open - 2005.17).abs() < 1e-9);
+        assert!((snapshot.candles[0].high - 2010.62).abs() < 1e-9);
+        assert!((snapshot.candles[0].low - 2000.07).abs() < 1e-9);
+        assert!((snapshot.candles[0].close - 2007.41).abs() < 1e-9);
+        assert_eq!(snapshot.candles[0].volume, 100.0);
+        assert!((snapshot.live_price.expect("live price") - 2008.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_shift_snapshot_prices_ignores_zero_and_non_finite_basis() {
+        let original = MarketFeedSnapshot {
+            candles: vec![Candle {
+                timestamp: 1,
+                open: 2000.0,
+                high: 2001.0,
+                low: 1999.0,
+                close: 2000.5,
+                volume: 100.0,
+                timeframe: Timeframe::M15,
+            }],
+            source: "BINANCE_PAXG".to_string(),
+            live_price: Some(2000.5),
+        };
+
+        for basis in [0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut snapshot = original.clone();
+            MarketDataFeed::shift_snapshot_prices(&mut snapshot, basis);
+            assert_eq!(snapshot.candles[0].open, original.candles[0].open);
+            assert_eq!(snapshot.candles[0].close, original.candles[0].close);
+            assert_eq!(snapshot.live_price, original.live_price);
+        }
     }
 
     #[test]

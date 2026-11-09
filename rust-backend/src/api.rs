@@ -41,6 +41,10 @@ pub struct AppState {
     pub live_price: Arc<RwLock<Option<f64>>>,
     /// Nguồn dữ liệu thực tế đang hoạt động: TWELVEDATA / BINANCE_PAXG / FALLBACK_SEED.
     pub active_data_source: Arc<RwLock<String>>,
+    /// Giá spot XAU/USD tham chiếu gần nhất (TwelveData/gold-api.com, cache 300s).
+    pub spot_price: Arc<RwLock<Option<f64>>>,
+    /// Basis PAXG → spot đang áp dụng; None = chỉ dùng broker_price_offset thủ công.
+    pub spot_basis: Arc<RwLock<Option<f64>>>,
     /// Dedup key các briefing trước phiên đã gửi (mới nhất ở cuối).
     pub sent_session_alerts: Arc<RwLock<Vec<String>>>,
 }
@@ -121,6 +125,9 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     let candles_count = state.candles.read().await.len();
     let live_price = *state.live_price.read().await;
     let active_data_source = state.active_data_source.read().await.clone();
+    let spot_price = *state.spot_price.read().await;
+    let spot_basis = *state.spot_basis.read().await;
+    let price_source = price_source_label(&active_data_source, spot_basis);
     let now = Utc::now();
 
     let signals_today = PersistentStore::count_live_signals_today(&signals, now);
@@ -148,6 +155,9 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
         "dailyQuotaReached": daily_quota_reached,
         "sessionFilterEnabled": config.session_filter_enabled,
         "dataSource": active_data_source,
+        "priceSource": price_source,
+        "spotPrice": spot_price,
+        "spotBasis": spot_basis,
         "livePrice": live_price,
         "killSwitchActive": !is_market_safe,
         "cron_schedule": "07:00 AM Daily",
@@ -194,6 +204,9 @@ async fn get_recent_candles(State(state): State<AppState>) -> impl IntoResponse 
     let live_price = *state.live_price.read().await;
     let current_price = live_price.unwrap_or(last_closed_price);
     let active_data_source = state.active_data_source.read().await.clone();
+    let spot_price = *state.spot_price.read().await;
+    let spot_basis = *state.spot_basis.read().await;
+    let price_source = price_source_label(&active_data_source, spot_basis);
     let ema50 = GoldMarketAnalyzer::calculate_ema(&candles, 50);
     let ema200 = GoldMarketAnalyzer::calculate_ema(&candles, 200);
     let trend_bias = GoldMarketAnalyzer::detect_ema_trend_bias(&candles);
@@ -207,6 +220,9 @@ async fn get_recent_candles(State(state): State<AppState>) -> impl IntoResponse 
         "currentPrice": current_price,
         "lastClosedPrice": last_closed_price,
         "dataSource": active_data_source,
+        "priceSource": price_source,
+        "spotPrice": spot_price,
+        "spotBasis": spot_basis,
         "ema50": (ema50 * 100.0).round() / 100.0,
         "ema200": (ema200 * 100.0).round() / 100.0,
         "trendBias": trend_bias.as_str()
@@ -813,7 +829,7 @@ async fn get_latest_macro_bias(State(state): State<AppState>) -> impl IntoRespon
 async fn trigger_daily_macro_cron(State(state): State<AppState>) -> impl IntoResponse {
     info!("⚡ [Manual Trigger] Kích hoạt phiên quét Daily Cron 07:00 AM...");
 
-    // AI là tùy chọn; from_env tự chọn Gemini/OpenRouter hoặc EMA fallback.
+    // AI là tùy chọn; from_env tự chọn OpenCode Go/Gemini/OpenRouter hoặc EMA fallback.
     let scheduler = DailyScheduler::from_env();
 
     // 1. Quét lịch tin ForexFactory thật
@@ -1141,6 +1157,15 @@ fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
+/// Nhãn nguồn giá hiển thị cho dashboard: nêu rõ spot reference khi basis đang bật.
+fn price_source_label(active_data_source: &str, spot_basis: Option<f64>) -> String {
+    if spot_basis.is_some() && active_data_source.eq_ignore_ascii_case("BINANCE_PAXG") {
+        "BINANCE_PAXG+TWELVEDATA_SPOT".to_string()
+    } else {
+        active_data_source.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1184,5 +1209,18 @@ mod tests {
         assert_eq!(payload["potentialProfitTp1Usd"], 182.0);
         assert_eq!(payload["potential_profit_tp2_usd"], 273.0);
         assert_eq!(payload["potentialProfitTp2Usd"], 273.0);
+    }
+
+    #[test]
+    fn price_source_labels_spot_calibrated_binance_feed() {
+        assert_eq!(
+            price_source_label("BINANCE_PAXG", Some(5.07)),
+            "BINANCE_PAXG+TWELVEDATA_SPOT"
+        );
+        assert_eq!(price_source_label("BINANCE_PAXG", None), "BINANCE_PAXG");
+        assert_eq!(
+            price_source_label("FALLBACK_SEED", Some(5.07)),
+            "FALLBACK_SEED"
+        );
     }
 }

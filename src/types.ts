@@ -144,6 +144,8 @@ export interface BotConfig {
   entry_mode: EntryMode;
   /** Broker price offset in USD applied to candles and live price. */
   broker_price_offset: number;
+  /** Auto-calibrate Binance PAXG to the TwelveData/gold-api XAU/USD spot reference. */
+  use_auto_spot_basis: boolean;
   /** Maximum allowed live-vs-close drift (USD) before falling back to a limit order. */
   max_entry_drift_points: number;
   /** Reject signals when the closed candle is older than this many seconds. */
