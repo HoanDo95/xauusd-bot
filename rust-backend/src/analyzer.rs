@@ -381,6 +381,7 @@ impl GoldMarketAnalyzer {
                             candle_timestamp: current_candle.timestamp,
                             is_simulated: false,
                             confluence_score,
+                            outcome_at: None,
                         });
                     }
                 }
@@ -494,6 +495,7 @@ impl GoldMarketAnalyzer {
                             candle_timestamp: current_candle.timestamp,
                             is_simulated: false,
                             confluence_score,
+                            outcome_at: None,
                         });
                     }
                 }

@@ -42,6 +42,7 @@ export interface Signal {
   full_rationale: string;
   status: SignalStatus;
   created_at: string;
+  outcome_at?: string | null;
   telegram_message_id?: number | null;
   recommended_lot_size?: number;
   risk_amount_usd?: number;
@@ -113,6 +114,8 @@ export interface BotConfig {
   post_news_buffer_minutes: number;
   macro_bias: MacroBias;
   order_block_filter: boolean;
+  /** Optional TradingView webhook passphrase (empty = not enforced). */
+  webhook_passphrase: string;
   /** Maximum real (non-simulated) signals per calendar day. Default 1 — Sniper mode. */
   max_signals_per_day: number;
   /** Prefer the high-liquidity Vietnam session 13:00 – 23:00 (GMT+7). */

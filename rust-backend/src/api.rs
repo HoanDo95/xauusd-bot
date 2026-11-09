@@ -9,6 +9,7 @@ use crate::risk_manager::PositionSizer;
 use crate::scheduler::DailyScheduler;
 use crate::storage::{PersistentState, PersistentStore};
 use crate::telegram::TelegramNotifier;
+use crate::tracker::{compute_stats, evaluate_active_signals};
 use axum::{
     extract::State,
     http::StatusCode,
@@ -52,12 +53,28 @@ pub async fn persist_state(state: &AppState) -> Result<(), String> {
         .map_err(|err| format!("Không thể hoàn tất tác vụ ghi trạng thái: {}", err))?
 }
 
+/// Cập nhật TP1/TP2/SL cho các tín hiệu đang mở dựa trên nến hiện có.
+async fn evaluate_outcomes(state: &AppState) -> usize {
+    let candles = state.candles.read().await.clone();
+    let updated = {
+        let mut signals = state.signals.write().await;
+        evaluate_active_signals(&mut signals, &candles)
+    };
+    if updated > 0 {
+        if let Err(err) = persist_state(state).await {
+            warn!("⚠️ Không lưu được kết quả TP/SL: {}", err);
+        }
+    }
+    updated
+}
+
 /// Khởi tạo Axum Router với đầy đủ REST Endpoints, TradingView Webhook & Daily Scheduler
 pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_check))
         .route("/api/health", get(health_check))
         .route("/api/signals", get(get_all_signals))
+        .route("/api/stats", get(get_stats))
         .route("/api/candles", get(get_recent_candles))
         .route("/api/candles/webhook", post(receive_candle_webhook))
         // Endpoint nhận TradingView Webhook Alert (cả 2 alias)
@@ -128,14 +145,22 @@ async fn get_all_signals(State(state): State<AppState>) -> impl IntoResponse {
     let signals_today = PersistentStore::count_live_signals_today(&signals, now);
     let daily_quota_reached =
         PersistentStore::has_reached_daily_quota(&signals, config.max_signals_per_day, now);
+    let stats = compute_stats(&signals);
 
     Json(json!({
         "total": signals.len(),
         "signals": signals,
+        "stats": stats,
         "signalsToday": signals_today,
         "maxSignalsPerDay": config.max_signals_per_day,
         "dailyQuotaReached": daily_quota_reached
     }))
+}
+
+/// Hiệu suất tích lũy của các tín hiệu thật (TP1/TP2/SL).
+async fn get_stats(State(state): State<AppState>) -> impl IntoResponse {
+    let signals = state.signals.read().await.clone();
+    Json(compute_stats(&signals))
 }
 
 /// Lấy nến hiện tại phục vụ vẽ biểu đồ + S/R động + EMA trend.
@@ -171,6 +196,19 @@ async fn receive_candle_webhook(
 ) -> impl IntoResponse {
     let config = state.config.read().await.clone();
 
+    if !config.webhook_passphrase.is_empty()
+        && payload.passphrase.as_deref() != Some(config.webhook_passphrase.as_str())
+    {
+        warn!("🔒 [Candle Webhook] Từ chối passphrase không hợp lệ.");
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "status": "unauthorized",
+                "message": "Webhook passphrase không hợp lệ."
+            })),
+        );
+    }
+
     let timeframe = match payload.timeframe.to_uppercase().as_str() {
         "H1" => Timeframe::H1,
         "H4" => Timeframe::H4,
@@ -190,6 +228,7 @@ async fn receive_candle_webhook(
     };
 
     push_candle(&state, new_candle.clone()).await;
+    evaluate_outcomes(&state).await;
 
     if !config.is_active {
         return (
@@ -311,6 +350,20 @@ async fn receive_tradingview_webhook(
     let config = state.config.read().await.clone();
     let now = Utc::now();
 
+    if !config.webhook_passphrase.is_empty()
+        && payload.passphrase.as_deref() != Some(config.webhook_passphrase.as_str())
+    {
+        warn!("🔒 [TradingView Webhook] Từ chối passphrase không hợp lệ.");
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "status": "unauthorized",
+                "action_taken": "DROPPED",
+                "reason": "Webhook passphrase không hợp lệ."
+            })),
+        );
+    }
+
     info!(
         "📥 [TradingView Webhook] Nhận tín hiệu từ {}: action={}, price={:.2}",
         payload.ticker, payload.action, payload.price
@@ -341,6 +394,7 @@ async fn receive_tradingview_webhook(
             timeframe: Timeframe::M15,
         };
         push_candle(&state, candle.clone()).await;
+        evaluate_outcomes(&state).await;
 
         return (
             StatusCode::OK,
@@ -543,6 +597,7 @@ async fn receive_tradingview_webhook(
         candle_timestamp,
         is_simulated: false,
         confluence_score: 90,
+        outcome_at: None,
     };
 
     // Bước 6: Bắn cảnh báo tức thì tới Telegram
@@ -578,6 +633,7 @@ async fn update_config(
     State(state): State<AppState>,
     Json(new_config): Json<BotConfig>,
 ) -> impl IntoResponse {
+    let new_config = new_config.sanitized();
     {
         let mut config = state.config.write().await;
         *config = new_config.clone();
@@ -861,6 +917,7 @@ async fn simulate_setup(
         let mut candles = state.candles.write().await;
         *candles = candles_snapshot.clone();
     }
+    evaluate_outcomes(&state).await;
 
     let detected_signal = GoldMarketAnalyzer::analyze_market(&candles_snapshot, &config);
 

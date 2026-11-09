@@ -1,0 +1,9 @@
+[Unit]
+Description=Backup XAUUSD bot persistent state
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jason/xauusd-bot
+ExecStart=/home/jason/xauusd-bot/scripts/backup-state.sh
+Nice=10

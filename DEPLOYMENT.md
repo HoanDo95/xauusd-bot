@@ -184,3 +184,33 @@ increased"). Therefore `ci.yml` and `build-push.yml` run on the same
 
 Once billing is fixed, switch `runs-on` back to `ubuntu-latest` in
 `ci.yml` and `build-push.yml` to offload builds from the server.
+
+## 12. Daily state backup
+
+`data/bot_state.json` holds config, signal history, quota and dedup state.
+Install the user timer once on the server:
+
+```bash
+cd /home/jason/xauusd-bot
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/xauusd-backup.service deploy/systemd/xauusd-backup.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now xauusd-backup.timer
+systemctl --user start xauusd-backup.service   # test immediately
+ls -lt backups | head
+```
+
+The timer runs daily at 03:15 (randomized ±5 min) and keeps the newest 14
+snapshots. `backups/` is excluded from deploys and git.
+
+## 13. Webhook passphrase
+
+Set `webhook_passphrase` in **Sniper & Risk Config**. When non-empty, every
+TradingView alert must include the same value:
+
+```json
+{"passphrase":"<your-secret>","ticker":"XAUUSD","action":"BUY","price":4080.5}
+```
+
+The dashboard webhook sandbox and Pine Script sample read the same config value.
+Leave it empty to disable the check (not recommended for public endpoints).

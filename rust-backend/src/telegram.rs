@@ -196,6 +196,7 @@ mod tests {
             candle_timestamp: 1,
             is_simulated: false,
             confluence_score: 90,
+            outcome_at: None,
         }
     }
 

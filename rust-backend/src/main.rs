@@ -36,6 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(8080);
     let env_bot_token = std::env::var("TELEGRAM_BOT_TOKEN").unwrap_or_default();
     let env_chat_id = std::env::var("TELEGRAM_CHAT_ID").unwrap_or_default();
+    let env_webhook_passphrase = std::env::var("WEBHOOK_PASSPHRASE").unwrap_or_default();
     let ai_api_key = std::env::var("OPENROUTER_API_KEY")
         .or_else(|_| std::env::var("GEMINI_API_KEY"))
         .unwrap_or_default();
@@ -43,12 +44,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Nạp trạng thái bền vững từ data/bot_state.json
     let store = PersistentStore::new("data/bot_state.json");
     let persisted = store.load();
-    let mut config = persisted.config;
+    let mut config = persisted.config.sanitized();
     if config.telegram_bot_token.trim().is_empty() {
         config.telegram_bot_token = env_bot_token.clone();
     }
     if config.telegram_chat_id.trim().is_empty() {
         config.telegram_chat_id = env_chat_id.clone();
+    }
+    if config.webhook_passphrase.trim().is_empty() {
+        config.webhook_passphrase = env_webhook_passphrase;
     }
 
     // 3. Nguồn dữ liệu thật: Binance PAXGUSDT (mặc định) hoặc TwelveData XAU/USD
@@ -60,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let initial_candles = {
         let fetched = market_feed
-            .fetch_closed_gold_candles(config.timeframe, 120)
+            .fetch_closed_gold_candles(config.timeframe, 300)
             .await;
         if fetched.is_empty() {
             MarketDataFeed::generate_fallback_gold_candles(120, config.timeframe)
@@ -109,10 +113,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let config = scanner_state.config.read().await.clone();
             let fresh_candles = scanner_state
                 .market_feed
-                .fetch_closed_gold_candles(config.timeframe, 120)
+                .fetch_closed_gold_candles(config.timeframe, 300)
                 .await;
             if !fresh_candles.is_empty() {
+                // Cập nhật TP1/TP2/SL cho các tín hiệu đang mở trước khi ghi đè nến.
+                let updated = {
+                    let mut signals = scanner_state.signals.write().await;
+                    gold_signal_bot::tracker::evaluate_active_signals(&mut signals, &fresh_candles)
+                };
                 *scanner_state.candles.write().await = fresh_candles;
+                if updated > 0 {
+                    info!("📈 Đã cập nhật {} tín hiệu theo TP/SL", updated);
+                    if let Err(err) = persist_state(&scanner_state).await {
+                        warn!("⚠️ Không lưu được kết quả TP/SL: {}", err);
+                    }
+                }
             }
 
             // 6.2 Bot đang hoạt động?

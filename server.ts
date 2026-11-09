@@ -95,6 +95,7 @@ interface BotConfig {
   max_signals_per_day: number;
   session_filter_enabled: boolean;
   data_source: 'BINANCE_PAXG' | 'TWELVEDATA';
+  webhook_passphrase: string;
 }
 
 interface DailyMacroReport {
@@ -217,6 +218,7 @@ const DEFAULT_CONFIG: BotConfig = {
   max_signals_per_day: 1,
   session_filter_enabled: true,
   data_source: 'BINANCE_PAXG',
+  webhook_passphrase: process.env.WEBHOOK_PASSPHRASE || '',
 };
 
 function normalizeConfig(input: Partial<BotConfig>): BotConfig {
@@ -288,6 +290,10 @@ function normalizeConfig(input: Partial<BotConfig>): BotConfig {
       base.session_filter_enabled
     ),
     data_source: input.data_source === 'TWELVEDATA' ? 'TWELVEDATA' : 'BINANCE_PAXG',
+    webhook_passphrase:
+      typeof input.webhook_passphrase === 'string'
+        ? input.webhook_passphrase
+        : process.env.WEBHOOK_PASSPHRASE || '',
   };
 }
 
@@ -1611,6 +1617,17 @@ async function startServer() {
     const ticker = String(payload.ticker || 'XAUUSD').toUpperCase();
     const lastCandle = candlesBuffer[candlesBuffer.length - 1];
     const price = numeric(payload.price, lastCandle?.close || 2684.5);
+
+    if (
+      config.webhook_passphrase &&
+      String(payload.passphrase || '') !== config.webhook_passphrase
+    ) {
+      return res.status(401).json({
+        status: 'unauthorized',
+        action_taken: 'DROPPED',
+        reason: 'Webhook passphrase không hợp lệ.',
+      });
+    }
 
     // Candle ingestion is always accepted (it is market data, not a trade).
     if (action === 'CANDLE') {

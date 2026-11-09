@@ -2,6 +2,7 @@ node_modules
 dist
 rust-backend/target
 rust-backend/data
+backups
 .env
 .env.*
 .git

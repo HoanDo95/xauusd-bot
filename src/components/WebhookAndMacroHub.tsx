@@ -51,6 +51,7 @@ export const WebhookAndMacroHub: React.FC<WebhookAndMacroHubProps> = ({
     typeof window !== 'undefined'
       ? `${window.location.origin}/api/webhook/tradingview`
       : '/api/webhook/tradingview';
+  const webhookPassphrase = config.webhook_passphrase || '';
 
   // Fetch initial macro report
   const loadMacroReport = async () => {
@@ -100,7 +101,7 @@ export const WebhookAndMacroHub: React.FC<WebhookAndMacroHubProps> = ({
     setWebhookResponse(null);
     try {
       const payload = {
-        passphrase: 'SECRET_GOLD_QUANT_BOT',
+        passphrase: webhookPassphrase,
         ticker: 'XAUUSD',
         action: webhookAction,
         price: webhookPrice,
@@ -131,9 +132,9 @@ export const WebhookAndMacroHub: React.FC<WebhookAndMacroHubProps> = ({
 strategy("Gold Pinbar & Volume Strategy", overlay=true)
 // Gửi webhook alert khi có tín hiệu
 if (buyCondition)
-    alert('{"passphrase": "SECRET_GOLD_QUANT_BOT", "ticker": "XAUUSD", "action": "BUY", "price": ' + str.tostring(close) + ', "comment": "Bullish Pinbar at Support"}', alert.freq_once_per_bar_close)
+    alert('{"passphrase": "${webhookPassphrase}", "ticker": "XAUUSD", "action": "BUY", "price": ' + str.tostring(close) + ', "comment": "Bullish Pinbar at Support"}', alert.freq_once_per_bar_close)
 if (sellCondition)
-    alert('{"passphrase": "SECRET_GOLD_QUANT_BOT", "ticker": "XAUUSD", "action": "SELL", "price": ' + str.tostring(close) + ', "comment": "Bearish Pinbar at Resistance"}', alert.freq_once_per_bar_close)`;
+    alert('{"passphrase": "${webhookPassphrase}", "ticker": "XAUUSD", "action": "SELL", "price": ' + str.tostring(close) + ', "comment": "Bearish Pinbar at Resistance"}', alert.freq_once_per_bar_close)`;
 
   return (
     <div className="bg-[#12161f] border border-zinc-800 rounded-xl p-5 shadow-lg relative overflow-hidden">

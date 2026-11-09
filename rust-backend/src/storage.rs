@@ -182,6 +182,7 @@ mod tests {
             candle_timestamp: created_at.timestamp_millis(),
             is_simulated,
             confluence_score: 90,
+            outcome_at: None,
         }
     }
 

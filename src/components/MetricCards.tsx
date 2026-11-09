@@ -34,11 +34,30 @@ export const MetricCards: React.FC<Props> = ({
   trendBias,
   ema50,
 }) => {
-  // Statistics calculations
-  const total = signals.length;
-  const wins = signals.filter((s) => s.status === 'Target1Hit' || s.status === 'Target2Hit').length;
-  const winRate = total > 0 ? ((wins / total) * 100).toFixed(1) : '74.2';
-  const activeCount = signals.filter((s) => s.status === 'Active').length;
+  // Statistics calculations — only REAL signals count toward performance.
+  const liveSignals = signals.filter((s) => !s.is_simulated);
+  const closedStatuses = ['Target1Hit', 'Target2Hit', 'StopLossHit', 'Cancelled'];
+  const closedSignals = liveSignals.filter((s) => closedStatuses.includes(s.status));
+  const wins = liveSignals.filter(
+    (s) => s.status === 'Target1Hit' || s.status === 'Target2Hit',
+  ).length;
+  const losses = liveSignals.filter((s) => s.status === 'StopLossHit').length;
+  const closed = closedSignals.length;
+  const winRate = closed > 0 ? ((wins / closed) * 100).toFixed(1) : '—';
+  const activeCount = liveSignals.filter((s) => s.status === 'Active').length;
+
+  const rMultiple = (s: Signal): number => {
+    const risk = Math.abs(s.entry_price - s.stop_loss);
+    if (risk <= 0) return 0;
+    if (s.status === 'Target1Hit') return Math.abs(s.take_profit_1 - s.entry_price) / risk;
+    if (s.status === 'Target2Hit') return Math.abs(s.take_profit_2 - s.entry_price) / risk;
+    if (s.status === 'StopLossHit') return -1;
+    return 0;
+  };
+  const avgR =
+    closed > 0
+      ? (closedSignals.reduce((acc, s) => acc + rMultiple(s), 0) / closed).toFixed(2)
+      : '—';
 
   const maxSignals = Math.max(1, config.max_signals_per_day || 1);
   const quotaReached = signalsToday >= maxSignals;
@@ -94,17 +113,17 @@ export const MetricCards: React.FC<Props> = ({
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {/* Metric 1: Win Rate & Completed Trades */}
         <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-3.5">
-          <div className="text-xs text-neutral-400 font-medium">Algorithmic Win Rate</div>
+          <div className="text-xs text-neutral-400 font-medium">Live Win Rate (Closed Signals)</div>
           <div className="flex items-baseline gap-2 mt-1">
             <span className="text-2xl font-bold font-mono text-emerald-400 tabular-nums">
-              {winRate}%
+              {winRate}{winRate !== '—' ? '%' : ''}
             </span>
             <span className="text-xs text-neutral-500 font-mono">
-              {wins}W · {Math.max(0, total - wins)}L
+              {wins}W · {losses}L · {closed} closed
             </span>
           </div>
           <div className="text-xs text-neutral-500 mt-1">
-            Xác nhận chuẩn tỷ lệ R:R từ 1:2 trở lên
+            Avg R: <span className="text-amber-400 font-mono">{avgR}</span> · Simulation excluded
           </div>
         </div>
 
@@ -116,7 +135,7 @@ export const MetricCards: React.FC<Props> = ({
               {activeCount}
             </span>
             <span className="text-xs text-neutral-500 font-mono">
-              / {total} Total Logged
+              / {liveSignals.length} Live Signals
             </span>
           </div>
           <div className="text-xs text-neutral-500 mt-1">

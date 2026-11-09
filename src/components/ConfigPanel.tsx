@@ -399,6 +399,24 @@ export const ConfigPanel: React.FC<Props> = ({
               />
               <span className="text-[11px] text-neutral-500">ID kênh / nhóm nhận thông báo tín hiệu</span>
             </div>
+
+            <div className="flex flex-col gap-1.5 md:col-span-2">
+              <label className="text-xs font-semibold text-neutral-300">
+                TradingView Webhook Passphrase (tùy chọn)
+              </label>
+              <input
+                type="password"
+                placeholder="Để trống nếu không dùng TradingView Webhook"
+                value={formData.webhook_passphrase}
+                onChange={(e) => setFormData({ ...formData, webhook_passphrase: e.target.value })}
+                className="w-full bg-neutral-950 border border-neutral-800 focus:border-sky-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
+              />
+              <span className="text-[11px] text-neutral-500">
+                Khi đặt passphrase, mọi alert TradingView phải gửi kèm đúng trường
+                <code className="mx-1 text-sky-300">passphrase</code>
+                mới được chấp nhận.
+              </span>
+            </div>
           </div>
 
           {/* Test connection feedback */}

@@ -152,6 +152,9 @@ pub struct Signal {
     /// Điểm hội tụ kỹ thuật 0..=100
     #[serde(default)]
     pub confluence_score: u8,
+    /// Thời điểm chốt trạng thái TP1/TP2/SL (nếu có)
+    #[serde(default)]
+    pub outcome_at: Option<DateTime<Utc>>,
 }
 
 /// Cấu hình tham số bot và quản lý rủi ro
@@ -202,6 +205,9 @@ pub struct BotConfig {
     /// Nguồn dữ liệu giá đang sử dụng: "BINANCE_PAXG" hoặc "TWELVEDATA"
     #[serde(default = "default_data_source")]
     pub data_source: String,
+    /// Mật khẩu bảo vệ webhook TradingView (rỗng = không bắt buộc)
+    #[serde(default)]
+    pub webhook_passphrase: String,
 }
 
 fn default_max_signals_per_day() -> usize {
@@ -236,18 +242,121 @@ impl Default for BotConfig {
             kill_switch_enabled: true,
             pre_news_buffer_minutes: 30,
             post_news_buffer_minutes: 30,
-            macro_bias: "BULLISH".to_string(),
+            macro_bias: "AUTO".to_string(),
             order_block_filter: true,
             max_signals_per_day: default_max_signals_per_day(),
             session_filter_enabled: default_session_filter_enabled(),
             data_source: default_data_source(),
+            webhook_passphrase: String::new(),
         }
+    }
+}
+
+impl BotConfig {
+    /// Chuẩn hóa cấu hình từ Dashboard/API: chặn giá trị NaN, âm hoặc vượt biên.
+    /// Trả về cấu hình an toàn thay vì để engine chạy với tham số nguy hiểm.
+    pub fn sanitized(mut self) -> Self {
+        fn finite_or(value: f64, fallback: f64) -> f64 {
+            if value.is_finite() {
+                value
+            } else {
+                fallback
+            }
+        }
+
+        self.symbol = self.symbol.trim().to_string();
+        if self.symbol.is_empty() {
+            self.symbol = "XAU/USD".to_string();
+        }
+
+        self.min_risk_reward = finite_or(self.min_risk_reward, 2.0).clamp(1.5, 5.0);
+        self.gold_sl_buffer_points = finite_or(self.gold_sl_buffer_points, 8.5).clamp(5.0, 25.0);
+        self.volume_surge_multiplier = finite_or(self.volume_surge_multiplier, 1.5).clamp(1.1, 3.5);
+        self.rejection_wick_ratio = finite_or(self.rejection_wick_ratio, 2.0).clamp(1.5, 4.0);
+        self.lookback_period = self.lookback_period.clamp(15, 100);
+        self.volume_ma_period = self.volume_ma_period.clamp(5, 50);
+        self.account_balance = finite_or(self.account_balance, 10_000.0).max(100.0);
+        self.risk_percentage = finite_or(self.risk_percentage, 1.0).clamp(0.1, 5.0);
+        self.account_leverage = finite_or(self.account_leverage, 100.0).clamp(1.0, 1000.0);
+        self.max_signals_per_day = self.max_signals_per_day.clamp(1, 5);
+        self.pre_news_buffer_minutes = self.pre_news_buffer_minutes.clamp(0, 120);
+        self.post_news_buffer_minutes = self.post_news_buffer_minutes.clamp(0, 120);
+
+        self.macro_bias = match self.macro_bias.trim().to_uppercase().as_str() {
+            "BULLISH" => "BULLISH",
+            "BEARISH" => "BEARISH",
+            "NEUTRAL" => "NEUTRAL",
+            _ => "AUTO",
+        }
+        .to_string();
+
+        self.data_source = match self.data_source.trim().to_uppercase().as_str() {
+            "TWELVEDATA" => "TWELVEDATA",
+            _ => "BINANCE_PAXG",
+        }
+        .to_string();
+
+        self.telegram_bot_token = self.telegram_bot_token.trim().to_string();
+        self.telegram_chat_id = self.telegram_chat_id.trim().to_string();
+        self.webhook_passphrase = self.webhook_passphrase.trim().to_string();
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_clamps_dangerous_values() {
+        let config = BotConfig {
+            risk_percentage: 99.0,
+            gold_sl_buffer_points: 1.0,
+            min_risk_reward: 0.5,
+            max_signals_per_day: 0,
+            account_balance: 10.0,
+            macro_bias: "garbage".to_string(),
+            data_source: "unknown".to_string(),
+            symbol: "  ".to_string(),
+            ..BotConfig::default()
+        }
+        .sanitized();
+
+        assert_eq!(config.risk_percentage, 5.0);
+        assert_eq!(config.gold_sl_buffer_points, 5.0);
+        assert_eq!(config.min_risk_reward, 1.5);
+        assert_eq!(config.max_signals_per_day, 1);
+        assert_eq!(config.account_balance, 100.0);
+        assert_eq!(config.macro_bias, "AUTO");
+        assert_eq!(config.data_source, "BINANCE_PAXG");
+        assert_eq!(config.symbol, "XAU/USD");
+    }
+
+    #[test]
+    fn sanitize_keeps_valid_values() {
+        let config = BotConfig {
+            risk_percentage: 1.5,
+            gold_sl_buffer_points: 20.0,
+            min_risk_reward: 2.0,
+            max_signals_per_day: 1,
+            macro_bias: "AUTO".to_string(),
+            ..BotConfig::default()
+        }
+        .sanitized();
+
+        assert_eq!(config.risk_percentage, 1.5);
+        assert_eq!(config.gold_sl_buffer_points, 20.0);
+        assert_eq!(config.min_risk_reward, 2.0);
+        assert_eq!(config.max_signals_per_day, 1);
     }
 }
 
 /// Dữ liệu đầu vào cho Webhook nhận nến mới từ sàn / TradingView
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewCandleWebhook {
+    /// Mật khẩu bảo vệ webhook (rỗng = không bắt buộc)
+    #[serde(default)]
+    pub passphrase: Option<String>,
     pub symbol: String,
     pub timeframe: String,
     pub open: f64,

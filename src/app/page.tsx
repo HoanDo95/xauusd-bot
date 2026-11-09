@@ -51,6 +51,7 @@ const DEFAULT_CONFIG: BotConfig = {
   post_news_buffer_minutes: 30,
   macro_bias: 'AUTO',
   order_block_filter: true,
+  webhook_passphrase: '',
   max_signals_per_day: 1,
   session_filter_enabled: true,
   data_source: 'BINANCE_PAXG',
@@ -475,6 +476,17 @@ export default function DashboardPage() {
           />
         )}
       </main>
+
+      <footer className="border-t border-neutral-800 bg-neutral-950/60 px-4 py-4 text-center text-[11px] leading-relaxed text-neutral-500">
+        <p>
+          <strong className="text-neutral-400">Risk disclaimer:</strong> Tín hiệu chỉ mang tính
+          tham khảo, không phải lời khuyên đầu tư. Giao dịch vàng có đòn bẩy và rủi ro cao; bạn có
+          thể mất toàn bộ vốn. Luôn tự kiểm chứng và chỉ sử dụng số vốn bạn chấp nhận mất.
+        </p>
+        <p className="mt-1 font-mono text-[10px] text-neutral-600">
+          XAUUSD Bot · Sniper 1 signal/day · Not financial advice
+        </p>
+      </footer>
 
       {/* Detail Modal */}
       <SignalModal
