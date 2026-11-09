@@ -1,11 +1,11 @@
 use crate::analyzer::GoldMarketAnalyzer;
 use crate::market_feed::MarketDataFeed;
 use crate::models::{
-    BotConfig, Candle, DailyMacroReport, NewCandleWebhook, Signal, SignalStatus, SignalType,
-    Timeframe, TradingViewWebhookPayload,
+    BotConfig, Candle, DailyMacroReport, EntryType, NewCandleWebhook, Signal, SignalStatus,
+    SignalType, Timeframe, TradingViewWebhookPayload,
 };
 use crate::news_filter::{MacroBias, NewsFilterService};
-use crate::risk_manager::PositionSizer;
+use crate::risk_manager::{PositionSizeResult, PositionSizer};
 use crate::scheduler::DailyScheduler;
 use crate::storage::{PersistentState, PersistentStore};
 use crate::telegram::TelegramNotifier;
@@ -37,14 +37,22 @@ pub struct AppState {
     pub store: Arc<PersistentStore>,
     /// Nguồn dữ liệu nến thật Binance/TwelveData.
     pub market_feed: Arc<MarketDataFeed>,
+    /// Giá live gần nhất từ nến đang chạy (nếu có).
+    pub live_price: Arc<RwLock<Option<f64>>>,
+    /// Nguồn dữ liệu thực tế đang hoạt động: TWELVEDATA / BINANCE_PAXG / FALLBACK_SEED.
+    pub active_data_source: Arc<RwLock<String>>,
+    /// Dedup key các briefing trước phiên đã gửi (mới nhất ở cuối).
+    pub sent_session_alerts: Arc<RwLock<Vec<String>>>,
 }
 
-/// Ghi snapshot Config + Signals + DailyReport xuống đĩa (không block async runtime).
+/// Ghi snapshot Config + Signals + DailyReport + session alert dedup xuống đĩa
+/// (không block async runtime).
 pub async fn persist_state(state: &AppState) -> Result<(), String> {
     let snapshot = PersistentState {
         config: state.config.read().await.clone(),
         signals: state.signals.read().await.clone(),
         daily_report: state.daily_report.read().await.clone(),
+        sent_session_alerts: state.sent_session_alerts.read().await.clone(),
     };
     let store = state.store.clone();
 
@@ -95,6 +103,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/news-calendar", get(get_news_calendar))
         .route("/api/telegram/test", post(trigger_test_telegram))
         .route("/api/test-telegram", post(trigger_test_telegram))
+        .route("/api/telegram/send-signal", post(send_signal_telegram))
         // Endpoint Daily Cron & Macro Connector
         .route("/api/macro-bias/latest", get(get_latest_macro_bias))
         .route(
@@ -110,6 +119,8 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     let config = state.config.read().await.clone();
     let signals = state.signals.read().await.clone();
     let candles_count = state.candles.read().await.len();
+    let live_price = *state.live_price.read().await;
+    let active_data_source = state.active_data_source.read().await.clone();
     let now = Utc::now();
 
     let signals_today = PersistentStore::count_live_signals_today(&signals, now);
@@ -136,7 +147,8 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
         "maxSignalsPerDay": config.max_signals_per_day,
         "dailyQuotaReached": daily_quota_reached,
         "sessionFilterEnabled": config.session_filter_enabled,
-        "dataSource": config.data_source,
+        "dataSource": active_data_source,
+        "livePrice": live_price,
         "killSwitchActive": !is_market_safe,
         "cron_schedule": "07:00 AM Daily",
         "tradingview_webhook": "/api/webhook/tradingview"
@@ -178,8 +190,12 @@ async fn get_recent_candles(State(state): State<AppState>) -> impl IntoResponse 
         GoldMarketAnalyzer::detect_dynamic_sr_zones(&candles, config.lookback_period.max(5), 2.5);
     let volume_ma =
         GoldMarketAnalyzer::calculate_volume_ma(&candles, config.volume_ma_period.max(1));
-    let current_price = candles.last().map(|candle| candle.close).unwrap_or(0.0);
+    let last_closed_price = candles.last().map(|candle| candle.close).unwrap_or(0.0);
+    let live_price = *state.live_price.read().await;
+    let current_price = live_price.unwrap_or(last_closed_price);
+    let active_data_source = state.active_data_source.read().await.clone();
     let ema50 = GoldMarketAnalyzer::calculate_ema(&candles, 50);
+    let ema200 = GoldMarketAnalyzer::calculate_ema(&candles, 200);
     let trend_bias = GoldMarketAnalyzer::detect_ema_trend_bias(&candles);
 
     Json(json!({
@@ -189,7 +205,10 @@ async fn get_recent_candles(State(state): State<AppState>) -> impl IntoResponse 
         "resistances": resistances,
         "volumeMA": (volume_ma * 100.0).round() / 100.0,
         "currentPrice": current_price,
+        "lastClosedPrice": last_closed_price,
+        "dataSource": active_data_source,
         "ema50": (ema50 * 100.0).round() / 100.0,
+        "ema200": (ema200 * 100.0).round() / 100.0,
         "trendBias": trend_bias.as_str()
     }))
 }
@@ -604,6 +623,12 @@ async fn receive_tradingview_webhook(
         is_simulated: false,
         confluence_score: 90,
         outcome_at: None,
+        entry_type: EntryType::Market,
+        candle_close_price: entry_price,
+        live_market_price: Some(entry_price),
+        retest_limit_price: None,
+        data_source: config.data_source.clone(),
+        is_entry_filled: true,
     };
 
     // Bước 6: Bắn cảnh báo tức thì tới Telegram
@@ -692,19 +717,41 @@ struct CalculateLotRequest {
     leverage: Option<f64>,
 }
 
+/// Giá mặc định cho calculator: ưu tiên live price, sau đó giá đóng nến gần nhất.
+fn default_current_price(live_price: Option<f64>, last_closed_price: Option<f64>) -> f64 {
+    live_price
+        .filter(|price| *price > 0.0)
+        .or(last_closed_price)
+        .unwrap_or(2684.50)
+}
+
+/// Response song ngữ snake_case (Rust/legacy) + camelCase (dashboard `src/lib/api.ts`).
+fn calculate_lot_response(result: &PositionSizeResult) -> serde_json::Value {
+    json!({
+        "lot_size": result.lot_size,
+        "risk_amount_usd": result.risk_amount_usd,
+        "potential_profit_tp1_usd": result.potential_profit_tp1_usd,
+        "potential_profit_tp2_usd": result.potential_profit_tp2_usd,
+        "estimated_margin_usd": result.estimated_margin_usd,
+        "risk_assessment": result.risk_assessment,
+        "lotSize": result.lot_size,
+        "riskAmountUsd": result.risk_amount_usd,
+        "potentialProfitTp1Usd": result.potential_profit_tp1_usd,
+        "potentialProfitTp2Usd": result.potential_profit_tp2_usd,
+        "estimatedMarginUsd": result.estimated_margin_usd,
+        "riskAssessment": result.risk_assessment,
+    })
+}
+
 /// Tính Lot Size trực tiếp từ PositionSizer (Rust) cho Dashboard.
 async fn calculate_lot(
     State(state): State<AppState>,
     Json(payload): Json<CalculateLotRequest>,
 ) -> impl IntoResponse {
     let config = state.config.read().await.clone();
-    let default_price = state
-        .candles
-        .read()
-        .await
-        .last()
-        .map(|candle| candle.close)
-        .unwrap_or(2684.50);
+    let live_price = *state.live_price.read().await;
+    let last_closed_price = state.candles.read().await.last().map(|candle| candle.close);
+    let default_price = default_current_price(live_price, last_closed_price);
 
     let balance = payload.account_balance.unwrap_or(config.account_balance);
     let risk_pct = payload.risk_percentage.unwrap_or(config.risk_percentage);
@@ -717,7 +764,7 @@ async fn calculate_lot(
     let result =
         PositionSizer::calculate_lot_size(balance, risk_pct, sl, tp1, tp2, current_price, leverage);
 
-    Json(result)
+    Json(calculate_lot_response(&result))
 }
 
 /// Lịch tin kinh tế + trạng thái Kill Switch đồng bộ với Frontend.
@@ -766,10 +813,8 @@ async fn get_latest_macro_bias(State(state): State<AppState>) -> impl IntoRespon
 async fn trigger_daily_macro_cron(State(state): State<AppState>) -> impl IntoResponse {
     info!("⚡ [Manual Trigger] Kích hoạt phiên quét Daily Cron 07:00 AM...");
 
-    let ai_key = std::env::var("OPENROUTER_API_KEY")
-        .or_else(|_| std::env::var("GEMINI_API_KEY"))
-        .unwrap_or_default();
-    let scheduler = DailyScheduler::new(ai_key, None);
+    // AI là tùy chọn; from_env tự chọn Gemini/OpenRouter hoặc EMA fallback.
+    let scheduler = DailyScheduler::from_env();
 
     // 1. Quét lịch tin ForexFactory thật
     let events = scheduler.fetch_daily_economic_events().await;
@@ -800,11 +845,13 @@ async fn trigger_daily_macro_cron(State(state): State<AppState>) -> impl IntoRes
         })
         .collect();
 
-    // 3. Đồng bộ vào config & AppState rồi lưu đĩa
-    {
-        let mut cfg = state.config.write().await;
-        cfg.macro_bias = report.macro_bias.as_str().to_string();
-    }
+    // 3. Chỉ cập nhật daily_report để hiển thị. KHÔNG ghi đè config.macro_bias:
+    // bias báo cáo là tham khảo; AUTO phải giữ nguyên để EMA50/200 chạy động.
+    info!(
+        "🤖 [Manual Trigger] Nguồn báo cáo: {} | bias tư vấn: {} (config.macro_bias giữ nguyên).",
+        scheduler.report_source(),
+        report.macro_bias.as_str()
+    );
     {
         let mut rep_lock = state.daily_report.write().await;
         *rep_lock = Some(report.clone());
@@ -919,13 +966,19 @@ async fn simulate_setup(
     if candles_snapshot.len() > 500 {
         candles_snapshot.remove(0);
     }
-    {
-        let mut candles = state.candles.write().await;
-        *candles = candles_snapshot.clone();
-    }
-    evaluate_outcomes(&state).await;
 
-    let detected_signal = GoldMarketAnalyzer::analyze_market(&candles_snapshot, &config);
+    // Simulation dùng snapshot cục bộ: KHÔNG ghi nến giả vào state.candles và
+    // KHÔNG đánh giá outcome của các tín hiệu thật bằng dữ liệu giả.
+    let sim_config = BotConfig {
+        macro_bias: "NEUTRAL".to_string(),
+        ..config
+    };
+    let detected_signal = GoldMarketAnalyzer::analyze_market_with_live_price(
+        &candles_snapshot,
+        &sim_config,
+        Some(new_candle.close),
+        now_ms,
+    );
 
     if let Some(mut signal) = detected_signal {
         signal.is_simulated = true;
@@ -960,7 +1013,7 @@ async fn simulate_setup(
             "status": "candle_added",
             "is_simulated": true,
             "candle": new_candle,
-            "message": "Nến mới đã thêm. Chưa hội tụ đủ điều kiện Pinbar + Volume tại vùng cản."
+            "message": "Đã phân tích setup trên snapshot tạm. Chưa hội tụ đủ điều kiện Pinbar + Volume tại vùng cản."
         })),
     )
 }
@@ -1013,6 +1066,69 @@ async fn trigger_test_telegram(
     }
 }
 
+/// Gửi một tín hiệu cụ thể lên Telegram (nút "View Telegram Alert" trên Dashboard).
+/// Chấp nhận cả payload `{ signal, token, chatId }` và raw Signal JSON.
+async fn send_signal_telegram(
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let signal_value = payload
+        .get("signal")
+        .cloned()
+        .unwrap_or_else(|| payload.clone());
+
+    let signal: Signal = match serde_json::from_value(signal_value) {
+        Ok(signal) => signal,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "status": "error",
+                    "message": format!("Signal JSON không hợp lệ: {}", err)
+                })),
+            )
+        }
+    };
+
+    let config = state.config.read().await.clone();
+    let token = payload
+        .get("token")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&config.telegram_bot_token)
+        .to_string();
+    let chat_id = payload
+        .get("chatId")
+        .or_else(|| payload.get("chat_id"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&config.telegram_chat_id)
+        .to_string();
+
+    let notifier = if token == config.telegram_bot_token && chat_id == config.telegram_chat_id {
+        state.telegram.read().await.clone()
+    } else {
+        TelegramNotifier::new(token, chat_id)
+    };
+
+    match notifier.send_signal_alert(&signal).await {
+        Ok(message_id) => (
+            StatusCode::OK,
+            Json(json!({
+                "status": "success",
+                "messageId": message_id
+            })),
+        ),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "status": "error",
+                "message": err
+            })),
+        ),
+    }
+}
+
 async fn push_candle(state: &AppState, candle: Candle) {
     let mut candles = state.candles.write().await;
     candles.push(candle);
@@ -1023,4 +1139,50 @@ async fn push_candle(state: &AppState, candle: Candle) {
 
 fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_price_prefers_live_then_last_close() {
+        assert_eq!(default_current_price(Some(2690.5), Some(2680.0)), 2690.5);
+        assert_eq!(default_current_price(None, Some(2680.0)), 2680.0);
+        assert_eq!(default_current_price(Some(0.0), Some(2680.0)), 2680.0);
+        assert_eq!(default_current_price(None, None), 2684.50);
+    }
+
+    #[test]
+    fn calculate_lot_response_exposes_snake_and_camel_case_keys() {
+        let result =
+            PositionSizer::calculate_lot_size(10000.0, 1.0, 13.0, 26.0, 39.0, 2680.0, 100.0);
+        let payload = calculate_lot_response(&result);
+
+        for key in [
+            "lot_size",
+            "risk_amount_usd",
+            "potential_profit_tp1_usd",
+            "potential_profit_tp2_usd",
+            "estimated_margin_usd",
+            "risk_assessment",
+            "lotSize",
+            "riskAmountUsd",
+            "potentialProfitTp1Usd",
+            "potentialProfitTp2Usd",
+            "estimatedMarginUsd",
+            "riskAssessment",
+        ] {
+            assert!(payload.get(key).is_some(), "missing key: {}", key);
+        }
+
+        assert_eq!(payload["lot_size"], 0.07);
+        assert_eq!(payload["lotSize"], 0.07);
+        assert_eq!(payload["risk_amount_usd"], 91.0);
+        assert_eq!(payload["riskAmountUsd"], 91.0);
+        assert_eq!(payload["potential_profit_tp1_usd"], 182.0);
+        assert_eq!(payload["potentialProfitTp1Usd"], 182.0);
+        assert_eq!(payload["potential_profit_tp2_usd"], 273.0);
+        assert_eq!(payload["potentialProfitTp2Usd"], 273.0);
+    }
 }

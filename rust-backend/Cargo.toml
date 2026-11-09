@@ -18,6 +18,7 @@ serde_json = "1.0"
 
 # Time & Utilities
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 dotenvy = "0.15"
 
 # Tracing & Logging

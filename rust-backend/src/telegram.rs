@@ -1,4 +1,5 @@
-use crate::models::{Signal, SignalStatus, SignalType};
+use crate::models::{EntryType, Signal, SignalStatus, SignalType, SupportResistanceZone};
+use crate::session_alerts::SessionBriefing;
 use reqwest::Client;
 use serde_json::json;
 use tracing::{error, info};
@@ -40,6 +41,24 @@ impl TelegramNotifier {
         };
 
         let symbol = Self::escape_html(&signal.symbol);
+        let entry_label = signal.entry_type.as_str();
+        let data_source = Self::escape_html(&signal.data_source);
+        let retest_line = signal
+            .retest_limit_price
+            .map(|price| format!("🔁 <b>Vùng Limit Retest:</b> <code>${:.2}</code>\n", price))
+            .unwrap_or_default();
+        let fill_line = match signal.entry_type {
+            EntryType::Limit | EntryType::Breakout => format!(
+                "{} <b>Trạng thái khớp:</b> {}\n",
+                if signal.is_entry_filled { "✅" } else { "⏳" },
+                if signal.is_entry_filled {
+                    "FILLED"
+                } else {
+                    "PENDING"
+                }
+            ),
+            EntryType::Market => String::new(),
+        };
         let price_action = Self::escape_html(&signal.price_action_notes);
         let volume_analysis = Self::escape_html(&signal.volume_analysis_notes);
         let rationale = Self::escape_html(&signal.full_rationale);
@@ -49,7 +68,11 @@ impl TelegramNotifier {
             ━━━━━━━━━━━━━━━━━━━━━━\n\
             📊 <b>Lệnh:</b> {} <code>{}</code>\n\
             ⏱ <b>Khung:</b> <code>{}</code>\n\
-            💵 <b>Entry:</b> <code>${:.2}</code>\n\
+            💵 <b>Entry ({}):</b> <code>${:.2}</code>\n\
+            🕯 <b>Giá đóng nến Pinbar:</b> <code>${:.2}</code>\n\
+            {}\
+            📡 <b>Nguồn giá:</b> <code>{}</code>\n\
+            {}\
             🎯 <b>Take Profit 1 (1:2):</b> <code>${:.2}</code> (+{:.1} pts | +${:.2})\n\
             🚀 <b>Take Profit 2 (1:3):</b> <code>${:.2}</code> (+{:.1} pts | +${:.2})\n\
             🛑 <b>Stop Loss:</b> <code>${:.2}</code> (-{:.1} pts | -${:.2})\n\
@@ -67,7 +90,12 @@ impl TelegramNotifier {
             action_icon,
             action_text,
             signal.timeframe,
+            entry_label,
             signal.entry_price,
+            signal.candle_close_price,
+            retest_line,
+            data_source,
+            fill_line,
             signal.take_profit_1,
             signal.reward_points_tp1,
             signal.potential_profit_tp1_usd,
@@ -124,6 +152,125 @@ impl TelegramNotifier {
             }
             Err(err) => {
                 error!("❌ Không thể kết nối tới Telegram API: {}", err);
+                Err(format!("Network Error: {}", err))
+            }
+        }
+    }
+
+    /// Định dạng briefing thông tin trước phiên Âu/Mỹ (không phải tín hiệu vào lệnh).
+    pub fn format_session_alert(briefing: &SessionBriefing) -> String {
+        let session_name = Self::escape_html(briefing.session.display_name());
+        let lead_label = if briefing.lead_minutes == 60 {
+            "1 GIỜ".to_string()
+        } else {
+            format!("{} PHÚT", briefing.lead_minutes)
+        };
+
+        let data_source = Self::escape_html(&briefing.data_source);
+        let open_local = Self::escape_html(&briefing.open_local_label);
+        let open_vn = Self::escape_html(&briefing.open_vn_label);
+        let trend = Self::escape_html(&briefing.trend_bias.to_string());
+
+        let support = Self::format_session_zone(briefing.nearest_support.as_ref());
+        let resistance = Self::format_session_zone(briefing.nearest_resistance.as_ref());
+
+        let events_text = if briefing.upcoming_events.is_empty() {
+            "Không có tin đỏ trong 12h tới".to_string()
+        } else {
+            briefing
+                .upcoming_events
+                .iter()
+                .map(|event| {
+                    format!(
+                        "• <b>{}</b> — {} UTC",
+                        Self::escape_html(&event.title),
+                        event.scheduled_time.format("%d/%m %H:%M")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        format!(
+            "🌍 <b>[PRE-SESSION BRIEFING] {} TRƯỚC {}</b>\n\
+            ━━━━━━━━━━━━━━━━━━━━━━\n\
+            🕒 <b>Mở phiên (local):</b> <code>{}</code>\n\
+            🇻🇳 <b>Giờ Việt Nam:</b> <code>{}</code>\n\
+            💵 <b>Giá hiện tại:</b> <code>${:.2}</code> | 📡 <code>{}</code>\n\
+            📈 <b>EMA50:</b> <code>${:.2}</code> | <b>EMA200:</b> <code>${:.2}</code>\n\
+            🧭 <b>Xu hướng:</b> {}\n\
+            🟢 <b>Hỗ trợ gần nhất:</b> {}\n\
+            🔴 <b>Kháng cự gần nhất:</b> {}\n\
+            📅 <b>Tin High-Impact USD 12h tới:</b>\n\
+            {}\n\
+            🎯 <b>Quota hôm nay:</b> <code>{}/{}</code> lệnh thật\n\
+            ━━━━━━━━━━━━━━━━━━━━━━\n\
+            ⚠️ <i>Đây chỉ là briefing tham khảo trước phiên, KHÔNG phải lệnh vào trực tiếp. Hãy chờ tín hiệu Sniper từ bot.</i>\n\
+            ⚡ <i>Engine: Rust Gold Signal Bot v1.0 (Tokio/Axum)</i>",
+            lead_label,
+            session_name,
+            open_local,
+            open_vn,
+            briefing.current_price,
+            data_source,
+            briefing.ema50,
+            briefing.ema200,
+            trend,
+            support,
+            resistance,
+            events_text,
+            briefing.signals_today,
+            briefing.max_signals_per_day
+        )
+    }
+
+    fn format_session_zone(zone: Option<&SupportResistanceZone>) -> String {
+        match zone {
+            Some(zone) => format!("${:.2} ({} lần chạm)", zone.price, zone.touch_count),
+            None => "Chưa xác định".to_string(),
+        }
+    }
+
+    /// Gửi briefing trước phiên tới Telegram. Token/Chat trống = dry-run thành công.
+    pub async fn send_session_alert(&self, briefing: &SessionBriefing) -> Result<i64, String> {
+        if self.bot_token.is_empty() || self.chat_id.is_empty() {
+            info!(
+                "⚠️ [Telegram Simulator] Session briefing {} (chưa cấu hình token)",
+                briefing.dedup_key
+            );
+            return Ok(1001);
+        }
+
+        let message_text = Self::format_session_alert(briefing);
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
+        let payload = json!({
+            "chat_id": self.chat_id,
+            "text": message_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true
+        });
+
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+                    let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
+                    info!(
+                        "✅ Đã gửi session briefing {} tới Telegram! Message ID: {}",
+                        briefing.dedup_key, msg_id
+                    );
+                    Ok(msg_id)
+                } else {
+                    let err_text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Lỗi không xác định".into());
+                    error!("❌ Telegram session briefing API lỗi: {}", err_text);
+                    Err(format!("Telegram API Error: {}", err_text))
+                }
+            }
+            Err(err) => {
+                error!("❌ Không thể gửi session briefing tới Telegram: {}", err);
                 Err(format!("Network Error: {}", err))
             }
         }
@@ -186,6 +333,10 @@ impl TelegramNotifier {
 
     /// Gửi thông báo TP1/TP2/SL khi trạng thái tín hiệu thay đổi.
     pub async fn send_outcome_alert(&self, signal: &Signal) -> Result<i64, String> {
+        if signal.status == SignalStatus::Active {
+            // Chỉ cập nhật trạng thái khớp lệnh Limit/Breakout, không spam Telegram.
+            return Ok(1001);
+        }
         if self.bot_token.is_empty() || self.chat_id.is_empty() {
             info!(
                 "⚠️ [Telegram Simulator] Outcome {} (chưa cấu hình token)",
@@ -261,8 +412,10 @@ impl TelegramNotifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{SignalStatus, Timeframe};
-    use chrono::Utc;
+    use crate::models::{EconomicEvent, EntryType, MacroBias, SignalStatus, Timeframe, ZoneType};
+    use crate::news_filter::ImpactLevel;
+    use crate::session_alerts::TradingSession;
+    use chrono::{Duration, Utc};
 
     fn sample_signal() -> Signal {
         Signal {
@@ -294,6 +447,12 @@ mod tests {
             is_simulated: false,
             confluence_score: 90,
             outcome_at: None,
+            entry_type: EntryType::Market,
+            candle_close_price: 2684.50,
+            live_market_price: Some(2684.50),
+            retest_limit_price: Some(2680.00),
+            data_source: "TWELVEDATA".to_string(),
+            is_entry_filled: true,
         }
     }
 
@@ -323,6 +482,7 @@ mod tests {
         let mut signal = sample_signal();
         signal.symbol = "XAU<USD>&".to_string();
         signal.price_action_notes = "break <script> & test".to_string();
+        signal.data_source = "SRC<&>".to_string();
 
         let message = TelegramNotifier::format_signal_message(&signal);
 
@@ -330,5 +490,119 @@ mod tests {
         assert!(!message.contains("<script>"));
         assert!(message.contains("&lt;script&gt;"));
         assert!(message.contains("&amp; test"));
+        assert!(message.contains("SRC&lt;&amp;&gt;"));
+        assert!(!message.contains("SRC<&>"));
+    }
+
+    #[test]
+    fn format_signal_message_includes_entry_type_and_source() {
+        let mut signal = sample_signal();
+        signal.entry_type = EntryType::Limit;
+        signal.candle_close_price = 2684.50;
+        signal.live_market_price = Some(2686.00);
+        signal.retest_limit_price = Some(2680.00);
+        signal.is_entry_filled = false;
+        signal.data_source = "BINANCE_PAXG".to_string();
+
+        let message = TelegramNotifier::format_signal_message(&signal);
+
+        assert!(message.contains("Entry (LIMIT):"));
+        assert!(message.contains("$2684.50"));
+        assert!(message.contains("Giá đóng nến Pinbar:"));
+        assert!(message.contains("Vùng Limit Retest:"));
+        assert!(message.contains("$2680.00"));
+        assert!(message.contains("Nguồn giá:"));
+        assert!(message.contains("BINANCE_PAXG"));
+        assert!(message.contains("Trạng thái khớp:"));
+        assert!(message.contains("PENDING"));
+        assert!(!message.contains("<script>"));
+    }
+
+    #[test]
+    fn format_signal_message_market_entry_hides_pending_status() {
+        let signal = sample_signal();
+        let message = TelegramNotifier::format_signal_message(&signal);
+
+        assert!(message.contains("Entry (MARKET):"));
+        assert!(!message.contains("Trạng thái khớp:"));
+    }
+
+    fn sample_session_briefing() -> SessionBriefing {
+        SessionBriefing {
+            session: TradingSession::London,
+            dedup_key: "SESSION_LONDON_2026-11-09".to_string(),
+            open_local_label: "08:00 Europe/London (GMT)".to_string(),
+            open_vn_label: "15:00 VN (UTC+7)".to_string(),
+            lead_minutes: 60,
+            current_price: 2684.50,
+            data_source: "SRC<&>".to_string(),
+            ema50: 2678.20,
+            ema200: 2650.90,
+            trend_bias: MacroBias::Bullish,
+            nearest_support: Some(SupportResistanceZone {
+                level_type: ZoneType::Support,
+                price: 2670.00,
+                min_price: 2668.00,
+                max_price: 2672.00,
+                touch_count: 3,
+                timeframe: Timeframe::M15,
+                strength_score: 0.75,
+            }),
+            nearest_resistance: Some(SupportResistanceZone {
+                level_type: ZoneType::Resistance,
+                price: 2695.00,
+                min_price: 2693.00,
+                max_price: 2697.00,
+                touch_count: 2,
+                timeframe: Timeframe::M15,
+                strength_score: 0.5,
+            }),
+            upcoming_events: vec![EconomicEvent {
+                id: "EVT-CPI".to_string(),
+                title: "US <CPI> & <script>".to_string(),
+                currency: "USD".to_string(),
+                impact: ImpactLevel::High,
+                scheduled_time: Utc::now() + Duration::hours(2),
+                forecast: Some("0.3%".to_string()),
+                previous: Some("0.2%".to_string()),
+                actual: None,
+            }],
+            signals_today: 1,
+            max_signals_per_day: 1,
+        }
+    }
+
+    #[test]
+    fn format_session_alert_escapes_dynamic_fields() {
+        let briefing = sample_session_briefing();
+        let message = TelegramNotifier::format_session_alert(&briefing);
+
+        assert!(message.contains("PRE-SESSION BRIEFING] 1 GIỜ TRƯỚC PHIÊN ÂU (LONDON)"));
+        assert!(message.contains("08:00 Europe/London (GMT)"));
+        assert!(message.contains("15:00 VN (UTC+7)"));
+        assert!(message.contains("$2684.50"));
+        assert!(message.contains("SRC&lt;&amp;&gt;"));
+        assert!(message.contains("US &lt;CPI&gt; &amp; &lt;script&gt;"));
+        assert!(message.contains("KHÔNG phải lệnh vào trực tiếp"));
+        assert!(!message.contains("<script>"));
+
+        // Sau khi bỏ các thẻ HTML định dạng hợp lệ, không còn '<' thô nào.
+        let stripped = message
+            .replace("<b>", "")
+            .replace("</b>", "")
+            .replace("<i>", "")
+            .replace("</i>", "")
+            .replace("<code>", "")
+            .replace("</code>", "");
+        assert!(!stripped.contains('<'));
+    }
+
+    #[test]
+    fn format_session_alert_shows_empty_news_message() {
+        let mut briefing = sample_session_briefing();
+        briefing.upcoming_events.clear();
+
+        let message = TelegramNotifier::format_session_alert(&briefing);
+        assert!(message.contains("Không có tin đỏ trong 12h tới"));
     }
 }

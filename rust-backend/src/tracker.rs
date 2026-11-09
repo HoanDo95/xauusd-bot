@@ -1,4 +1,4 @@
-use crate::models::{Candle, Signal, SignalStatus, SignalType};
+use crate::models::{Candle, EntryType, Signal, SignalStatus, SignalType};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +36,8 @@ fn round2(value: f64) -> f64 {
 /// - Sau khi đã chạm TP1, nếu sau đó chạm SL thì giữ TP1Hit (đã chốt lời),
 ///   nhưng nếu chạm TP2 trước thì nâng lên TP2Hit.
 pub fn evaluate_active_signals(signals: &mut [Signal], candles: &[Candle]) -> Vec<Signal> {
+    const MAX_FILL_CANDLES: usize = 8;
+
     if candles.is_empty() {
         return Vec::new();
     }
@@ -58,8 +60,45 @@ pub fn evaluate_active_signals(signals: &mut [Signal], candles: &[Candle]) -> Ve
 
         let mut status = signal.status;
         let mut changed = false;
+        let mut filled = signal.is_entry_filled;
 
-        for candle in candles.iter().filter(|candle| candle.timestamp > cutoff) {
+        for (idx, candle) in candles
+            .iter()
+            .filter(|candle| candle.timestamp > cutoff)
+            .enumerate()
+        {
+            // Lệnh Limit/Breakout chưa khớp: chờ giá chạm entry.
+            if !filled {
+                let filled_now = match signal.entry_type {
+                    EntryType::Market => true,
+                    EntryType::Limit => match signal.signal_type {
+                        SignalType::Buy => candle.low <= signal.entry_price,
+                        SignalType::Sell => candle.high >= signal.entry_price,
+                    },
+                    EntryType::Breakout => match signal.signal_type {
+                        SignalType::Buy => candle.high >= signal.entry_price,
+                        SignalType::Sell => candle.low <= signal.entry_price,
+                    },
+                };
+
+                if filled_now {
+                    filled = true;
+                    signal.is_entry_filled = true;
+                    changed = true;
+                    // Bỏ qua cây nến khớp lệnh để tránh đánh giá TP/SL mơ hồ trong cùng nến.
+                    continue;
+                }
+
+                if idx + 1 >= MAX_FILL_CANDLES {
+                    if status == SignalStatus::Active {
+                        status = SignalStatus::Cancelled;
+                        changed = true;
+                    }
+                    break;
+                }
+                continue;
+            }
+
             match signal.signal_type {
                 SignalType::Buy => {
                     let hit_sl = candle.low <= signal.stop_loss;
@@ -129,7 +168,9 @@ pub fn evaluate_active_signals(signals: &mut [Signal], candles: &[Candle]) -> Ve
 
         if changed {
             signal.status = status;
-            signal.outcome_at = Some(Utc::now());
+            if status != SignalStatus::Active {
+                signal.outcome_at = Some(Utc::now());
+            }
             updates.push(signal.clone());
         }
     }
@@ -227,7 +268,7 @@ pub fn compute_stats(signals: &[Signal]) -> SignalStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::Timeframe;
+    use crate::models::{EntryType, Timeframe};
     use chrono::TimeZone;
 
     fn signal(
@@ -270,6 +311,12 @@ mod tests {
             is_simulated: false,
             confluence_score: 90,
             outcome_at: None,
+            entry_type: EntryType::Market,
+            candle_close_price: entry,
+            live_market_price: None,
+            retest_limit_price: None,
+            data_source: "BINANCE_PAXG".to_string(),
+            is_entry_filled: true,
         }
     }
 
@@ -339,6 +386,59 @@ mod tests {
 
         assert_eq!(updates.len(), 0);
         assert_eq!(signals[0].status, SignalStatus::Active);
+    }
+
+    #[test]
+    fn limit_buy_waits_for_fill_before_tp1() {
+        let mut signals = vec![signal(SignalType::Buy, 99.0, 95.0, 109.0, 114.0, 1)];
+        signals[0].entry_type = EntryType::Limit;
+        signals[0].is_entry_filled = false;
+
+        let candles = vec![
+            candle(2, 100.0, 101.0, 100.0, 101.0), // chưa chạm entry 99
+            candle(3, 100.0, 102.0, 98.0, 101.0),  // khớp limit tại 99
+            candle(4, 101.0, 110.0, 100.0, 109.0), // TP1
+        ];
+
+        let updates = evaluate_active_signals(&mut signals, &candles);
+
+        assert!(signals[0].is_entry_filled);
+        assert_eq!(signals[0].status, SignalStatus::Target1Hit);
+        assert_eq!(updates.len(), 1); // one final status update (fill + TP1 in same pass)
+    }
+
+    #[test]
+    fn limit_buy_cancels_after_eight_unfilled_candles() {
+        let mut signals = vec![signal(SignalType::Buy, 99.0, 95.0, 109.0, 114.0, 1)];
+        signals[0].entry_type = EntryType::Limit;
+        signals[0].is_entry_filled = false;
+
+        let candles: Vec<Candle> = (2..=10)
+            .map(|timestamp| candle(timestamp, 100.0, 101.0, 100.0, 100.5))
+            .collect();
+
+        evaluate_active_signals(&mut signals, &candles);
+
+        assert!(!signals[0].is_entry_filled);
+        assert_eq!(signals[0].status, SignalStatus::Cancelled);
+    }
+
+    #[test]
+    fn breakout_buy_fills_on_high_break() {
+        let mut signals = vec![signal(SignalType::Buy, 101.0, 95.0, 111.0, 116.0, 1)];
+        signals[0].entry_type = EntryType::Breakout;
+        signals[0].is_entry_filled = false;
+
+        let candles = vec![
+            candle(2, 100.0, 100.5, 99.5, 100.0),  // chưa break 101
+            candle(3, 100.0, 102.0, 99.8, 101.5),  // break 101
+            candle(4, 101.5, 112.0, 101.0, 111.5), // TP1
+        ];
+
+        evaluate_active_signals(&mut signals, &candles);
+
+        assert!(signals[0].is_entry_filled);
+        assert_eq!(signals[0].status, SignalStatus::Target1Hit);
     }
 
     #[test]

@@ -214,3 +214,49 @@ TradingView alert must include the same value:
 
 The dashboard webhook sandbox and Pine Script sample read the same config value.
 Leave it empty to disable the check (not recommended for public endpoints).
+
+## 14. Optional AI macro report
+
+AI is optional and only used for the daily 07:00 macro commentary. Core signals
+always use the free EMA50/200 heuristic, so the bot works fully without any AI
+key. Configure it in `rust-backend/.env` and restart the API container:
+
+```bash
+# "" = auto-detect, "none" = disabled, "gemini", or "openrouter"
+AI_PROVIDER=""
+GEMINI_API_KEY=""
+GEMINI_MODEL="gemini-2.5-flash"
+OPENROUTER_API_KEY=""
+OPENROUTER_MODEL="anthropic/claude-3.5-sonnet"
+
+docker compose restart api
+docker compose logs -f api   # logs provider/model, never the key
+```
+
+- Auto-detect order: `GEMINI_API_KEY` first, then `OPENROUTER_API_KEY`.
+- Gemini uses the OpenAI-compatible endpoint
+  (`https://generativelanguage.googleapis.com/v1beta/openai`).
+- No key, `AI_PROVIDER=none`, or an AI error falls back to the deterministic
+  EMA50/200 report; signals are unaffected.
+- The daily report bias is advisory only. It is shown in the dashboard but is
+  **never** written to `config.macro_bias`, so `AUTO` stays dynamic and an
+  explicit `BULLISH`/`BEARISH`/`NEUTRAL` setting is preserved.
+
+## 15. Runtime config vs environment
+
+Entry and session behaviour is **dashboard config**, persisted in
+`data/bot_state.json`, not environment variables:
+
+- `entry_mode` (`MARKET` / `LIMIT_RETEST` / `BREAKOUT`), `broker_price_offset`,
+  `max_entry_drift_points`, `max_candle_age_secs`.
+- `session_alerts_enabled`, `session_alert_lead_minutes`, `session_filter_enabled`.
+
+Change them in **Sniper & Risk Config** and save; no container restart is needed.
+Environment variables are only for secrets/runtime wiring (Telegram, webhook
+passphrase, TwelveData key, AI provider/model, `PORT`, `RUST_LOG`). After editing
+`rust-backend/.env`, restart the API so the new environment is loaded:
+
+```bash
+docker compose restart api
+docker compose logs -f api
+```

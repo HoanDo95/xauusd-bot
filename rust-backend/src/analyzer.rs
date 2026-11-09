@@ -225,14 +225,43 @@ impl GoldMarketAnalyzer {
         score.round().clamp(80.0, 98.0) as u8
     }
 
-    /// 7. Đánh giá toàn diện và tính toán Tự Động R:R, Entry, Stop Loss, Take Profit
+    /// 7. Đánh giá toàn diện và tính toán Tự Động R:R, Entry, Stop Loss, Take Profit.
+    ///
+    /// Wrapper tương thích cho caller cũ (không có giá live, không áp dụng stale guard).
     pub fn analyze_market(candles: &[Candle], config: &BotConfig) -> Option<Signal> {
+        Self::analyze_market_with_live_price(candles, config, None, Utc::now().timestamp_millis())
+    }
+
+    /// Phân tích với giá live và timestamp hiện tại để chống tín hiệu trễ/đuổi giá.
+    pub fn analyze_market_with_live_price(
+        candles: &[Candle],
+        config: &BotConfig,
+        live_price: Option<f64>,
+        now_ms: i64,
+    ) -> Option<Signal> {
         if candles.len() < config.lookback_period + 5 {
             return None;
         }
 
         let current_candle = candles.last()?;
         let previous_candles = &candles[..candles.len() - 1];
+
+        // Stale guard: chỉ áp dụng khi có giá live để không phá vỡ test dữ liệu lịch sử.
+        if live_price.is_some() {
+            let candle_close_time =
+                current_candle.timestamp + timeframe_millis(current_candle.timeframe);
+            let max_age_ms = config.max_candle_age_secs.saturating_mul(1000);
+            if now_ms - candle_close_time > max_age_ms {
+                info!(
+                    "⏱️ [Analyzer] Bỏ qua nến quá cũ: đóng lúc {}, hiện tại {} (tuổi {}ms > {}ms).",
+                    candle_close_time,
+                    now_ms,
+                    now_ms - candle_close_time,
+                    max_age_ms
+                );
+                return None;
+            }
+        }
 
         // Lọc nhiễu: bỏ qua nến Doji đứng im (biên độ quá nhỏ).
         if current_candle.range() < 1.2 {
@@ -286,11 +315,23 @@ impl GoldMarketAnalyzer {
             });
 
             if let Some(support) = nearest_support {
-                let entry_price = current_candle.close;
                 // Stop Loss an toàn: Cài dưới đáy nến và dưới mép dưới vùng hỗ trợ, có cộng thêm đệm an toàn
                 let base_sl = current_candle.low.min(support.min_price);
-                let stop_loss = ((base_sl - config.gold_sl_buffer_points) * 100.0).round() / 100.0;
-                let risk_points = ((entry_price - stop_loss) * 100.0).round() / 100.0;
+                let stop_loss = round2(base_sl - config.gold_sl_buffer_points);
+
+                // Vùng retest = midpoint giữa close và đáy nến/vùng hỗ trợ.
+                let retest_limit_price = round2(
+                    (current_candle.close + current_candle.low.max(support.min_price)) / 2.0,
+                );
+                let (entry_price, entry_type, is_entry_filled) = select_entry(
+                    true,
+                    current_candle,
+                    stop_loss,
+                    retest_limit_price,
+                    live_price,
+                    config,
+                )?;
+                let risk_points = round2((entry_price - stop_loss).abs());
 
                 // Stop loss hợp lý (> 3$ và <= 45$ cho vàng — hỗ trợ SL Buffer tới 20-25 giá)
                 if (3.0..=45.0).contains(&risk_points) {
@@ -306,8 +347,8 @@ impl GoldMarketAnalyzer {
                         ((entry_price + (risk_points * 3.0)) * 100.0).round() / 100.0
                     };
 
-                    let reward_tp2 = ((take_profit_2 - entry_price) * 100.0).round() / 100.0;
-                    let risk_reward_ratio = ((reward_tp1 / risk_points) * 100.0).round() / 100.0;
+                    let reward_tp2 = round2((take_profit_2 - entry_price).abs());
+                    let risk_reward_ratio = round2(reward_tp1 / risk_points);
 
                     if risk_reward_ratio >= config.min_risk_reward {
                         info!(
@@ -382,6 +423,12 @@ impl GoldMarketAnalyzer {
                             is_simulated: false,
                             confluence_score,
                             outcome_at: None,
+                            entry_type,
+                            candle_close_price: round2(current_candle.close),
+                            live_market_price: live_price,
+                            retest_limit_price: Some(retest_limit_price),
+                            data_source: config.data_source.clone(),
+                            is_entry_filled,
                         });
                     }
                 }
@@ -401,11 +448,23 @@ impl GoldMarketAnalyzer {
             });
 
             if let Some(resistance) = nearest_resistance {
-                let entry_price = current_candle.close;
                 // Stop Loss an toàn: Cài trên đỉnh nến và trên mép trên vùng kháng cự, có cộng thêm đệm an toàn
                 let base_sl = current_candle.high.max(resistance.max_price);
-                let stop_loss = ((base_sl + config.gold_sl_buffer_points) * 100.0).round() / 100.0;
-                let risk_points = ((stop_loss - entry_price) * 100.0).round() / 100.0;
+                let stop_loss = round2(base_sl + config.gold_sl_buffer_points);
+
+                // Vùng retest = midpoint giữa close và đỉnh nến/vùng kháng cự.
+                let retest_limit_price = round2(
+                    (current_candle.close + current_candle.high.min(resistance.max_price)) / 2.0,
+                );
+                let (entry_price, entry_type, is_entry_filled) = select_entry(
+                    false,
+                    current_candle,
+                    stop_loss,
+                    retest_limit_price,
+                    live_price,
+                    config,
+                )?;
+                let risk_points = round2((stop_loss - entry_price).abs());
 
                 if (3.0..=45.0).contains(&risk_points) {
                     let reward_tp1 =
@@ -420,8 +479,8 @@ impl GoldMarketAnalyzer {
                         ((entry_price - (risk_points * 3.0)) * 100.0).round() / 100.0
                     };
 
-                    let reward_tp2 = ((entry_price - take_profit_2) * 100.0).round() / 100.0;
-                    let risk_reward_ratio = ((reward_tp1 / risk_points) * 100.0).round() / 100.0;
+                    let reward_tp2 = round2((entry_price - take_profit_2).abs());
+                    let risk_reward_ratio = round2(reward_tp1 / risk_points);
 
                     if risk_reward_ratio >= config.min_risk_reward {
                         info!(
@@ -496,6 +555,12 @@ impl GoldMarketAnalyzer {
                             is_simulated: false,
                             confluence_score,
                             outcome_at: None,
+                            entry_type,
+                            candle_close_price: round2(current_candle.close),
+                            live_market_price: live_price,
+                            retest_limit_price: Some(retest_limit_price),
+                            data_source: config.data_source.clone(),
+                            is_entry_filled,
                         });
                     }
                 }
@@ -504,6 +569,68 @@ impl GoldMarketAnalyzer {
 
         None
     }
+}
+
+/// Chọn entry theo `entry_mode`, bảo vệ chống đuổi giá và chống vào lệnh khi giá đã xuyên SL.
+fn select_entry(
+    is_buy: bool,
+    current_candle: &Candle,
+    stop_loss: f64,
+    retest_limit_price: f64,
+    live_price: Option<f64>,
+    config: &BotConfig,
+) -> Option<(f64, crate::models::EntryType, bool)> {
+    use crate::models::EntryType;
+
+    let ref_close = current_candle.close;
+    let live = live_price.unwrap_or(ref_close);
+    let entry_mode = config.entry_mode.trim().to_uppercase();
+
+    match entry_mode.as_str() {
+        "LIMIT_RETEST" => Some((retest_limit_price, EntryType::Limit, false)),
+        "BREAKOUT" => {
+            let entry = if is_buy {
+                current_candle.high + 0.5
+            } else {
+                current_candle.low - 0.5
+            };
+            Some((round2(entry), EntryType::Breakout, false))
+        }
+        // MARKET (và fallback an toàn cho mode lạ).
+        _ => {
+            if (live - ref_close).abs() <= config.max_entry_drift_points {
+                Some((round2(live), EntryType::Market, true))
+            } else {
+                let already_through_sl = if is_buy {
+                    live <= stop_loss
+                } else {
+                    live >= stop_loss
+                };
+                if already_through_sl {
+                    info!(
+                        "🛑 [Analyzer] Giá live {:.2} đã xuyên SL {:.2}, hủy tín hiệu.",
+                        live, stop_loss
+                    );
+                    None
+                } else {
+                    // Drift quá lớn: không đuổi giá, chờ giá quay về close của nến Pinbar.
+                    Some((round2(ref_close), EntryType::Limit, false))
+                }
+            }
+        }
+    }
+}
+
+fn timeframe_millis(timeframe: Timeframe) -> i64 {
+    match timeframe {
+        Timeframe::M15 => 15 * 60 * 1000,
+        Timeframe::H1 => 60 * 60 * 1000,
+        Timeframe::H4 => 4 * 60 * 60 * 1000,
+    }
+}
+
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
 }
 
 #[cfg(test)]
@@ -648,7 +775,9 @@ mod tests {
         assert!((signal.risk_points - 15.5).abs() < 1e-6);
         assert!((signal.stop_loss - 2659.5).abs() < 1e-6);
         assert_eq!(signal.recommended_lot_size, 0.06);
-        assert!((signal.risk_amount_usd - 100.0).abs() < 1e-6);
+        // Rủi ro thực tế sau khi làm tròn lot: 0.06 * 15.5 * 100 = $93 (< $100 max).
+        assert!((signal.risk_amount_usd - 93.0).abs() < 1e-6);
+        assert!(signal.risk_amount_usd <= 10_000.0 * 0.01 + 1e-6);
         assert_eq!(
             signal.dedup_key,
             format!("XAU/USD_M15_{}", signal.candle_timestamp)
@@ -698,5 +827,98 @@ mod tests {
         };
 
         assert!(GoldMarketAnalyzer::analyze_market(&candles, &config).is_none());
+    }
+
+    fn analyze_buy_with_live(live_price: f64, now_ms: i64, config: BotConfig) -> Option<Signal> {
+        let mut candles = zigzag_candles(60);
+        let signal_ts = BASE_TS + 60 * STEP_MS;
+        candles.push(bullish_pinbar(signal_ts));
+
+        GoldMarketAnalyzer::analyze_market_with_live_price(
+            &candles,
+            &config,
+            Some(live_price),
+            now_ms,
+        )
+    }
+
+    fn fresh_now() -> i64 {
+        // 1 giây sau khi nến Pinbar đóng cửa.
+        BASE_TS + 60 * STEP_MS + STEP_MS + 1000
+    }
+
+    #[test]
+    fn entry_market_uses_live_price_when_drift_within_limit() {
+        let signal = analyze_buy_with_live(2676.0, fresh_now(), buy_config(10.0))
+            .expect("expected BUY signal");
+
+        assert_eq!(signal.entry_price, 2676.0);
+        assert_eq!(signal.entry_type, crate::models::EntryType::Market);
+        assert!(signal.is_entry_filled);
+        assert_eq!(signal.candle_close_price, 2675.0);
+        assert_eq!(signal.live_market_price, Some(2676.0));
+        assert_eq!(signal.data_source, "BINANCE_PAXG");
+    }
+
+    #[test]
+    fn entry_market_falls_back_to_limit_when_drift_exceeds() {
+        let signal = analyze_buy_with_live(2690.0, fresh_now(), buy_config(10.0))
+            .expect("expected BUY signal");
+
+        assert_eq!(signal.entry_price, 2675.0);
+        assert_eq!(signal.entry_type, crate::models::EntryType::Limit);
+        assert!(!signal.is_entry_filled);
+        assert_eq!(signal.retest_limit_price, Some(2672.25));
+    }
+
+    #[test]
+    fn entry_market_cancels_when_live_already_through_sl() {
+        let signal = analyze_buy_with_live(2650.0, fresh_now(), buy_config(10.0));
+        assert!(signal.is_none());
+    }
+
+    #[test]
+    fn entry_limit_retest_uses_midpoint() {
+        let config = BotConfig {
+            entry_mode: "LIMIT_RETEST".to_string(),
+            ..buy_config(10.0)
+        };
+        let signal =
+            analyze_buy_with_live(2676.0, fresh_now(), config).expect("expected BUY signal");
+
+        assert_eq!(signal.entry_price, 2672.25);
+        assert_eq!(signal.retest_limit_price, Some(2672.25));
+        assert_eq!(signal.entry_type, crate::models::EntryType::Limit);
+        assert!(!signal.is_entry_filled);
+        assert!((signal.risk_points - 12.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn entry_breakout_uses_candle_high_plus_half_point() {
+        let config = BotConfig {
+            entry_mode: "BREAKOUT".to_string(),
+            ..buy_config(10.0)
+        };
+        let signal =
+            analyze_buy_with_live(2676.0, fresh_now(), config).expect("expected BUY signal");
+
+        assert_eq!(signal.entry_price, 2676.1);
+        assert_eq!(signal.entry_type, crate::models::EntryType::Breakout);
+        assert!(!signal.is_entry_filled);
+    }
+
+    #[test]
+    fn stale_candle_is_rejected_when_live_price_provided() {
+        let stale_now = BASE_TS + 60 * STEP_MS + STEP_MS + 120_000 + 1;
+        let signal = analyze_buy_with_live(2675.0, stale_now, buy_config(10.0));
+        assert!(signal.is_none());
+    }
+
+    #[test]
+    fn stale_guard_is_not_applied_without_live_price() {
+        // analyze_market() wrapper truyền live_price = None -> dữ liệu lịch sử vẫn phân tích được.
+        let signal = expect_buy_signal(10.0);
+        assert_eq!(signal.entry_type, crate::models::EntryType::Market);
+        assert_eq!(signal.live_market_price, None);
     }
 }

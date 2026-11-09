@@ -14,6 +14,9 @@ pub struct PersistentState {
     pub signals: Vec<Signal>,
     #[serde(default)]
     pub daily_report: Option<DailyMacroReport>,
+    /// Dedup keys của các briefing trước phiên đã gửi (mới nhất ở cuối).
+    #[serde(default)]
+    pub sent_session_alerts: Vec<String>,
 }
 
 /// Bộ lưu trữ JSON nguyên tử (atomic write) cho server chạy 24/7.
@@ -122,8 +125,26 @@ impl PersistentStore {
     }
 
     /// Chống bắn lặp trên cùng một cây nến thông qua dedup_key.
+    /// Bỏ qua tín hiệu mô phỏng để lệnh test không chặn tín hiệu thật cùng nến.
     pub fn is_duplicate_candle(signals: &[Signal], dedup_key: &str) -> bool {
-        !dedup_key.is_empty() && signals.iter().any(|signal| signal.dedup_key == dedup_key)
+        !dedup_key.is_empty()
+            && signals
+                .iter()
+                .any(|signal| !signal.is_simulated && signal.dedup_key == dedup_key)
+    }
+
+    /// Giữ tối đa 40 dedup key briefing gần nhất (mới nhất ở cuối, cắt từ đầu).
+    pub fn prune_session_alerts(keys: &mut Vec<String>) {
+        const MAX_SESSION_ALERTS: usize = 40;
+        if keys.len() > MAX_SESSION_ALERTS {
+            let excess = keys.len() - MAX_SESSION_ALERTS;
+            keys.drain(0..excess);
+        }
+    }
+
+    /// Đã gửi briefing cho phiên/ngày này chưa (chống trùng sau restart).
+    pub fn has_sent_session_alert(keys: &[String], key: &str) -> bool {
+        keys.iter().any(|sent| sent == key)
     }
 
     /// Bộ lọc khung giờ vàng 13:00-23:00 GMT+7 (tương đương 06:00-16:00 UTC).
@@ -139,7 +160,7 @@ impl PersistentStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{SignalStatus, SignalType, Timeframe};
+    use crate::models::{EntryType, SignalStatus, SignalType, Timeframe};
     use chrono::TimeZone;
 
     fn at(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<Utc> {
@@ -183,6 +204,12 @@ mod tests {
             is_simulated,
             confluence_score: 90,
             outcome_at: None,
+            entry_type: EntryType::Market,
+            candle_close_price: 2675.0,
+            live_market_price: None,
+            retest_limit_price: None,
+            data_source: "BINANCE_PAXG".to_string(),
+            is_entry_filled: true,
         }
     }
 
@@ -237,6 +264,23 @@ mod tests {
     }
 
     #[test]
+    fn test_simulated_signal_does_not_block_real_signal_on_same_candle() {
+        let now = at(2026, 11, 9, 12, 0);
+        let signals = vec![sample_signal(
+            "SIM-1",
+            now,
+            true,
+            "XAU/USD_M15_1700000000000",
+        )];
+
+        // Lệnh test cùng nến không được chặn lệnh thật.
+        assert!(!PersistentStore::is_duplicate_candle(
+            &signals,
+            "XAU/USD_M15_1700000000000"
+        ));
+    }
+
+    #[test]
     fn test_trading_day_uses_vietnam_timezone() {
         // 18:00 UTC ngày 09/11 = 01:00 sáng 10/11 giờ Việt Nam.
         assert_eq!(
@@ -282,6 +326,39 @@ mod tests {
     }
 
     #[test]
+    fn test_has_sent_session_alert() {
+        let keys = vec![
+            "SESSION_LONDON_2026-11-09".to_string(),
+            "SESSION_NEW_YORK_2026-11-09".to_string(),
+        ];
+
+        assert!(PersistentStore::has_sent_session_alert(
+            &keys,
+            "SESSION_LONDON_2026-11-09"
+        ));
+        assert!(!PersistentStore::has_sent_session_alert(
+            &keys,
+            "SESSION_LONDON_2026-11-10"
+        ));
+        assert!(!PersistentStore::has_sent_session_alert(&[], "any-key"));
+    }
+
+    #[test]
+    fn test_prune_session_alerts_keeps_newest_40() {
+        let mut keys: Vec<String> = (0..45).map(|index| format!("key-{index:02}")).collect();
+
+        PersistentStore::prune_session_alerts(&mut keys);
+
+        assert_eq!(keys.len(), 40);
+        assert_eq!(keys.first().map(String::as_str), Some("key-05"));
+        assert_eq!(keys.last().map(String::as_str), Some("key-44"));
+
+        let mut short: Vec<String> = vec!["only".to_string()];
+        PersistentStore::prune_session_alerts(&mut short);
+        assert_eq!(short, vec!["only".to_string()]);
+    }
+
+    #[test]
     fn test_persistent_store_round_trip() {
         let unique = format!(
             "gold-signal-bot-test-{}-{}.json",
@@ -299,6 +376,9 @@ mod tests {
             false,
             "XAU/USD_M15_1",
         ));
+        state
+            .sent_session_alerts
+            .push("SESSION_LONDON_2026-11-09".to_string());
 
         store.save(&state).expect("save state");
         let loaded = store.load();
@@ -306,6 +386,7 @@ mod tests {
         assert_eq!(loaded.signals.len(), 1);
         assert_eq!(loaded.signals[0].dedup_key, "XAU/USD_M15_1");
         assert_eq!(loaded.config.max_signals_per_day, 1);
+        assert_eq!(loaded.sent_session_alerts, state.sent_session_alerts);
 
         let _ = fs::remove_file(&path);
     }

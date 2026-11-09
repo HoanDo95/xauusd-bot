@@ -8,23 +8,200 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 const FOREX_FACTORY_CALENDAR_URL: &str = "https://nfs.faireconomy.media/ff_calendar_thisweek.json";
+const GEMINI_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+const OPENROUTER_API_BASE: &str = "https://openrouter.ai/api/v1";
+const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
+const DEFAULT_OPENROUTER_MODEL: &str = "anthropic/claude-3.5-sonnet";
+
+/// Nhà cung cấp AI tùy chọn cho báo cáo vĩ mô ngày.
+///
+/// Tín hiệu giao dịch cốt lõi KHÔNG phụ thuộc AI — luôn có fallback EMA50/200 miễn phí.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiProvider {
+    None,
+    Gemini,
+    OpenRouter,
+}
+
+impl AiProvider {
+    /// Xác định provider từ `AI_PROVIDER` và các key hiện có.
+    ///
+    /// Hàm thuần (pure) để test được mà không cần sửa process env:
+    /// - `AI_PROVIDER` hợp lệ (`NONE`/`GEMINI`/`OPENROUTER`, không phân biệt hoa thường)
+    ///   được ưu tiên tuyệt đối.
+    /// - Rỗng hoặc không hợp lệ → auto-detect: Gemini trước, rồi OpenRouter.
+    pub fn from_env_values(ai_provider: &str, gemini_key: &str, openrouter_key: &str) -> Self {
+        match ai_provider.trim().to_ascii_uppercase().as_str() {
+            "NONE" => Self::None,
+            "GEMINI" => Self::Gemini,
+            "OPENROUTER" => Self::OpenRouter,
+            _ => {
+                if !gemini_key.trim().is_empty() {
+                    Self::Gemini
+                } else if !openrouter_key.trim().is_empty() {
+                    Self::OpenRouter
+                } else {
+                    Self::None
+                }
+            }
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Gemini => "gemini",
+            Self::OpenRouter => "openrouter",
+        }
+    }
+}
+
+impl std::fmt::Display for AiProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Cấu hình AI đã resolve (không bao giờ log key).
+struct AiSettings {
+    provider: AiProvider,
+    api_key: String,
+    api_base: String,
+    model: String,
+}
+
+fn resolve_model(value: &str, default: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        default.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
 
 /// Module lập lịch định kỳ 07:00 AM mỗi ngày (Daily Cron Job & Macro Connector)
 pub struct DailyScheduler {
     http_client: Client,
+    provider: AiProvider,
     ai_api_key: String,
-    ai_api_base: String, // Hỗ trợ OpenRouter, OpenAI, hoặc endpoint tương thích
+    ai_api_base: String, // OpenRouter, Gemini OpenAI-compatible, hoặc endpoint tương thích
+    ai_model: String,
 }
 
 impl DailyScheduler {
+    /// Constructor tương thích ngược cho tests/callers cũ.
+    ///
+    /// Có key + không có base → OpenRouter (đúng hành vi cũ); không có key → `None`.
     pub fn new(ai_api_key: String, ai_api_base: Option<String>) -> Self {
+        let provider = if ai_api_key.trim().is_empty() {
+            AiProvider::None
+        } else {
+            AiProvider::OpenRouter
+        };
         Self {
-            http_client: Client::builder()
-                .timeout(Duration::from_secs(15))
-                .build()
-                .unwrap_or_else(|_| Client::new()),
+            http_client: Self::build_http_client(),
+            provider,
             ai_api_key,
-            ai_api_base: ai_api_base.unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string()),
+            ai_api_base: ai_api_base.unwrap_or_else(|| OPENROUTER_API_BASE.to_string()),
+            ai_model: DEFAULT_OPENROUTER_MODEL.to_string(),
+        }
+    }
+
+    /// Khởi tạo từ biến môi trường với auto-detect provider.
+    ///
+    /// Chỉ log provider/model — tuyệt đối không log API key.
+    pub fn from_env() -> Self {
+        let read = |name: &str| std::env::var(name).unwrap_or_default();
+        let settings = Self::resolve_ai_settings(
+            &read("AI_PROVIDER"),
+            &read("GEMINI_API_KEY"),
+            &read("OPENROUTER_API_KEY"),
+            &read("GEMINI_MODEL"),
+            &read("OPENROUTER_MODEL"),
+        );
+
+        let scheduler = Self {
+            http_client: Self::build_http_client(),
+            provider: settings.provider,
+            ai_api_key: settings.api_key,
+            ai_api_base: settings.api_base,
+            ai_model: settings.model,
+        };
+        scheduler.log_ai_configuration();
+        scheduler
+    }
+
+    fn build_http_client() -> Client {
+        Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .unwrap_or_else(|_| Client::new())
+    }
+
+    /// Hàm thuần resolve provider + key + base + model (test không cần env/network).
+    fn resolve_ai_settings(
+        ai_provider: &str,
+        gemini_key: &str,
+        openrouter_key: &str,
+        gemini_model: &str,
+        openrouter_model: &str,
+    ) -> AiSettings {
+        let provider = AiProvider::from_env_values(ai_provider, gemini_key, openrouter_key);
+        let (api_key, api_base, model) = match provider {
+            AiProvider::Gemini => (
+                gemini_key.trim().to_string(),
+                GEMINI_API_BASE.to_string(),
+                resolve_model(gemini_model, DEFAULT_GEMINI_MODEL),
+            ),
+            AiProvider::OpenRouter => (
+                openrouter_key.trim().to_string(),
+                OPENROUTER_API_BASE.to_string(),
+                resolve_model(openrouter_model, DEFAULT_OPENROUTER_MODEL),
+            ),
+            AiProvider::None => (String::new(), String::new(), String::new()),
+        };
+
+        AiSettings {
+            provider,
+            api_key,
+            api_base,
+            model,
+        }
+    }
+
+    fn has_ai_credentials(&self) -> bool {
+        self.provider != AiProvider::None
+            && !self.ai_api_key.trim().is_empty()
+            && self.ai_api_key != "MOCK_KEY"
+    }
+
+    fn log_ai_configuration(&self) {
+        match self.provider {
+            AiProvider::None => {
+                info!("🤖 AI provider: none — báo cáo vĩ mô dùng EMA50/200 miễn phí.");
+            }
+            _ if !self.has_ai_credentials() => {
+                warn!(
+                    "⚠️ AI provider '{}' được chọn nhưng thiếu API key — dùng báo cáo EMA50/200.",
+                    self.provider.as_str()
+                );
+            }
+            _ => {
+                info!(
+                    "🤖 AI provider: {} | model: {} | chỉ dùng cho báo cáo vĩ mô ngày.",
+                    self.provider.as_str(),
+                    self.ai_model
+                );
+            }
+        }
+    }
+
+    /// Nhãn nguồn báo cáo để log mà không lộ key.
+    pub fn report_source(&self) -> &'static str {
+        match self.provider {
+            AiProvider::Gemini if self.has_ai_credentials() => "Gemini AI",
+            AiProvider::OpenRouter if self.has_ai_credentials() => "OpenRouter AI",
+            _ => "EMA50/200 (fallback)",
         }
     }
 
@@ -308,13 +485,16 @@ impl DailyScheduler {
         prompt: &str,
         fallback: DailyMacroReport,
     ) -> DailyMacroReport {
-        if self.ai_api_key.is_empty() || self.ai_api_key == "MOCK_KEY" {
+        if !self.has_ai_credentials() {
             return fallback;
         }
 
-        let url = format!("{}/chat/completions", self.ai_api_base);
+        let url = format!(
+            "{}/chat/completions",
+            self.ai_api_base.trim_end_matches('/')
+        );
         let payload = json!({
-            "model": "anthropic/claude-3.5-sonnet",
+            "model": self.ai_model,
             "messages": [
                 { "role": "system", "content": "You are an institutional macro quantitative analyst. Always output pure valid JSON without markdown wrapping." },
                 { "role": "user", "content": prompt }
@@ -335,7 +515,8 @@ impl DailyScheduler {
             Ok(response) => response,
             Err(err) => {
                 warn!(
-                    "Không thể kết nối AI API ngoài ({}). Dùng báo cáo định lượng EMA.",
+                    "Không thể kết nối AI provider '{}' ({}). Dùng báo cáo định lượng EMA.",
+                    self.provider.as_str(),
                     err
                 );
                 return fallback;
@@ -344,7 +525,8 @@ impl DailyScheduler {
 
         if !response.status().is_success() {
             warn!(
-                "AI API trả HTTP {}. Dùng báo cáo định lượng EMA.",
+                "AI provider '{}' trả HTTP {}. Dùng báo cáo định lượng EMA.",
+                self.provider.as_str(),
                 response.status()
             );
             return fallback;
@@ -353,15 +535,27 @@ impl DailyScheduler {
         let body = match response.json::<serde_json::Value>().await {
             Ok(body) => body,
             Err(err) => {
-                warn!("AI API JSON lỗi ({}). Dùng báo cáo định lượng EMA.", err);
+                warn!(
+                    "AI provider '{}' trả JSON lỗi ({}). Dùng báo cáo định lượng EMA.",
+                    self.provider.as_str(),
+                    err
+                );
                 return fallback;
             }
         };
 
         let Some(content) = body["choices"][0]["message"]["content"].as_str() else {
+            warn!(
+                "AI provider '{}' thiếu choices[0].message.content. Dùng báo cáo định lượng EMA.",
+                self.provider.as_str()
+            );
             return fallback;
         };
         let Ok(parsed) = serde_json::from_str::<serde_json::Value>(content) else {
+            warn!(
+                "AI provider '{}' trả nội dung không phải JSON hợp lệ. Dùng báo cáo định lượng EMA.",
+                self.provider.as_str()
+            );
             return fallback;
         };
 
@@ -516,5 +710,105 @@ mod tests {
         assert_eq!(report.macro_bias, MacroBias::Bearish);
         assert!(report.daily_rationale.contains("EMA50"));
         assert!(!report.gold_range_forecast.is_empty());
+    }
+
+    #[test]
+    fn ai_provider_auto_detects_from_keys() {
+        assert_eq!(
+            AiProvider::from_env_values("", "gemini-key", ""),
+            AiProvider::Gemini
+        );
+        assert_eq!(
+            AiProvider::from_env_values("", "", "openrouter-key"),
+            AiProvider::OpenRouter
+        );
+        // Cả hai key: Gemini được ưu tiên theo yêu cầu.
+        assert_eq!(
+            AiProvider::from_env_values("", "gemini-key", "openrouter-key"),
+            AiProvider::Gemini
+        );
+        assert_eq!(AiProvider::from_env_values("", "", ""), AiProvider::None);
+    }
+
+    #[test]
+    fn ai_provider_explicit_env_overrides_auto_detect() {
+        assert_eq!(
+            AiProvider::from_env_values("OPENROUTER", "gemini-key", "openrouter-key"),
+            AiProvider::OpenRouter
+        );
+        assert_eq!(
+            AiProvider::from_env_values("  openrouter  ", "gemini-key", "openrouter-key"),
+            AiProvider::OpenRouter
+        );
+        assert_eq!(
+            AiProvider::from_env_values("Gemini", "", "openrouter-key"),
+            AiProvider::Gemini
+        );
+        assert_eq!(
+            AiProvider::from_env_values("none", "gemini-key", "openrouter-key"),
+            AiProvider::None
+        );
+    }
+
+    #[test]
+    fn resolve_ai_settings_for_gemini_uses_openai_compatible_base() {
+        let defaults = DailyScheduler::resolve_ai_settings("", "gemini-key", "", "", "");
+        assert_eq!(defaults.provider, AiProvider::Gemini);
+        assert_eq!(defaults.api_key, "gemini-key");
+        assert_eq!(defaults.api_base, GEMINI_API_BASE);
+        assert_eq!(defaults.model, DEFAULT_GEMINI_MODEL);
+
+        let custom =
+            DailyScheduler::resolve_ai_settings("GEMINI", " gemini-key ", "", "gemini-2.5-pro", "");
+        assert_eq!(custom.provider, AiProvider::Gemini);
+        assert_eq!(custom.api_key, "gemini-key");
+        assert_eq!(custom.model, "gemini-2.5-pro");
+    }
+
+    #[test]
+    fn resolve_ai_settings_for_openrouter_keeps_legacy_defaults() {
+        let defaults = DailyScheduler::resolve_ai_settings("", "", "openrouter-key", "", "");
+        assert_eq!(defaults.provider, AiProvider::OpenRouter);
+        assert_eq!(defaults.api_key, "openrouter-key");
+        assert_eq!(defaults.api_base, OPENROUTER_API_BASE);
+        assert_eq!(defaults.model, "anthropic/claude-3.5-sonnet");
+
+        let custom = DailyScheduler::resolve_ai_settings(
+            "openrouter",
+            "",
+            "openrouter-key",
+            "",
+            "openai/gpt-4o-mini",
+        );
+        assert_eq!(custom.provider, AiProvider::OpenRouter);
+        assert_eq!(custom.model, "openai/gpt-4o-mini");
+    }
+
+    #[test]
+    fn resolve_ai_settings_for_none_has_no_key_or_endpoint() {
+        let settings = DailyScheduler::resolve_ai_settings("", "", "", "", "");
+        assert_eq!(settings.provider, AiProvider::None);
+        assert!(settings.api_key.is_empty());
+        assert!(settings.api_base.is_empty());
+        assert!(settings.model.is_empty());
+    }
+
+    #[test]
+    fn new_constructor_backward_compatible() {
+        let with_key = DailyScheduler::new("legacy-key".to_string(), None);
+        assert_eq!(with_key.provider, AiProvider::OpenRouter);
+        assert_eq!(with_key.ai_api_base, OPENROUTER_API_BASE);
+        assert_eq!(with_key.ai_model, DEFAULT_OPENROUTER_MODEL);
+        assert_eq!(with_key.report_source(), "OpenRouter AI");
+
+        let without_key = DailyScheduler::new(String::new(), None);
+        assert_eq!(without_key.provider, AiProvider::None);
+        assert_eq!(without_key.report_source(), "EMA50/200 (fallback)");
+
+        let custom_base = DailyScheduler::new(
+            "legacy-key".to_string(),
+            Some("http://localhost:1234/v1".into()),
+        );
+        assert_eq!(custom_base.ai_api_base, "http://localhost:1234/v1");
     }
 }

@@ -19,7 +19,9 @@ export interface CandlesResponse {
   resistances: SupportResistanceZone[];
   volumeMA: number;
   currentPrice: number;
+  lastClosedPrice?: number;
   ema50?: number;
+  ema200?: number;
   trendBias?: TrendBias;
   dataSource?: string;
 }
@@ -50,6 +52,7 @@ export interface HealthResponse {
   dailyQuotaReached: boolean;
   dataSource: string;
   dataSourceLabel: string;
+  livePrice?: number | null;
   ema50?: number;
   trendBias?: TrendBias;
   killSwitchActive?: boolean;

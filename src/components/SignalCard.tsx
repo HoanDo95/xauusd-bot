@@ -47,6 +47,14 @@ export const SignalCard: React.FC<Props> = ({
           </span>
           <span className="text-sm font-semibold text-white font-mono">{signal.symbol}</span>
           <span className="text-xs text-neutral-400 font-mono">· {signal.timeframe}</span>
+          {signal.entry_type && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-sky-500/15 text-sky-300 border border-sky-500/30">
+              {signal.entry_type}
+              {signal.entry_type !== 'MARKET'
+                ? ` · ${signal.is_entry_filled ? 'FILLED' : 'PENDING'}`
+                : ''}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -108,6 +116,12 @@ export const SignalCard: React.FC<Props> = ({
           <span>Vol: <strong className="text-amber-400">{signal.volume_surge_ratio}x MA</strong></span>
           <span>·</span>
           <span>Risk: <strong className="text-neutral-200">{signal.risk_points.toFixed(1)}$</strong></span>
+          {signal.data_source && (
+            <>
+              <span>·</span>
+              <span>Src: <strong className="text-sky-300">{signal.data_source}</strong></span>
+            </>
+          )}
         </div>
 
         <button

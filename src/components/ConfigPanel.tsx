@@ -105,6 +105,99 @@ export const ConfigPanel: React.FC<Props> = ({
               </span>
             </div>
 
+            {/* Entry Mode */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-neutral-300">
+                Chế độ vào lệnh (Entry Mode)
+              </label>
+              <select
+                value={formData.entry_mode}
+                onChange={(e) =>
+                  setFormData({ ...formData, entry_mode: e.target.value as BotConfig['entry_mode'] })
+                }
+                className="w-full bg-neutral-950 border border-neutral-800 focus:border-amber-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none cursor-pointer"
+              >
+                <option value="MARKET">MARKET — khớp giá live nếu drift nhỏ</option>
+                <option value="LIMIT_RETEST">LIMIT_RETEST — chờ retest midpoint</option>
+                <option value="BREAKOUT">BREAKOUT — chờ phá đỉnh/đáy nến</option>
+              </select>
+              <span className="text-[11px] text-neutral-500">
+                MARKET tự chuyển Limit khi giá live lệch quá ngưỡng drift
+              </span>
+            </div>
+
+            {/* Broker price offset */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-neutral-300">
+                Chênh lệch giá Broker (Offset)
+              </label>
+              <div className="relative">
+                <input
+                  type="number"
+                  step="0.1"
+                  min="-100"
+                  max="100"
+                  value={formData.broker_price_offset}
+                  onChange={(e) =>
+                    setFormData({ ...formData, broker_price_offset: parseFloat(e.target.value) || 0 })
+                  }
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-amber-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
+                />
+                <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">$ USD</span>
+              </div>
+              <span className="text-[11px] text-neutral-500">
+                Cộng vào OHLC & giá live để khớp broker (ví dụ +3.5$)
+              </span>
+            </div>
+
+            {/* Max entry drift */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-neutral-300">
+                Drift tối đa để vào MARKET
+              </label>
+              <div className="relative">
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0.5"
+                  max="10"
+                  value={formData.max_entry_drift_points}
+                  onChange={(e) =>
+                    setFormData({ ...formData, max_entry_drift_points: parseFloat(e.target.value) || 2.5 })
+                  }
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-amber-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
+                />
+                <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">$ USD</span>
+              </div>
+              <span className="text-[11px] text-neutral-500">
+                Vượt ngưỡng → không đuổi giá, chờ Limit tại close nến
+              </span>
+            </div>
+
+            {/* Max candle age */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-neutral-300">
+                Tuổi nến tối đa (Candle Age)
+              </label>
+              <div className="relative">
+                <input
+                  type="number"
+                  step="10"
+                  min="30"
+                  max="900"
+                  value={formData.max_candle_age_secs}
+                  onChange={(e) =>
+                    setFormData({ ...formData, max_candle_age_secs: parseInt(e.target.value) || 120 })
+                  }
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-amber-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
+                />
+                <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">Giây</span>
+              </div>
+              <span className="text-[11px] text-neutral-500">
+                Nến đóng quá lâu sẽ bị từ chối để tránh vào lệnh trễ
+              </span>
+            </div>
+
             {/* Volume Surge Multiplier */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-neutral-300">
@@ -266,6 +359,60 @@ export const ConfigPanel: React.FC<Props> = ({
                 </span>
               </label>
               <span className="text-[11px] text-neutral-500">Tắt nếu muốn quét cả ngày (không khuyến nghị)</span>
+            </div>
+          </div>
+
+          {/* Pre-session Telegram briefings */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-neutral-300">
+                Báo thức trước phiên Âu/Mỹ
+              </label>
+              <label className="flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={formData.session_alerts_enabled ?? true}
+                  onChange={(e) =>
+                    setFormData({ ...formData, session_alerts_enabled: e.target.checked })
+                  }
+                  className="accent-emerald-500 w-4 h-4 rounded cursor-pointer mt-0.5"
+                />
+                <span className="text-[11px] text-neutral-300 leading-snug">
+                  Gửi briefing Telegram trước giờ mở phiên London / New York (T2–T6, tự động theo DST)
+                </span>
+              </label>
+              <span className="text-[11px] text-neutral-500">
+                Chỉ thông tin tham khảo — không tiêu hao quota và không phải lệnh vào trực tiếp
+              </span>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-neutral-300">
+                Số phút báo trước phiên
+              </label>
+              <div className="relative">
+                <input
+                  type="number"
+                  min="15"
+                  max="120"
+                  step="5"
+                  value={formData.session_alert_lead_minutes ?? 60}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      session_alert_lead_minutes: Math.max(
+                        15,
+                        Math.min(120, parseInt(e.target.value) || 60)
+                      ),
+                    })
+                  }
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-emerald-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
+                />
+                <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">phút</span>
+              </div>
+              <span className="text-[11px] text-neutral-500">
+                Mặc định 60 phút (1 giờ) — cho phép 15–120 phút
+              </span>
             </div>
           </div>
         </div>

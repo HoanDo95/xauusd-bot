@@ -19,6 +19,8 @@ export interface SupportResistanceZone {
 
 export type SignalType = 'BUY' | 'SELL';
 export type SignalStatus = 'Active' | 'Target1Hit' | 'Target2Hit' | 'StopLossHit' | 'Cancelled';
+export type EntryType = 'MARKET' | 'LIMIT' | 'BREAKOUT';
+export type EntryMode = 'MARKET' | 'LIMIT_RETEST' | 'BREAKOUT';
 
 export type MacroBias = 'BULLISH' | 'BEARISH' | 'NEUTRAL' | 'AUTO';
 export type TrendBias = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
@@ -56,6 +58,18 @@ export interface Signal {
   is_simulated?: boolean;
   /** Technical confluence score 0..100 (S/R touches + volume + wick + R:R). */
   confluence_score?: number;
+  /** How the order is entered: market fill, limit retest, or breakout. */
+  entry_type?: EntryType;
+  /** Close price of the pinbar candle that produced the signal. */
+  candle_close_price?: number;
+  /** Live market price at signal generation time. */
+  live_market_price?: number | null;
+  /** Suggested limit retest price (midpoint between close and wick/zone). */
+  retest_limit_price?: number | null;
+  /** Price data source used for this signal. */
+  data_source?: string;
+  /** Whether a limit/breakout entry has been filled. */
+  is_entry_filled?: boolean;
 }
 
 export interface PositionSizeCalculation {
@@ -120,8 +134,20 @@ export interface BotConfig {
   max_signals_per_day: number;
   /** Prefer the high-liquidity Vietnam session 13:00 – 23:00 (GMT+7). */
   session_filter_enabled: boolean;
+  /** Send informational Telegram briefings before London/New York opens (Mon–Fri, DST-aware). */
+  session_alerts_enabled: boolean;
+  /** Minutes before session open to send the briefing (15–120). */
+  session_alert_lead_minutes: number;
   /** Active free market data source. */
   data_source?: 'BINANCE_PAXG' | 'TWELVEDATA';
+  /** Entry strategy: immediate market fill, limit retest, or breakout. */
+  entry_mode: EntryMode;
+  /** Broker price offset in USD applied to candles and live price. */
+  broker_price_offset: number;
+  /** Maximum allowed live-vs-close drift (USD) before falling back to a limit order. */
+  max_entry_drift_points: number;
+  /** Reject signals when the closed candle is older than this many seconds. */
+  max_candle_age_secs: number;
 }
 
 export interface DailyMacroReport {

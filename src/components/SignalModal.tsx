@@ -89,6 +89,14 @@ export const SignalModal: React.FC<Props> = ({
             </span>
             <span className="text-lg font-bold text-white font-mono">{signal.symbol}</span>
             <span className="text-xs text-neutral-400 font-mono">· {signal.timeframe}</span>
+            {signal.entry_type && (
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                {signal.entry_type}
+                {signal.entry_type !== 'MARKET'
+                  ? ` · ${signal.is_entry_filled ? 'FILLED' : 'PENDING'}`
+                  : ''}
+              </span>
+            )}
             {signal.is_simulated && (
               <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40">
                 SIMULATION · KHÔNG TỐN QUOTA
@@ -141,6 +149,35 @@ export const SignalModal: React.FC<Props> = ({
               <span className="text-[10px] text-emerald-400/80 block">(+{signal.reward_points_tp2.toFixed(1)}$)</span>
             </div>
           </div>
+
+          {/* Entry Price Correctness Metadata */}
+          {(signal.entry_type || signal.data_source) && (
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-1 px-1 text-[11px] font-mono text-neutral-400">
+              {typeof signal.candle_close_price === 'number' && (
+                <span>
+                  Pinbar close:{' '}
+                  <strong className="text-white">${signal.candle_close_price.toFixed(2)}</strong>
+                </span>
+              )}
+              {typeof signal.live_market_price === 'number' && (
+                <span>
+                  Live:{' '}
+                  <strong className="text-sky-300">${signal.live_market_price.toFixed(2)}</strong>
+                </span>
+              )}
+              {typeof signal.retest_limit_price === 'number' && (
+                <span>
+                  Retest:{' '}
+                  <strong className="text-amber-300">${signal.retest_limit_price.toFixed(2)}</strong>
+                </span>
+              )}
+              {signal.data_source && (
+                <span>
+                  Source: <strong className="text-neutral-200">{signal.data_source}</strong>
+                </span>
+              )}
+            </div>
+          )}
 
           {/* Position Sizing & Money Management Card */}
           {signal.recommended_lot_size && (

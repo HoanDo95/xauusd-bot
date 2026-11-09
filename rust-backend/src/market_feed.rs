@@ -5,6 +5,27 @@ use serde_json::Value;
 use std::time::Duration;
 use tracing::{info, warn};
 
+/// Ảnh chụp dữ liệu thị trường tại một thời điểm: nến đã đóng + giá live + nguồn.
+#[derive(Debug, Clone)]
+pub struct MarketFeedSnapshot {
+    /// Chỉ chứa các cây nến đã đóng cửa hoàn tất.
+    pub candles: Vec<Candle>,
+    /// "TWELVEDATA" | "BINANCE_PAXG" | "FALLBACK_SEED".
+    pub source: String,
+    /// Giá live từ cây nến đang chạy (nếu có).
+    pub live_price: Option<f64>,
+}
+
+impl MarketFeedSnapshot {
+    fn fallback(limit: usize, timeframe: Timeframe) -> Self {
+        Self {
+            candles: MarketDataFeed::generate_fallback_gold_candles(limit, timeframe),
+            source: "FALLBACK_SEED".to_string(),
+            live_price: None,
+        }
+    }
+}
+
 /// Nguồn dữ liệu OHLCV Vàng miễn phí 24/7.
 /// - Ưu tiên TwelveData `XAU/USD` nếu có `TWELVEDATA_API_KEY`.
 /// - Mặc định dùng Binance Public API `PAXGUSDT` (không cần API key).
@@ -45,42 +66,129 @@ impl MarketDataFeed {
     }
 
     /// Kéo nến VÀ CHỈ trả về các cây nến đã đóng cửa hoàn tất (anti-repaint).
+    /// Wrapper tương thích cho các caller cũ không cần live price.
     pub async fn fetch_closed_gold_candles(
         &self,
         timeframe: Timeframe,
         limit: usize,
     ) -> Vec<Candle> {
-        let limit = limit.max(5);
+        let preferred = if self.twelve_data_api_key.is_some() {
+            "TWELVEDATA"
+        } else {
+            "BINANCE_PAXG"
+        };
+        self.fetch_market_snapshot(timeframe, limit, preferred, 0.0)
+            .await
+            .candles
+    }
 
-        if let Some(api_key) = &self.twelve_data_api_key {
-            match self.fetch_twelve_data(timeframe, limit, api_key).await {
-                Ok(candles) if !candles.is_empty() => return candles,
-                Ok(_) => warn!("⚠️ TwelveData trả về rỗng, chuyển sang Binance PAXGUSDT."),
-                Err(err) => warn!("⚠️ TwelveData lỗi ({}), chuyển sang Binance PAXGUSDT.", err),
+    /// Kéo ảnh chụp thị trường: nến đã đóng, giá live và nguồn thực tế.
+    ///
+    /// `preferred_source` quyết định provider được thử trước. Nếu provider ưu tiên
+    /// lỗi và provider còn lại khả dụng, tự động fallback sang provider kia.
+    /// Chỉ khi cả hai đều thất bại mới trả `FALLBACK_SEED`.
+    pub async fn fetch_market_snapshot(
+        &self,
+        timeframe: Timeframe,
+        limit: usize,
+        preferred_source: &str,
+        broker_price_offset: f64,
+    ) -> MarketFeedSnapshot {
+        let limit = limit.max(5);
+        let prefer_twelve = preferred_source.trim().eq_ignore_ascii_case("TWELVEDATA");
+        let has_twelve = self.twelve_data_api_key.is_some();
+
+        let mut snapshot = if prefer_twelve && has_twelve {
+            let twelve = self.fetch_twelve_snapshot(timeframe, limit).await;
+            if twelve.is_some() {
+                twelve
+            } else {
+                warn!("⚠️ TwelveData không khả dụng, chuyển sang Binance PAXGUSDT.");
+                self.fetch_binance_snapshot(timeframe, limit).await
+            }
+        } else {
+            let binance = self.fetch_binance_snapshot(timeframe, limit).await;
+            if binance.is_some() {
+                binance
+            } else if has_twelve {
+                warn!("⚠️ Binance không khả dụng, chuyển sang TwelveData XAU/USD.");
+                self.fetch_twelve_snapshot(timeframe, limit).await
+            } else {
+                None
+            }
+        };
+
+        match snapshot.take() {
+            Some(mut data) => {
+                Self::apply_broker_offset(&mut data, broker_price_offset);
+                data
+            }
+            None => {
+                warn!("⚠️ Cả Binance và TwelveData đều thất bại, dùng nến fallback offline.");
+                MarketFeedSnapshot::fallback(limit, timeframe)
             }
         }
+    }
 
+    async fn fetch_binance_snapshot(
+        &self,
+        timeframe: Timeframe,
+        limit: usize,
+    ) -> Option<MarketFeedSnapshot> {
         match self.fetch_binance(timeframe, limit).await {
-            Ok(candles) if !candles.is_empty() => candles,
+            Ok(snapshot) if !snapshot.candles.is_empty() => Some(snapshot),
             Ok(_) => {
-                warn!("⚠️ Binance trả về rỗng, dùng nến fallback offline.");
-                Self::generate_fallback_gold_candles(limit, timeframe)
+                warn!("⚠️ Binance trả về rỗng.");
+                None
             }
             Err(err) => {
-                warn!(
-                    "⚠️ Không kết nối được Binance ({}), dùng nến fallback offline.",
-                    err
-                );
-                Self::generate_fallback_gold_candles(limit, timeframe)
+                warn!("⚠️ Không kết nối được Binance ({}).", err);
+                None
             }
         }
+    }
+
+    async fn fetch_twelve_snapshot(
+        &self,
+        timeframe: Timeframe,
+        limit: usize,
+    ) -> Option<MarketFeedSnapshot> {
+        let api_key = self.twelve_data_api_key.as_deref()?;
+        match self.fetch_twelve_data(timeframe, limit, api_key).await {
+            Ok(snapshot) if !snapshot.candles.is_empty() => Some(snapshot),
+            Ok(_) => {
+                warn!("⚠️ TwelveData trả về rỗng.");
+                None
+            }
+            Err(err) => {
+                warn!("⚠️ TwelveData lỗi ({}).", err);
+                None
+            }
+        }
+    }
+
+    /// Cộng offset broker vào toàn bộ OHLC của nến đã đóng và giá live, làm tròn 2 chữ số.
+    pub(crate) fn apply_broker_offset(snapshot: &mut MarketFeedSnapshot, broker_price_offset: f64) {
+        let offset = if broker_price_offset.is_finite() {
+            broker_price_offset
+        } else {
+            0.0
+        };
+
+        for candle in &mut snapshot.candles {
+            candle.open = round2(candle.open + offset);
+            candle.high = round2(candle.high + offset);
+            candle.low = round2(candle.low + offset);
+            candle.close = round2(candle.close + offset);
+        }
+        snapshot.live_price = snapshot.live_price.map(|price| round2(price + offset));
     }
 
     async fn fetch_binance(
         &self,
         timeframe: Timeframe,
         limit: usize,
-    ) -> Result<Vec<Candle>, String> {
+    ) -> Result<MarketFeedSnapshot, String> {
         let interval = match timeframe {
             Timeframe::M15 => "15m",
             Timeframe::H1 => "1h",
@@ -109,15 +217,23 @@ impl MarketDataFeed {
             .await
             .map_err(|e| format!("Binance JSON parse error: {}", e))?;
 
-        let candles =
-            Self::parse_binance_klines_with_now(&payload, timeframe, Utc::now().timestamp_millis());
+        let (candles, live_price) = Self::parse_binance_klines_snapshot_with_now(
+            &payload,
+            timeframe,
+            Utc::now().timestamp_millis(),
+        );
 
         info!(
-            "📡 [MarketFeed] Binance PAXGUSDT {}: {} nến đã đóng cửa.",
+            "📡 [MarketFeed] Binance PAXGUSDT {}: {} nến đã đóng cửa, live={:?}.",
             timeframe,
-            candles.len()
+            candles.len(),
+            live_price
         );
-        Ok(candles)
+        Ok(MarketFeedSnapshot {
+            candles,
+            source: "BINANCE_PAXG".to_string(),
+            live_price,
+        })
     }
 
     async fn fetch_twelve_data(
@@ -125,7 +241,7 @@ impl MarketDataFeed {
         timeframe: Timeframe,
         limit: usize,
         api_key: &str,
-    ) -> Result<Vec<Candle>, String> {
+    ) -> Result<MarketFeedSnapshot, String> {
         let interval = match timeframe {
             Timeframe::M15 => "15min",
             Timeframe::H1 => "1h",
@@ -158,7 +274,7 @@ impl MarketDataFeed {
             return Err(format!("TwelveData API error: {}", message));
         }
 
-        let candles = Self::parse_twelve_data_values_with_now(
+        let (candles, live_price) = Self::parse_twelve_data_snapshot_with_now(
             &payload,
             timeframe,
             Utc::now().timestamp_millis(),
@@ -166,24 +282,40 @@ impl MarketDataFeed {
         );
 
         info!(
-            "📡 [MarketFeed] TwelveData XAU/USD {}: {} nến đã đóng cửa.",
+            "📡 [MarketFeed] TwelveData XAU/USD {}: {} nến đã đóng cửa, live={:?}.",
             timeframe,
-            candles.len()
+            candles.len(),
+            live_price
         );
-        Ok(candles)
+        Ok(MarketFeedSnapshot {
+            candles,
+            source: "TWELVEDATA".to_string(),
+            live_price,
+        })
     }
 
     /// Parse mảng klines Binance và loại bỏ cây nến chưa đóng cửa.
+    #[cfg(test)]
     pub(crate) fn parse_binance_klines_with_now(
         payload: &Value,
         timeframe: Timeframe,
         now_ms: i64,
     ) -> Vec<Candle> {
+        Self::parse_binance_klines_snapshot_with_now(payload, timeframe, now_ms).0
+    }
+
+    /// Parse Binance klines: trả về nến đã đóng + close của cây đang chạy làm live price.
+    pub(crate) fn parse_binance_klines_snapshot_with_now(
+        payload: &Value,
+        timeframe: Timeframe,
+        now_ms: i64,
+    ) -> (Vec<Candle>, Option<f64>) {
         let Some(rows) = payload.as_array() else {
-            return Vec::new();
+            return (Vec::new(), None);
         };
 
         let mut candles = Vec::with_capacity(rows.len());
+        let mut live_price: Option<f64> = None;
         for row in rows {
             let Some(items) = row.as_array() else {
                 continue;
@@ -198,11 +330,6 @@ impl MarketDataFeed {
             let Some(close_time) = value_to_i64(&items[6]) else {
                 continue;
             };
-
-            // Bỏ cây nến đang chạy: close_time nằm trong tương lai.
-            if close_time > now_ms {
-                continue;
-            }
 
             let parsed = (
                 value_to_f64(&items[1]),
@@ -219,6 +346,12 @@ impl MarketDataFeed {
                 continue;
             }
 
+            // Cây nến đang chạy: close_time nằm trong tương lai -> chỉ lấy close làm live price.
+            if close_time > now_ms {
+                live_price = Some(close);
+                continue;
+            }
+
             candles.push(Candle {
                 timestamp: open_time,
                 open,
@@ -230,22 +363,35 @@ impl MarketDataFeed {
             });
         }
 
-        candles
+        let live_price = live_price.or_else(|| candles.last().map(|candle| candle.close));
+        (candles, live_price)
     }
 
     /// Parse TwelveData time_series values (mảng mới nhất đứng đầu).
+    #[cfg(test)]
     pub(crate) fn parse_twelve_data_values_with_now(
         payload: &Value,
         timeframe: Timeframe,
         now_ms: i64,
         limit: usize,
     ) -> Vec<Candle> {
+        Self::parse_twelve_data_snapshot_with_now(payload, timeframe, now_ms, limit).0
+    }
+
+    /// Parse TwelveData: trả về nến đã đóng + close của cây đang chạy làm live price.
+    pub(crate) fn parse_twelve_data_snapshot_with_now(
+        payload: &Value,
+        timeframe: Timeframe,
+        now_ms: i64,
+        limit: usize,
+    ) -> (Vec<Candle>, Option<f64>) {
         let Some(rows) = payload.get("values").and_then(|v| v.as_array()) else {
-            return Vec::new();
+            return (Vec::new(), None);
         };
 
         let step_ms = timeframe_millis(timeframe);
         let mut candles = Vec::with_capacity(rows.len());
+        let mut live_price: Option<f64> = None;
 
         for row in rows {
             let Some(datetime) = row.get("datetime").and_then(|v| v.as_str()) else {
@@ -254,11 +400,6 @@ impl MarketDataFeed {
             let Some(timestamp) = parse_twelve_data_datetime(datetime) else {
                 continue;
             };
-
-            // Cây nến chưa đóng cửa: thời điểm đóng = open + step > now.
-            if timestamp + step_ms > now_ms {
-                continue;
-            }
 
             let parsed = (
                 value_to_f64(row.get("open").unwrap_or(&Value::Null)),
@@ -272,6 +413,14 @@ impl MarketDataFeed {
             };
 
             if !is_finite_ohlcv(open, high, low, close, volume) {
+                continue;
+            }
+
+            // Cây nến chưa đóng cửa: thời điểm đóng = open + step > now.
+            if timestamp + step_ms > now_ms {
+                if live_price.is_none() {
+                    live_price = Some(close);
+                }
                 continue;
             }
 
@@ -291,7 +440,9 @@ impl MarketDataFeed {
             let keep_from = candles.len() - limit;
             candles.drain(0..keep_from);
         }
-        candles
+
+        let live_price = live_price.or_else(|| candles.last().map(|candle| candle.close));
+        (candles, live_price)
     }
 
     /// Sinh nến mẫu offline (deterministic, không panic) quanh vùng giá 2680 USD.
@@ -515,5 +666,112 @@ mod tests {
                 assert!(candle.timestamp > candles[index - 1].timestamp);
             }
         }
+    }
+
+    #[test]
+    fn test_binance_snapshot_exposes_live_price_from_unclosed_candle() {
+        let payload = json!([
+            [
+                1_700_000_000_000_i64,
+                "2000.10",
+                "2010.50",
+                "1995.00",
+                "2005.25",
+                "123.45",
+                1_700_000_899_999_i64
+            ],
+            [
+                1_700_000_900_000_i64,
+                "2005.25",
+                "2015.00",
+                "2000.00",
+                "2012.75",
+                "150.10",
+                1_700_001_799_999_i64
+            ]
+        ]);
+
+        // now rơi vào cây thứ 2 -> chỉ cây 1 đóng cửa, live = close cây 2.
+        let (candles, live_price) = MarketDataFeed::parse_binance_klines_snapshot_with_now(
+            &payload,
+            Timeframe::M15,
+            1_700_001_000_000,
+        );
+        assert_eq!(candles.len(), 1);
+        assert_eq!(candles[0].timestamp, 1_700_000_000_000);
+        assert_eq!(live_price, Some(2012.75));
+    }
+
+    #[test]
+    fn test_twelve_data_snapshot_exposes_live_price_from_forming_candle() {
+        let payload = json!({
+            "values": [
+                {
+                    "datetime": "2026-11-09 12:15:00",
+                    "open": "2010.0",
+                    "high": "2020.0",
+                    "low": "2005.0",
+                    "close": "2017.5",
+                    "volume": "120"
+                },
+                {
+                    "datetime": "2026-11-09 12:00:00",
+                    "open": "2000.0",
+                    "high": "2012.0",
+                    "low": "1995.0",
+                    "close": "2010.0",
+                    "volume": "100"
+                }
+            ]
+        });
+
+        let open_1215 = Utc
+            .with_ymd_and_hms(2026, 11, 9, 12, 15, 0)
+            .single()
+            .expect("valid datetime")
+            .timestamp_millis();
+        let (candles, live_price) = MarketDataFeed::parse_twelve_data_snapshot_with_now(
+            &payload,
+            Timeframe::M15,
+            open_1215 + 5 * 60 * 1000,
+            100,
+        );
+
+        assert_eq!(candles.len(), 1);
+        assert_eq!(live_price, Some(2017.5));
+    }
+
+    #[test]
+    fn test_broker_offset_applies_to_candles_and_live_price() {
+        let mut snapshot = MarketFeedSnapshot {
+            candles: vec![Candle {
+                timestamp: 1,
+                open: 2000.1,
+                high: 2005.55,
+                low: 1995.0,
+                close: 2002.34,
+                volume: 100.0,
+                timeframe: Timeframe::M15,
+            }],
+            source: "TWELVEDATA".to_string(),
+            live_price: Some(2003.33),
+        };
+
+        MarketDataFeed::apply_broker_offset(&mut snapshot, 2.37);
+
+        assert!((snapshot.candles[0].open - 2002.47).abs() < 1e-9);
+        assert!((snapshot.candles[0].high - 2007.92).abs() < 1e-9);
+        assert!((snapshot.candles[0].low - 1997.37).abs() < 1e-9);
+        assert!((snapshot.candles[0].close - 2004.71).abs() < 1e-9);
+        assert_eq!(snapshot.live_price, Some(2005.7));
+    }
+
+    #[test]
+    fn test_fallback_snapshot_uses_fallback_seed_source() {
+        let snapshot = MarketFeedSnapshot::fallback(10, Timeframe::M15);
+
+        assert_eq!(snapshot.source, "FALLBACK_SEED");
+        assert_eq!(snapshot.candles.len(), 10);
+        assert_eq!(snapshot.live_price, None);
     }
 }

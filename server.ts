@@ -59,6 +59,12 @@ interface Signal {
   candle_timestamp?: number;
   is_simulated?: boolean;
   confluence_score?: number;
+  entry_type?: 'MARKET' | 'LIMIT' | 'BREAKOUT';
+  candle_close_price?: number;
+  live_market_price?: number | null;
+  retest_limit_price?: number | null;
+  data_source?: string;
+  is_entry_filled?: boolean;
 }
 
 interface EconomicEvent {
@@ -94,8 +100,14 @@ interface BotConfig {
   order_block_filter: boolean;
   max_signals_per_day: number;
   session_filter_enabled: boolean;
+  session_alerts_enabled: boolean;
+  session_alert_lead_minutes: number;
   data_source: 'BINANCE_PAXG' | 'TWELVEDATA';
   webhook_passphrase: string;
+  entry_mode: 'MARKET' | 'LIMIT_RETEST' | 'BREAKOUT';
+  broker_price_offset: number;
+  max_entry_drift_points: number;
+  max_candle_age_secs: number;
 }
 
 interface DailyMacroReport {
@@ -217,8 +229,14 @@ const DEFAULT_CONFIG: BotConfig = {
   order_block_filter: true,
   max_signals_per_day: 1,
   session_filter_enabled: true,
+  session_alerts_enabled: true,
+  session_alert_lead_minutes: 60,
   data_source: 'BINANCE_PAXG',
   webhook_passphrase: process.env.WEBHOOK_PASSPHRASE || '',
+  entry_mode: 'MARKET',
+  broker_price_offset: 0,
+  max_entry_drift_points: 2.5,
+  max_candle_age_secs: 120,
 };
 
 function normalizeConfig(input: Partial<BotConfig>): BotConfig {
@@ -235,6 +253,13 @@ function normalizeConfig(input: Partial<BotConfig>): BotConfig {
     input.timeframe === 'H1' || input.timeframe === 'H4' || input.timeframe === 'M15'
       ? input.timeframe
       : base.timeframe;
+
+  const entryMode: BotConfig['entry_mode'] =
+    input.entry_mode === 'LIMIT_RETEST' ||
+    input.entry_mode === 'BREAKOUT' ||
+    input.entry_mode === 'MARKET'
+      ? input.entry_mode
+      : base.entry_mode;
 
   return {
     symbol: typeof input.symbol === 'string' && input.symbol.trim() ? input.symbol.trim() : base.symbol,
@@ -289,11 +314,38 @@ function normalizeConfig(input: Partial<BotConfig>): BotConfig {
       input.session_filter_enabled,
       base.session_filter_enabled
     ),
+    session_alerts_enabled: booleanOr(
+      input.session_alerts_enabled,
+      base.session_alerts_enabled
+    ),
+    session_alert_lead_minutes: clampInt(
+      input.session_alert_lead_minutes,
+      base.session_alert_lead_minutes,
+      15,
+      120
+    ),
     data_source: input.data_source === 'TWELVEDATA' ? 'TWELVEDATA' : 'BINANCE_PAXG',
     webhook_passphrase:
       typeof input.webhook_passphrase === 'string'
         ? input.webhook_passphrase
         : process.env.WEBHOOK_PASSPHRASE || '',
+    entry_mode: entryMode,
+    broker_price_offset: clamp(
+      numeric(input.broker_price_offset, base.broker_price_offset),
+      -100,
+      100
+    ),
+    max_entry_drift_points: clamp(
+      numeric(input.max_entry_drift_points, base.max_entry_drift_points),
+      0.5,
+      10
+    ),
+    max_candle_age_secs: clampInt(
+      input.max_candle_age_secs,
+      base.max_candle_age_secs,
+      30,
+      900
+    ),
   };
 }
 
@@ -1466,6 +1518,7 @@ async function startServer() {
   /* API 1: Health & system status */
   app.get(['/api/health', '/health'], (_req: Request, res: Response) => {
     const kill = getKillSwitchStatus();
+    const livePrice = candlesBuffer[candlesBuffer.length - 1]?.close ?? null;
     res.json({
       status: 'healthy',
       service: 'Gold Signal Bot (Express Free Engine)',
@@ -1477,6 +1530,7 @@ async function startServer() {
       ...quotaSnapshot(),
       dataSource: activeDataSource,
       dataSourceLabel: dataSourceLabel(activeDataSource),
+      livePrice,
       ema50: calculateEMA(candlesBuffer, 50),
       trendBias: detectEmaTrendBias(candlesBuffer),
       killSwitchActive: kill.active,
@@ -1493,6 +1547,7 @@ async function startServer() {
     );
     const volumeMA = calculateVolumeMA(candlesBuffer, config.volume_ma_period);
     const lastCandle = candlesBuffer[candlesBuffer.length - 1];
+    const lastClosedPrice = lastCandle?.close ?? 2684.5;
 
     res.json({
       count: candlesBuffer.length,
@@ -1500,7 +1555,8 @@ async function startServer() {
       supports,
       resistances,
       volumeMA: Math.round(volumeMA),
-      currentPrice: lastCandle?.close || 2684.5,
+      currentPrice: lastClosedPrice,
+      lastClosedPrice,
       ema50: calculateEMA(candlesBuffer, 50),
       ema200: calculateEMA(candlesBuffer, 200),
       trendBias: detectEmaTrendBias(candlesBuffer),

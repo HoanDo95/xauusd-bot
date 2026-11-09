@@ -54,7 +54,13 @@ const DEFAULT_CONFIG: BotConfig = {
   webhook_passphrase: '',
   max_signals_per_day: 1,
   session_filter_enabled: true,
+  session_alerts_enabled: true,
+  session_alert_lead_minutes: 60,
   data_source: 'BINANCE_PAXG',
+  entry_mode: 'MARKET',
+  broker_price_offset: 0,
+  max_entry_drift_points: 2.5,
+  max_candle_age_secs: 120,
 };
 
 export default function DashboardPage() {
@@ -120,6 +126,7 @@ export default function DashboardPage() {
     try {
       const data = await fetchConfig();
       setConfig({ ...DEFAULT_CONFIG, ...data });
+      if (data.timeframe) setSelectedTimeframe(data.timeframe);
       if (data.max_signals_per_day) setMaxSignalsPerDay(data.max_signals_per_day);
     } catch (err) {
       console.error('Lỗi tải cấu hình:', err);
@@ -185,7 +192,9 @@ export default function DashboardPage() {
   const handleSaveConfig = async (newConfig: BotConfig) => {
     try {
       const data = await saveConfig(newConfig);
-      setConfig({ ...DEFAULT_CONFIG, ...(data.config || newConfig) });
+      const savedConfig = data.config || newConfig;
+      setConfig({ ...DEFAULT_CONFIG, ...savedConfig });
+      if (savedConfig.timeframe) setSelectedTimeframe(savedConfig.timeframe);
       if (data.config?.max_signals_per_day) {
         setMaxSignalsPerDay(data.config.max_signals_per_day);
       }
@@ -193,6 +202,15 @@ export default function DashboardPage() {
     } catch (err) {
       console.error('Lỗi lưu cấu hình:', err);
     }
+  };
+
+  // Persist the selected timeframe and reload candles from the backend feed.
+  const handleTimeframeChange = async (timeframe: string) => {
+    setSelectedTimeframe(timeframe);
+    if (timeframe !== config.timeframe) {
+      await handleSaveConfig({ ...config, timeframe });
+    }
+    await loadCandles();
   };
 
   // Test Telegram connection.
@@ -284,7 +302,7 @@ export default function DashboardPage() {
                   volumeMA={volumeMA}
                   activeSignal={activeSignal}
                   selectedTimeframe={selectedTimeframe}
-                  onTimeframeChange={setSelectedTimeframe}
+                  onTimeframeChange={handleTimeframeChange}
                 />
               </div>
 
