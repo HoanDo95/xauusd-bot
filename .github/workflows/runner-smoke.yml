@@ -8,7 +8,7 @@ on:
 
 jobs:
   smoke:
-    runs-on: [self-hosted, xauusd-bot]
+    runs-on: self-hosted
     steps:
       - name: Host and Docker check
         run: |
