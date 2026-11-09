@@ -170,3 +170,17 @@ The host Tailscale Serve proxies `https://xauusd-bot.tailec308e.ts.net/` →
 `http://127.0.0.1:3000` (the `web` container). It is tailnet-only, no public
 exposure. If you later need a public TradingView webhook, enable Tailscale
 Funnel explicitly or put Cloudflare Tunnel in front.
+
+## 11. CI on the self-hosted runner (current mode)
+
+This account currently cannot start GitHub-hosted jobs (billing block:
+"recent account payments have failed or your spending limit needs to be
+increased"). Therefore `ci.yml` and `build-push.yml` run on the same
+`xauusd-bot` self-hosted runner:
+
+- CI: cargo fmt/clippy/test + npm lint/build on the server.
+- Build: `docker build` on the server daemon, then `docker push` to GHCR.
+- Deploy: pull the new tags and restart compose.
+
+Once billing is fixed, switch `runs-on` back to `ubuntu-latest` in
+`ci.yml` and `build-push.yml` to offload builds from the server.
