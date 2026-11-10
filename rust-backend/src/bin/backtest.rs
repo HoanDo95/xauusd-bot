@@ -11,6 +11,7 @@ use chrono::{DateTime, Datelike, FixedOffset, Months, NaiveDate, SecondsFormat, 
 use chrono_tz::America::New_York;
 use gold_signal_bot::analyzer::GoldMarketAnalyzer;
 use gold_signal_bot::models::{BotConfig, Candle, SignalType, Timeframe};
+use gold_signal_bot::rsi::{detect_divergence, rsi_series, RsiDivergence};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
@@ -31,6 +32,20 @@ const BINANCE_KLINES_URL: &str = "https://api.binance.com/api/v3/klines";
 const DELTA_LOOKBACK: usize = 20;
 /// Phase 1D: minimum absolute delta ratio for the alignment filter.
 const DELTA_ALIGN_THRESHOLD: f64 = 0.10;
+/// Phase R0: M15 RSI period and standard extreme thresholds.
+const RSI_PERIOD: usize = 14;
+const RSI_OVERBOUGHT: f64 = 70.0;
+const RSI_OVERSOLD: f64 = 30.0;
+const RSI_OVERBOUGHT_ALT: f64 = 65.0;
+const RSI_OVERSOLD_ALT: f64 = 35.0;
+/// Phase R0: divergence pivots are confirmed with two candles on each side
+/// inside the last 60 closed M15 candles (15 hours).
+const RSI_DIVERGENCE_LOOKBACK: usize = 60;
+const RSI_PIVOT_K: usize = 2;
+/// Phase R0 volume modes. The analyzer surge threshold is 1.5x MA20(volume).
+const VOLUME_SURGE_MULTIPLIER: f64 = 1.5;
+const VOLUME_EXHAUSTION_MULTIPLIER: f64 = 0.7;
+const VOLUME_EXHAUSTION_RANGE_ATR: f64 = 0.8;
 
 #[tokio::main]
 async fn main() {
@@ -147,6 +162,16 @@ enum Variant {
     HtfH4DeltaAlign,
     HtfH4D1DeltaAlign,
     HtfH4D1DeltaBoth,
+    RsiExtreme,
+    RsiExtreme6535,
+    RsiDivergence,
+    RsiBoth,
+    HtfH4D1RsiExtreme,
+    HtfH4D1RsiBoth,
+    VolumeExhaustion,
+    VolumeEither,
+    RsiDivergenceVolumeExhaustion,
+    HtfH4D1RsiVolumeEither,
 }
 
 impl Variant {
@@ -191,6 +216,16 @@ impl Variant {
             "htf_h4_delta_align" => Some(Self::HtfH4DeltaAlign),
             "htf_h4_d1_delta_align" => Some(Self::HtfH4D1DeltaAlign),
             "htf_h4_d1_delta_both" => Some(Self::HtfH4D1DeltaBoth),
+            "rsi_extreme" => Some(Self::RsiExtreme),
+            "rsi_extreme_65_35" => Some(Self::RsiExtreme6535),
+            "rsi_divergence" => Some(Self::RsiDivergence),
+            "rsi_both" => Some(Self::RsiBoth),
+            "htf_h4_d1_rsi_extreme" => Some(Self::HtfH4D1RsiExtreme),
+            "htf_h4_d1_rsi_both" => Some(Self::HtfH4D1RsiBoth),
+            "volume_exhaustion" => Some(Self::VolumeExhaustion),
+            "volume_either" => Some(Self::VolumeEither),
+            "rsi_divergence_volume_exhaustion" => Some(Self::RsiDivergenceVolumeExhaustion),
+            "htf_h4_d1_rsi_volume_either" => Some(Self::HtfH4D1RsiVolumeEither),
             _ => None,
         }
     }
@@ -236,6 +271,16 @@ impl Variant {
             Self::HtfH4DeltaAlign => "htf_h4_delta_align",
             Self::HtfH4D1DeltaAlign => "htf_h4_d1_delta_align",
             Self::HtfH4D1DeltaBoth => "htf_h4_d1_delta_both",
+            Self::RsiExtreme => "rsi_extreme",
+            Self::RsiExtreme6535 => "rsi_extreme_65_35",
+            Self::RsiDivergence => "rsi_divergence",
+            Self::RsiBoth => "rsi_both",
+            Self::HtfH4D1RsiExtreme => "htf_h4_d1_rsi_extreme",
+            Self::HtfH4D1RsiBoth => "htf_h4_d1_rsi_both",
+            Self::VolumeExhaustion => "volume_exhaustion",
+            Self::VolumeEither => "volume_either",
+            Self::RsiDivergenceVolumeExhaustion => "rsi_divergence_volume_exhaustion",
+            Self::HtfH4D1RsiVolumeEither => "htf_h4_d1_rsi_volume_either",
         }
     }
 }
@@ -299,7 +344,11 @@ fn print_usage() {
                                    trail_after_30,htf_h4_partial_10,htf_h4_partial_15,htf_h4_trail_30,\n\
                                    htf_h4_zone,htf_h4_tp_structure_soft,htf_h4_d1,\n\
                                    delta_align,delta_divergence,delta_both,htf_h4_delta_align,\n\
-                                   htf_h4_d1_delta_align,htf_h4_d1_delta_both\n\
+                                   htf_h4_d1_delta_align,htf_h4_d1_delta_both,\n\
+                                   rsi_extreme,rsi_extreme_65_35,rsi_divergence,rsi_both,\n\
+                                   htf_h4_d1_rsi_extreme,htf_h4_d1_rsi_both,volume_exhaustion,\n\
+                                   volume_either,rsi_divergence_volume_exhaustion,\n\
+                                   htf_h4_d1_rsi_volume_either\n\
            --early-be <POINTS>     Early break-even distance for partial_be (default: 0 = off)\n\
            --cost-usd <USD>        Round-turn spread+slippage cost in USD/oz, subtracted\n\
                                    as cost_usd / risk from every trade R (default: 0)\n\
@@ -1891,6 +1940,187 @@ fn delta_filter_allows(
                 Ok(())
             } else {
                 Err("delta_align")
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase R0: RSI and volume-mode filters
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RsiGate {
+    Extreme { overbought: f64, oversold: f64 },
+    Divergence,
+    Both { overbought: f64, oversold: f64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VolumeFilter {
+    Exhaustion,
+    Either,
+}
+
+fn rsi_extreme_allows(
+    is_buy: bool,
+    rsi_value: Option<f64>,
+    overbought: f64,
+    oversold: f64,
+) -> std::result::Result<(), &'static str> {
+    let Some(value) = rsi_value else {
+        return Err("rsi_extreme");
+    };
+
+    let allowed = if is_buy {
+        value <= oversold
+    } else {
+        value >= overbought
+    };
+
+    if allowed {
+        Ok(())
+    } else {
+        Err("rsi_extreme")
+    }
+}
+
+fn rsi_divergence_allows(
+    is_buy: bool,
+    divergence: RsiDivergence,
+) -> std::result::Result<(), &'static str> {
+    let allowed = match divergence {
+        RsiDivergence::Bullish => is_buy,
+        RsiDivergence::Bearish => !is_buy,
+        RsiDivergence::None => false,
+    };
+
+    if allowed {
+        Ok(())
+    } else {
+        Err("rsi_divergence")
+    }
+}
+
+/// Evaluate an RSI gate at the signal candle.
+///
+/// `rsi_both` is an OR gate; when neither leg passes the rejection is counted
+/// once as `rsi_extreme`, mirroring `delta_both`'s single-reason reporting.
+fn rsi_gate_allows(
+    gate: RsiGate,
+    is_buy: bool,
+    candles: &[Candle],
+    rsi: &[Option<f64>],
+    index: usize,
+) -> std::result::Result<(), &'static str> {
+    let divergence = if index < candles.len() && index < rsi.len() {
+        detect_divergence(
+            &candles[..=index],
+            &rsi[..=index],
+            RSI_DIVERGENCE_LOOKBACK,
+            RSI_PIVOT_K,
+        )
+    } else {
+        RsiDivergence::None
+    };
+
+    match gate {
+        RsiGate::Extreme {
+            overbought,
+            oversold,
+        } => rsi_extreme_allows(
+            is_buy,
+            rsi.get(index).copied().flatten(),
+            overbought,
+            oversold,
+        ),
+        RsiGate::Divergence => rsi_divergence_allows(is_buy, divergence),
+        RsiGate::Both {
+            overbought,
+            oversold,
+        } => {
+            let extreme_passes = rsi_extreme_allows(
+                is_buy,
+                rsi.get(index).copied().flatten(),
+                overbought,
+                oversold,
+            )
+            .is_ok();
+            if extreme_passes || rsi_divergence_allows(is_buy, divergence).is_ok() {
+                Ok(())
+            } else {
+                Err("rsi_extreme")
+            }
+        }
+    }
+}
+
+/// Volume MA over the `period` closed candles before `index`, matching the
+/// analyzer's use of `previous_candles` for its surge ratio.
+fn volume_ma_before(candles: &[Candle], index: usize, period: usize) -> Option<f64> {
+    if period == 0 || index < period || index > candles.len() {
+        return None;
+    }
+
+    let start = index - period;
+    let sum: f64 = candles[start..index]
+        .iter()
+        .map(|candle| candle.volume)
+        .sum();
+    Some(sum / period as f64)
+}
+
+fn volume_surge_at(candles: &[Candle], index: usize) -> bool {
+    let Some(ma20) = volume_ma_before(candles, index, 20) else {
+        return false;
+    };
+    if ma20 <= 0.0 {
+        return false;
+    }
+
+    candles
+        .get(index)
+        .map(|candle| candle.volume >= VOLUME_SURGE_MULTIPLIER * ma20)
+        .unwrap_or(false)
+}
+
+/// Low-volume reversal candle: volume <= 0.7 x MA20 and range <= 0.8 x ATR14.
+fn volume_exhaustion_at(candles: &[Candle], index: usize) -> bool {
+    let Some(ma20) = volume_ma_before(candles, index, 20) else {
+        return false;
+    };
+    if ma20 <= 0.0 {
+        return false;
+    }
+    let Some(candle) = candles.get(index) else {
+        return false;
+    };
+    let Some(atr14) = atr14_at(candles, index) else {
+        return false;
+    };
+
+    candle.volume <= VOLUME_EXHAUSTION_MULTIPLIER * ma20
+        && candle.range() <= VOLUME_EXHAUSTION_RANGE_ATR * atr14
+}
+
+fn volume_filter_allows(
+    filter: VolumeFilter,
+    candles: &[Candle],
+    index: usize,
+) -> std::result::Result<(), &'static str> {
+    match filter {
+        VolumeFilter::Exhaustion => {
+            if volume_exhaustion_at(candles, index) {
+                Ok(())
+            } else {
+                Err("volume_exhaustion")
+            }
+        }
+        VolumeFilter::Either => {
+            if volume_surge_at(candles, index) || volume_exhaustion_at(candles, index) {
+                Ok(())
+            } else {
+                Err("volume_either")
             }
         }
     }
@@ -3602,6 +3832,8 @@ struct BacktestContext<'a> {
     htf: &'a HtfContext,
     /// Phase 1D cumulative delta, aligned with `candles`.
     cvd: &'a [f64],
+    /// Phase R0 Wilder RSI14, aligned with `candles`.
+    rsi: &'a [Option<f64>],
     split_timestamp: i64,
     early_be: f64,
     cost_usd: f64,
@@ -3647,6 +3879,8 @@ struct VariantPlan {
     simulation: SimKind,
     htf: Option<HtfFilter>,
     delta: Option<DeltaFilter>,
+    rsi: Option<RsiGate>,
+    volume: Option<VolumeFilter>,
 }
 
 fn variant_plan(variant: Variant) -> VariantPlan {
@@ -3780,6 +4014,59 @@ fn variant_plan(variant: Variant) -> VariantPlan {
             Some(HtfFilter::H4D1),
             Some(DeltaFilter::Both),
         ),
+        Variant::RsiExtreme
+        | Variant::RsiExtreme6535
+        | Variant::RsiDivergence
+        | Variant::RsiBoth
+        | Variant::VolumeExhaustion
+        | Variant::VolumeEither
+        | Variant::RsiDivergenceVolumeExhaustion => {
+            (LevelSource::Analyzer, SimKind::Standard, None, None)
+        }
+        Variant::HtfH4D1RsiExtreme | Variant::HtfH4D1RsiBoth | Variant::HtfH4D1RsiVolumeEither => (
+            LevelSource::Analyzer,
+            SimKind::Standard,
+            Some(HtfFilter::H4D1),
+            None,
+        ),
+    };
+
+    let (rsi, volume) = match variant {
+        Variant::RsiExtreme | Variant::HtfH4D1RsiExtreme => (
+            Some(RsiGate::Extreme {
+                overbought: RSI_OVERBOUGHT,
+                oversold: RSI_OVERSOLD,
+            }),
+            None,
+        ),
+        Variant::RsiExtreme6535 => (
+            Some(RsiGate::Extreme {
+                overbought: RSI_OVERBOUGHT_ALT,
+                oversold: RSI_OVERSOLD_ALT,
+            }),
+            None,
+        ),
+        Variant::RsiDivergence => (Some(RsiGate::Divergence), None),
+        Variant::RsiBoth | Variant::HtfH4D1RsiBoth => (
+            Some(RsiGate::Both {
+                overbought: RSI_OVERBOUGHT,
+                oversold: RSI_OVERSOLD,
+            }),
+            None,
+        ),
+        Variant::VolumeExhaustion => (None, Some(VolumeFilter::Exhaustion)),
+        Variant::VolumeEither => (None, Some(VolumeFilter::Either)),
+        Variant::RsiDivergenceVolumeExhaustion => {
+            (Some(RsiGate::Divergence), Some(VolumeFilter::Exhaustion))
+        }
+        Variant::HtfH4D1RsiVolumeEither => (
+            Some(RsiGate::Both {
+                overbought: RSI_OVERBOUGHT,
+                oversold: RSI_OVERSOLD,
+            }),
+            Some(VolumeFilter::Either),
+        ),
+        _ => (None, None),
     };
 
     VariantPlan {
@@ -3787,6 +4074,8 @@ fn variant_plan(variant: Variant) -> VariantPlan {
         simulation,
         htf,
         delta,
+        rsi,
+        volume,
     }
 }
 
@@ -4008,6 +4297,20 @@ fn run_variant(
             if let Err(reason) =
                 delta_filter_allows(filter, is_buy, candles, context.cvd, raw.index)
             {
+                *reject_reasons.entry(reason.to_string()).or_default() += 1;
+                continue;
+            }
+        }
+
+        if let Some(gate) = plan.rsi {
+            if let Err(reason) = rsi_gate_allows(gate, is_buy, candles, context.rsi, raw.index) {
+                *reject_reasons.entry(reason.to_string()).or_default() += 1;
+                continue;
+            }
+        }
+
+        if let Some(filter) = plan.volume {
+            if let Err(reason) = volume_filter_allows(filter, candles, raw.index) {
                 *reject_reasons.entry(reason.to_string()).or_default() += 1;
                 continue;
             }
@@ -4720,6 +5023,7 @@ async fn run() -> Result<()> {
     let h4_candles = aggregate_candles(&candles, timeframe_millis(Timeframe::H4), Timeframe::H4);
     let htf_context = HtfContext::new(&candles);
     let cvd = cumulative_delta(&candles);
+    let rsi14 = rsi_series(&candles, RSI_PERIOD);
     let walk_forward_defs = walk_forward_windows(args.start, args.end);
     let rolling_defs = rolling_is_oos_windows(args.start, args.end);
 
@@ -4748,6 +5052,12 @@ async fn run() -> Result<()> {
         walk_forward_defs.len(),
         rolling_defs.len()
     );
+    println!(
+        "Phase R0 context: {} RSI14 value(s), divergence lookback {} M15 candles, pivot k={}",
+        rsi14.iter().filter(|value| value.is_some()).count(),
+        RSI_DIVERGENCE_LOOKBACK,
+        RSI_PIVOT_K
+    );
 
     let signals = generate_signals(&candles, &config);
     println!(
@@ -4760,12 +5070,34 @@ async fn run() -> Result<()> {
         );
     }
 
+    // Volume-mode variants need the analyzer's surge requirement disabled so
+    // low-volume exhaustion reversals can reach the variant gate.
+    let volume_config = BotConfig {
+        volume_surge_multiplier: 0.0,
+        ..config.clone()
+    };
+    let needs_volume_universe = args
+        .variants
+        .iter()
+        .any(|variant| variant_plan(*variant).volume.is_some());
+    let volume_signals = if needs_volume_universe {
+        let signals = generate_signals(&candles, &volume_config);
+        println!(
+            "Volume-mode signals: {} (analyzer surge disabled; variant volume gate applied after)",
+            signals.len()
+        );
+        signals
+    } else {
+        Vec::new()
+    };
+
     let context = BacktestContext {
         candles: &candles,
         h1: &h1_candles,
         h4: &h4_candles,
         htf: &htf_context,
         cvd: &cvd,
+        rsi: &rsi14,
         split_timestamp,
         early_be: args.early_be,
         cost_usd: args.cost_usd,
@@ -4776,7 +5108,13 @@ async fn run() -> Result<()> {
 
     let mut variants = Vec::new();
     for variant in &args.variants {
-        let report = run_variant(*variant, &signals, &context);
+        let plan = variant_plan(*variant);
+        let variant_signals = if plan.volume.is_some() {
+            &volume_signals
+        } else {
+            &signals
+        };
+        let report = run_variant(*variant, variant_signals, &context);
         println!(
             "Variant {}: signals={}, trades={}, rejected={} {:?}",
             report.name, report.signals, report.trades, report.rejected, report.reject_reasons
@@ -4845,6 +5183,13 @@ async fn run() -> Result<()> {
         "delta_divergence: over the last 20 M15 candles, BUY requires price change < 0 and CVD change > 0 (bullish absorption); SELL requires price change > 0 and CVD change < 0 (bearish exhaustion). CVD is cumulative delta.".to_string(),
         "delta_both = delta_align OR delta_divergence. When neither leg passes, the rejection is counted once as delta_align.".to_string(),
         "htf_h4_delta_align / htf_h4_d1_delta_align / htf_h4_d1_delta_both combine the Phase 1C HTF gates with delta. HTF is evaluated before delta, so rejection counts reflect the first failing gate.".to_string(),
+        "Phase R0 RSI: Wilder RSI14 is precomputed once for all M15 candles; the first value appears after 14 closed candles. Zero average loss = 100, zero average gain = 0, flat = 50.".to_string(),
+        "rsi_extreme: baseline signals plus BUY only when RSI14 <= 30 and SELL only when RSI14 >= 70. rsi_extreme_65_35 uses 35/65 instead. A missing RSI value rejects as rsi_extreme.".to_string(),
+        "rsi_divergence: confirmed pivots use 2 candles on each side inside the last 60 closed M15 candles; the last two pivots must be >= 3 candles apart. Bearish = price higher high + RSI lower high; bullish = price lower low + RSI higher low. BUY requires bullish and SELL requires bearish divergence, else rsi_divergence.".to_string(),
+        "rsi_both = RSI extreme 70/30 OR matching divergence. When neither leg passes the rejection is counted once as rsi_extreme. htf_h4_d1_rsi_extreme / htf_h4_d1_rsi_both add the htf_h4_d1 gate, evaluated before RSI.".to_string(),
+        "Volume mode variants regenerate signals with analyzer volume_surge_multiplier=0.0 so the analyzer does not require a surge; the variant gate is then applied. MA20(volume) uses the 20 closed candles before the signal candle.".to_string(),
+        "volume_exhaustion: current volume <= 0.7 x MA20(volume,20) AND current range <= 0.8 x ATR14(M15); otherwise volume_exhaustion. volume_either: surge >= 1.5 x MA20 OR that exhaustion condition; otherwise volume_either.".to_string(),
+        "rsi_divergence_volume_exhaustion = rsi_divergence AND volume_exhaustion. htf_h4_d1_rsi_volume_either = htf_h4_d1 AND rsi_both(70/30) AND volume_either. Gate order is HTF, RSI, volume, delta, so rejection counts reflect the first failing gate.".to_string(),
     ];
     if args.early_be > 0.0 {
         notes.push(format!(
@@ -6607,6 +6952,7 @@ mod tests {
             h4: &[],
             htf: &htf,
             cvd: &cvd,
+            rsi: &[],
             split_timestamp: start,
             early_be: 0.0,
             cost_usd: 0.0,
@@ -6629,5 +6975,262 @@ mod tests {
         let both = run_variant(Variant::DeltaBoth, signals, &context);
         assert_eq!(both.rejected, 1);
         assert_eq!(both.reject_reasons.get("delta_align"), Some(&1));
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase R0: RSI + divergence + volume modes
+    // -----------------------------------------------------------------------
+
+    fn range_candle(timestamp: i64, close: f64, volume: f64, range: f64) -> Candle {
+        Candle {
+            timestamp,
+            open: close,
+            high: close + range / 2.0,
+            low: close - range / 2.0,
+            close,
+            volume,
+            taker_buy_volume: 0.0,
+            timeframe: Timeframe::M15,
+        }
+    }
+
+    #[test]
+    fn phase_r0_variant_names_round_trip_through_parse() {
+        let variants = [
+            (Variant::RsiExtreme, "rsi_extreme"),
+            (Variant::RsiExtreme6535, "rsi_extreme_65_35"),
+            (Variant::RsiDivergence, "rsi_divergence"),
+            (Variant::RsiBoth, "rsi_both"),
+            (Variant::HtfH4D1RsiExtreme, "htf_h4_d1_rsi_extreme"),
+            (Variant::HtfH4D1RsiBoth, "htf_h4_d1_rsi_both"),
+            (Variant::VolumeExhaustion, "volume_exhaustion"),
+            (Variant::VolumeEither, "volume_either"),
+            (
+                Variant::RsiDivergenceVolumeExhaustion,
+                "rsi_divergence_volume_exhaustion",
+            ),
+            (
+                Variant::HtfH4D1RsiVolumeEither,
+                "htf_h4_d1_rsi_volume_either",
+            ),
+        ];
+
+        for (variant, name) in variants {
+            assert_eq!(variant.name(), name);
+            assert_eq!(Variant::parse(name), Some(variant));
+        }
+
+        assert_eq!(
+            variant_plan(Variant::RsiExtreme).rsi,
+            Some(RsiGate::Extreme {
+                overbought: 70.0,
+                oversold: 30.0,
+            })
+        );
+        assert_eq!(
+            variant_plan(Variant::RsiExtreme6535).rsi,
+            Some(RsiGate::Extreme {
+                overbought: 65.0,
+                oversold: 35.0,
+            })
+        );
+        assert_eq!(
+            variant_plan(Variant::VolumeExhaustion).volume,
+            Some(VolumeFilter::Exhaustion)
+        );
+        assert_eq!(
+            variant_plan(Variant::VolumeEither).volume,
+            Some(VolumeFilter::Either)
+        );
+        assert_eq!(
+            variant_plan(Variant::HtfH4D1RsiVolumeEither).htf,
+            Some(HtfFilter::H4D1)
+        );
+        assert_eq!(variant_plan(Variant::Baseline).rsi, None);
+        assert_eq!(variant_plan(Variant::Baseline).volume, None);
+    }
+
+    #[test]
+    fn rsi_gate_requires_extreme_or_matching_divergence() {
+        let start = utc_ms(2024, 1, 10, 15, 0);
+        let candles: Vec<Candle> = (0..20)
+            .map(|index| flow_candle(start + index as i64 * STEP_MS, 100.0, 50.0))
+            .collect();
+        let mut rsi = vec![Some(50.0); candles.len()];
+
+        // 70/30 extreme gate.
+        assert!(rsi_extreme_allows(true, Some(30.0), 70.0, 30.0).is_ok());
+        assert_eq!(
+            rsi_extreme_allows(true, Some(30.1), 70.0, 30.0),
+            Err("rsi_extreme")
+        );
+        assert!(rsi_extreme_allows(false, Some(70.0), 70.0, 30.0).is_ok());
+        assert_eq!(
+            rsi_extreme_allows(false, Some(69.9), 70.0, 30.0),
+            Err("rsi_extreme")
+        );
+        assert_eq!(
+            rsi_extreme_allows(true, None, 70.0, 30.0),
+            Err("rsi_extreme")
+        );
+
+        // 65/35 extreme gate is tighter.
+        assert!(rsi_extreme_allows(true, Some(35.0), 65.0, 35.0).is_ok());
+        assert_eq!(
+            rsi_extreme_allows(true, Some(35.1), 65.0, 35.0),
+            Err("rsi_extreme")
+        );
+        assert!(rsi_extreme_allows(false, Some(65.0), 65.0, 35.0).is_ok());
+        assert_eq!(
+            rsi_extreme_allows(false, Some(64.9), 65.0, 35.0),
+            Err("rsi_extreme")
+        );
+
+        // Divergence must match the trade direction.
+        assert!(rsi_divergence_allows(true, RsiDivergence::Bullish).is_ok());
+        assert_eq!(
+            rsi_divergence_allows(true, RsiDivergence::Bearish),
+            Err("rsi_divergence")
+        );
+        assert_eq!(
+            rsi_divergence_allows(false, RsiDivergence::None),
+            Err("rsi_divergence")
+        );
+
+        // Both gate: extreme passes; neutral without pivots fails as rsi_extreme.
+        let both = RsiGate::Both {
+            overbought: 70.0,
+            oversold: 30.0,
+        };
+        rsi[19] = Some(25.0);
+        assert!(rsi_gate_allows(both, true, &candles, &rsi, 19).is_ok());
+        rsi[19] = Some(50.0);
+        assert_eq!(
+            rsi_gate_allows(both, true, &candles, &rsi, 19),
+            Err("rsi_extreme")
+        );
+        assert_eq!(
+            rsi_gate_allows(RsiGate::Divergence, true, &candles, &rsi, 19),
+            Err("rsi_divergence")
+        );
+        assert_eq!(
+            rsi_gate_allows(
+                RsiGate::Extreme {
+                    overbought: 70.0,
+                    oversold: 30.0,
+                },
+                true,
+                &candles,
+                &[],
+                19,
+            ),
+            Err("rsi_extreme")
+        );
+    }
+
+    #[test]
+    fn volume_mode_accepts_surge_or_exhaustion_only() {
+        let start = utc_ms(2024, 1, 10, 15, 0);
+        let base: Vec<Candle> = (0..30)
+            .map(|index| range_candle(start + index as i64 * STEP_MS, 100.0, 100.0, 1.0))
+            .collect();
+
+        // Low volume and a small range: exhaustion passes, surge does not.
+        let mut exhaustion = base.clone();
+        exhaustion[29] = range_candle(start + 29 * STEP_MS, 100.0, 50.0, 0.5);
+        assert!(volume_filter_allows(VolumeFilter::Exhaustion, &exhaustion, 29).is_ok());
+        assert!(volume_filter_allows(VolumeFilter::Either, &exhaustion, 29).is_ok());
+
+        // Surge passes the OR gate even with a wide range; exhaustion alone fails.
+        let mut surge = base.clone();
+        surge[29] = range_candle(start + 29 * STEP_MS, 100.0, 200.0, 2.0);
+        assert!(volume_filter_allows(VolumeFilter::Either, &surge, 29).is_ok());
+        assert_eq!(
+            volume_filter_allows(VolumeFilter::Exhaustion, &surge, 29),
+            Err("volume_exhaustion")
+        );
+
+        // Average volume with an average range passes neither gate.
+        assert_eq!(
+            volume_filter_allows(VolumeFilter::Exhaustion, &base, 29),
+            Err("volume_exhaustion")
+        );
+        assert_eq!(
+            volume_filter_allows(VolumeFilter::Either, &base, 29),
+            Err("volume_either")
+        );
+
+        // Not enough history for MA20 rejects both modes.
+        assert_eq!(
+            volume_filter_allows(VolumeFilter::Either, &base, 10),
+            Err("volume_either")
+        );
+    }
+
+    #[test]
+    fn run_variant_records_rsi_and_volume_rejection_reasons() {
+        let start = utc_ms(2024, 1, 10, 15, 0);
+        let candles: Vec<Candle> = (0..40)
+            .map(|index| flow_candle(start + index as i64 * STEP_MS, 100.0, 50.0))
+            .collect();
+        let rsi = vec![Some(50.0); candles.len()];
+        let htf = HtfContext::new(&candles);
+        let context = BacktestContext {
+            candles: &candles,
+            h1: &[],
+            h4: &[],
+            htf: &htf,
+            cvd: &[],
+            rsi: &rsi,
+            split_timestamp: start,
+            early_be: 0.0,
+            cost_usd: 0.0,
+            step_ms: STEP_MS,
+            walk_forward: &[],
+            rolling: &[],
+        };
+        let raw = raw_signal(25, SignalType::Buy, 100.0, 95.0, 110.0, 115.0);
+        let signals = std::slice::from_ref(&raw);
+
+        let extreme = run_variant(Variant::RsiExtreme, signals, &context);
+        assert_eq!(extreme.trades, 0);
+        assert_eq!(extreme.reject_reasons.get("rsi_extreme"), Some(&1));
+
+        let volume_exhaustion = run_variant(Variant::VolumeExhaustion, signals, &context);
+        assert_eq!(volume_exhaustion.trades, 0);
+        assert_eq!(
+            volume_exhaustion.reject_reasons.get("volume_exhaustion"),
+            Some(&1)
+        );
+
+        let volume_either = run_variant(Variant::VolumeEither, signals, &context);
+        assert_eq!(volume_either.trades, 0);
+        assert_eq!(volume_either.reject_reasons.get("volume_either"), Some(&1));
+
+        // RSI is evaluated before volume for combined variants.
+        let combined = run_variant(Variant::RsiDivergenceVolumeExhaustion, signals, &context);
+        assert_eq!(combined.trades, 0);
+        assert_eq!(combined.reject_reasons.get("rsi_divergence"), Some(&1));
+
+        // With RSI extreme passing, the combined H4/D1 variant fails at volume.
+        let mut extreme_rsi = vec![Some(50.0); candles.len()];
+        extreme_rsi[25] = Some(25.0);
+        let combined_context = BacktestContext {
+            candles: &candles,
+            h1: &[],
+            h4: &[],
+            htf: &htf,
+            cvd: &[],
+            rsi: &extreme_rsi,
+            split_timestamp: start,
+            early_be: 0.0,
+            cost_usd: 0.0,
+            step_ms: STEP_MS,
+            walk_forward: &[],
+            rolling: &[],
+        };
+        let combined = run_variant(Variant::HtfH4D1RsiVolumeEither, signals, &combined_context);
+        assert_eq!(combined.trades, 0);
+        assert_eq!(combined.reject_reasons.get("volume_either"), Some(&1));
     }
 }
