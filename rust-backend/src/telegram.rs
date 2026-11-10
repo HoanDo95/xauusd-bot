@@ -180,7 +180,8 @@ impl TelegramNotifier {
         match self.client.post(&url).json(&payload).send().await {
             Ok(resp) => {
                 if resp.status().is_success() {
-                    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+                    let body: serde_json::Value =
+                        resp.json().await.map_err(|e| e.without_url().to_string())?;
                     let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
                     info!(
                         "✅ Đã gửi tín hiệu thành công tới Telegram! Message ID: {}",
@@ -197,6 +198,7 @@ impl TelegramNotifier {
                 }
             }
             Err(err) => {
+                let err = err.without_url();
                 error!("❌ Không thể kết nối tới Telegram API: {}", err);
                 Err(format!("Network Error: {}", err))
             }
@@ -299,7 +301,8 @@ impl TelegramNotifier {
         match self.client.post(&url).json(&payload).send().await {
             Ok(resp) => {
                 if resp.status().is_success() {
-                    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+                    let body: serde_json::Value =
+                        resp.json().await.map_err(|e| e.without_url().to_string())?;
                     let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
                     info!(
                         "✅ Đã gửi session briefing {} tới Telegram! Message ID: {}",
@@ -316,6 +319,7 @@ impl TelegramNotifier {
                 }
             }
             Err(err) => {
+                let err = err.without_url();
                 error!("❌ Không thể gửi session briefing tới Telegram: {}", err);
                 Err(format!("Network Error: {}", err))
             }
@@ -403,7 +407,8 @@ impl TelegramNotifier {
         match self.client.post(&url).json(&payload).send().await {
             Ok(resp) => {
                 if resp.status().is_success() {
-                    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+                    let body: serde_json::Value =
+                        resp.json().await.map_err(|e| e.without_url().to_string())?;
                     let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
                     info!("✅ Đã gửi outcome Telegram! Message ID: {}", msg_id);
                     Ok(msg_id)
@@ -417,6 +422,7 @@ impl TelegramNotifier {
                 }
             }
             Err(err) => {
+                let err = err.without_url();
                 error!("❌ Không thể gửi outcome tới Telegram: {}", err);
                 Err(format!("Network Error: {}", err))
             }
@@ -450,7 +456,7 @@ impl TelegramNotifier {
                     Err(format!("Lỗi từ Telegram API: {}", err))
                 }
             }
-            Err(e) => Err(format!("Lỗi kết nối mạng: {}", e)),
+            Err(e) => Err(format!("Lỗi kết nối mạng: {}", e.without_url())),
         }
     }
 }

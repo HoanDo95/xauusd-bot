@@ -65,6 +65,10 @@ export interface HealthResponse {
   feedOk?: boolean;
   /** Age of the last scanner tick in seconds (null before the first scan). */
   lastScanAgeSecs?: number | null;
+  /** True when a Telegram bot token is configured (never returned). */
+  telegramConfigured?: boolean;
+  /** True when a webhook passphrase is configured (never returned). */
+  webhookPassphraseConfigured?: boolean;
 }
 
 export interface AiReviewResponse {

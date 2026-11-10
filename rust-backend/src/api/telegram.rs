@@ -5,6 +5,7 @@ use crate::telegram::TelegramNotifier;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::Deserialize;
 use serde_json::json;
+use tracing::warn;
 
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct TelegramTestPayload {
@@ -47,10 +48,16 @@ pub(super) async fn trigger_test_telegram(
             StatusCode::OK,
             Json(json!({ "status": "success", "message": message })),
         ),
-        Err(err) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "status": "error", "message": err })),
-        ),
+        Err(err) => {
+            warn!("⚠️ Telegram test gửi thất bại: {}", err);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "status": "error",
+                    "message": "Không gửi được Telegram. Kiểm tra token/chat ID và log server."
+                })),
+            )
+        }
     }
 }
 
@@ -127,12 +134,15 @@ pub(super) async fn send_signal_telegram(
                 "messageId": message_id
             })),
         ),
-        Err(err) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "status": "error",
-                "message": err
-            })),
-        ),
+        Err(err) => {
+            warn!("⚠️ Telegram send-signal thất bại: {}", err);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "status": "error",
+                    "message": "Không gửi được Telegram. Kiểm tra token/chat ID và log server."
+                })),
+            )
+        }
     }
 }

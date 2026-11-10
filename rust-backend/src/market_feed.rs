@@ -104,7 +104,7 @@ impl MarketDataFeed {
         let response = match self.client.get(url).send().await {
             Ok(response) => response,
             Err(err) => {
-                warn!("⚠️ {} spot request lỗi: {}", provider, err);
+                warn!("⚠️ {} spot request lỗi: {}", provider, err.without_url());
                 return None;
             }
         };
@@ -117,7 +117,7 @@ impl MarketDataFeed {
         let payload: Value = match response.json().await {
             Ok(payload) => payload,
             Err(err) => {
-                warn!("⚠️ {} spot JSON lỗi: {}", provider, err);
+                warn!("⚠️ {} spot JSON lỗi: {}", provider, err.without_url());
                 return None;
             }
         };
@@ -197,7 +197,7 @@ impl MarketDataFeed {
             .get(&url)
             .send()
             .await
-            .map_err(|e| format!("Binance HTF request error: {}", e))?;
+            .map_err(|e| format!("Binance HTF request error: {}", e.without_url()))?;
 
         if !response.status().is_success() {
             return Err(format!("Binance HTF HTTP {}", response.status()));
@@ -206,7 +206,7 @@ impl MarketDataFeed {
         let payload: Value = response
             .json()
             .await
-            .map_err(|e| format!("Binance HTF JSON parse error: {}", e))?;
+            .map_err(|e| format!("Binance HTF JSON parse error: {}", e.without_url()))?;
 
         let (candles, _) = Self::parse_binance_klines_snapshot_with_now(
             &payload,
@@ -351,7 +351,7 @@ impl MarketDataFeed {
             .get(&url)
             .send()
             .await
-            .map_err(|e| format!("Binance request error: {}", e))?;
+            .map_err(|e| format!("Binance request error: {}", e.without_url()))?;
 
         if !response.status().is_success() {
             return Err(format!("Binance HTTP {}", response.status()));
@@ -360,7 +360,7 @@ impl MarketDataFeed {
         let payload: Value = response
             .json()
             .await
-            .map_err(|e| format!("Binance JSON parse error: {}", e))?;
+            .map_err(|e| format!("Binance JSON parse error: {}", e.without_url()))?;
 
         let (candles, live_price) = Self::parse_binance_klines_snapshot_with_now(
             &payload,
@@ -404,7 +404,7 @@ impl MarketDataFeed {
             .get(&url)
             .send()
             .await
-            .map_err(|e| format!("TwelveData request error: {}", e))?;
+            .map_err(|e| format!("TwelveData request error: {}", e.without_url()))?;
 
         if !response.status().is_success() {
             return Err(format!("TwelveData HTTP {}", response.status()));
@@ -413,7 +413,7 @@ impl MarketDataFeed {
         let payload: Value = response
             .json()
             .await
-            .map_err(|e| format!("TwelveData JSON parse error: {}", e))?;
+            .map_err(|e| format!("TwelveData JSON parse error: {}", e.without_url()))?;
 
         if let Some(message) = payload.get("message").and_then(|v| v.as_str()) {
             return Err(format!("TwelveData API error: {}", message));

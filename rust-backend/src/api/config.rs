@@ -7,10 +7,37 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::{info, warn};
 
-/// Lấy cấu hình tham số bot hiện tại
+/// Xóa toàn bộ secret trước khi trả config ra ngoài API.
+fn redacted_config(mut config: BotConfig) -> BotConfig {
+    config.telegram_bot_token.clear();
+    config.webhook_passphrase.clear();
+    config
+}
+
+/// Secret bị che hoặc để trống nghĩa là dashboard không có giá trị mới.
+fn is_blank_or_masked(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.is_empty() || trimmed.chars().all(|ch| ch == '*' || ch == '•')
+}
+
+/// Giữ secret hiện tại khi payload gửi lên không chứa giá trị mới.
+fn merge_secrets(mut incoming: BotConfig, current: &BotConfig) -> BotConfig {
+    if is_blank_or_masked(&incoming.telegram_bot_token) {
+        incoming.telegram_bot_token = current.telegram_bot_token.clone();
+    }
+    if incoming.telegram_chat_id.trim().is_empty() {
+        incoming.telegram_chat_id = current.telegram_chat_id.clone();
+    }
+    if is_blank_or_masked(&incoming.webhook_passphrase) {
+        incoming.webhook_passphrase = current.webhook_passphrase.clone();
+    }
+    incoming
+}
+
+/// Lấy cấu hình tham số bot hiện tại (không bao gồm secret).
 pub(super) async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
-    let config = state.config.read().await;
-    Json((*config).clone())
+    let config = state.config.read().await.clone();
+    Json(redacted_config(config))
 }
 
 /// Cập nhật cấu hình bot từ Dashboard và lưu bền vững xuống đĩa.
@@ -18,7 +45,8 @@ pub(super) async fn update_config(
     State(state): State<AppState>,
     Json(new_config): Json<BotConfig>,
 ) -> impl IntoResponse {
-    let new_config = new_config.sanitized();
+    let current_config = state.config.read().await.clone();
+    let new_config = merge_secrets(new_config.sanitized(), &current_config);
     {
         let mut config = state.config.write().await;
         *config = new_config.clone();
@@ -48,7 +76,7 @@ pub(super) async fn update_config(
         Json(json!({
             "status": "success",
             "message": "Đã lưu thông số cấu hình, quota Sniper và Telegram credentials.",
-            "config": new_config
+            "config": redacted_config(new_config)
         })),
     )
 }
@@ -122,4 +150,79 @@ pub(super) async fn calculate_lot(
         PositionSizer::calculate_lot_size(balance, risk_pct, sl, tp1, tp2, current_price, leverage);
 
     Json(calculate_lot_response(&result))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with_secrets() -> BotConfig {
+        BotConfig {
+            telegram_bot_token: "123456:current-token".to_string(),
+            telegram_chat_id: "-100987654".to_string(),
+            webhook_passphrase: "current-passphrase".to_string(),
+            symbol: "XAU/USD".to_string(),
+            ..BotConfig::default()
+        }
+    }
+
+    #[test]
+    fn redacted_config_clears_secrets_but_keeps_other_fields() {
+        let redacted = redacted_config(config_with_secrets());
+
+        assert!(redacted.telegram_bot_token.is_empty());
+        assert!(redacted.webhook_passphrase.is_empty());
+        assert_eq!(redacted.telegram_chat_id, "-100987654");
+        assert_eq!(redacted.symbol, "XAU/USD");
+    }
+
+    #[test]
+    fn merge_secrets_keeps_current_when_incoming_blank() {
+        let current = config_with_secrets();
+        let mut incoming = config_with_secrets();
+        incoming.telegram_bot_token.clear();
+        incoming.webhook_passphrase = "   ".to_string();
+
+        let merged = merge_secrets(incoming, &current);
+
+        assert_eq!(merged.telegram_bot_token, "123456:current-token");
+        assert_eq!(merged.webhook_passphrase, "current-passphrase");
+    }
+
+    #[test]
+    fn merge_secrets_keeps_current_when_incoming_masked() {
+        let current = config_with_secrets();
+        let mut incoming = config_with_secrets();
+        incoming.telegram_bot_token = "********".to_string();
+        incoming.webhook_passphrase = "••••••••".to_string();
+
+        let merged = merge_secrets(incoming, &current);
+
+        assert_eq!(merged.telegram_bot_token, "123456:current-token");
+        assert_eq!(merged.webhook_passphrase, "current-passphrase");
+    }
+
+    #[test]
+    fn merge_secrets_accepts_new_non_empty_values() {
+        let current = config_with_secrets();
+        let mut incoming = config_with_secrets();
+        incoming.telegram_bot_token = "999999:new-token".to_string();
+        incoming.webhook_passphrase = "new-passphrase".to_string();
+
+        let merged = merge_secrets(incoming, &current);
+
+        assert_eq!(merged.telegram_bot_token, "999999:new-token");
+        assert_eq!(merged.webhook_passphrase, "new-passphrase");
+    }
+
+    #[test]
+    fn merge_secrets_preserves_chat_id_when_incoming_blank() {
+        let current = config_with_secrets();
+        let mut incoming = config_with_secrets();
+        incoming.telegram_chat_id = "  ".to_string();
+
+        let merged = merge_secrets(incoming, &current);
+
+        assert_eq!(merged.telegram_chat_id, "-100987654");
+    }
 }

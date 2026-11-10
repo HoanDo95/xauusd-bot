@@ -535,7 +535,7 @@ pub async fn review_signal(
         Err(err) => {
             warn!(
                 "⚠️ [AI Risk Officer] Không kết nối được OpenCode Go ({}).",
-                err
+                err.without_url()
             );
             return None;
         }

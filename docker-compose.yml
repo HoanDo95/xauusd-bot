@@ -27,6 +27,9 @@ services:
       retries: 3
       start_period: 20s
     mem_limit: 512m
+    pids_limit: 256
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
     logging:
@@ -54,6 +57,7 @@ services:
       retries: 3
       start_period: 10s
     mem_limit: 64m
+    pids_limit: 256
     security_opt:
       - no-new-privileges:true
     logging:

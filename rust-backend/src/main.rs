@@ -54,6 +54,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     worker::migrate_ohlcv_source_to_binance(&mut config);
 
+    if config.telegram_bot_token.trim().is_empty() {
+        warn!("🔐 Telegram token chưa cấu hình — dashboard sẽ không gửi được alert.");
+    }
+    let webhook_passphrase = config.webhook_passphrase.trim();
+    if webhook_passphrase.is_empty() {
+        warn!(
+            "🔐 Webhook passphrase đang trống — chỉ an toàn trong Tailscale; nên đặt WEBHOOK_PASSPHRASE và cấu hình TradingView."
+        );
+    } else if webhook_passphrase.chars().count() < 16 {
+        warn!(
+            "🔐 Webhook passphrase chỉ dài {} ký tự — nên dùng tối thiểu 16 ký tự ngẫu nhiên.",
+            webhook_passphrase.chars().count()
+        );
+    }
+
     // 3. OHLCV + volume luôn lấy từ Binance PAXGUSDT. TwelveData chỉ là giá spot
     // tham chiếu để tự động căn basis PAXG → XAU/USD (time_series không có volume).
     let market_feed = MarketDataFeed::new();

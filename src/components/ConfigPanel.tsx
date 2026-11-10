@@ -990,13 +990,15 @@ export const ConfigPanel: React.FC<Props> = ({
                 Telegram Bot Token
               </label>
               <input
-                type="text"
-                placeholder="1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ"
+                type="password"
+                placeholder="Để trống = giữ token hiện tại"
                 value={formData.telegram_bot_token}
                 onChange={(e) => setFormData({ ...formData, telegram_bot_token: e.target.value })}
                 className="w-full bg-neutral-950 border border-neutral-800 focus:border-sky-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
               />
-              <span className="text-[11px] text-neutral-500">Token bảo mật do BotFather cấp</span>
+              <span className="text-[11px] text-neutral-500">
+                Token không còn được trả về từ API; nhập token mới nếu muốn thay đổi.
+              </span>
             </div>
 
             <div className="flex flex-col gap-1.5">
@@ -1019,7 +1021,7 @@ export const ConfigPanel: React.FC<Props> = ({
               </label>
               <input
                 type="password"
-                placeholder="Để trống nếu không dùng TradingView Webhook"
+                placeholder="Để trống = giữ passphrase hiện tại (nếu đã đặt)"
                 value={formData.webhook_passphrase}
                 onChange={(e) => setFormData({ ...formData, webhook_passphrase: e.target.value })}
                 className="w-full bg-neutral-950 border border-neutral-800 focus:border-sky-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"

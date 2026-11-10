@@ -17,6 +17,31 @@ use chrono::Utc;
 use serde_json::json;
 use tracing::{info, warn};
 
+/// So sánh chuỗi theo thời gian hằng số để tránh rò rỉ thông tin qua timing.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+
+    let mut diff = 0u8;
+    for (left, right) in a.iter().zip(b.iter()) {
+        diff |= left ^ right;
+    }
+    diff == 0
+}
+
+/// Passphrase rỗng nghĩa là webhook không bật kiểm tra.
+fn passphrase_matches(provided: Option<&str>, expected: &str) -> bool {
+    if expected.is_empty() {
+        return true;
+    }
+    provided
+        .map(|value| constant_time_eq(value, expected))
+        .unwrap_or(false)
+}
+
 /// Webhook nhận nến mới từ sàn giao dịch (Binance / MetaTrader EA).
 /// Enforce: Daily Quota -> Dedup -> News Kill Switch -> Analyzer.
 pub(super) async fn receive_candle_webhook(
@@ -25,9 +50,7 @@ pub(super) async fn receive_candle_webhook(
 ) -> impl IntoResponse {
     let config = state.config.read().await.clone();
 
-    if !config.webhook_passphrase.is_empty()
-        && payload.passphrase.as_deref() != Some(config.webhook_passphrase.as_str())
-    {
+    if !passphrase_matches(payload.passphrase.as_deref(), &config.webhook_passphrase) {
         warn!("🔒 [Candle Webhook] Từ chối passphrase không hợp lệ.");
         return (
             StatusCode::UNAUTHORIZED,
@@ -304,9 +327,7 @@ pub(super) async fn receive_tradingview_webhook(
     let config = state.config.read().await.clone();
     let now = Utc::now();
 
-    if !config.webhook_passphrase.is_empty()
-        && payload.passphrase.as_deref() != Some(config.webhook_passphrase.as_str())
-    {
+    if !passphrase_matches(payload.passphrase.as_deref(), &config.webhook_passphrase) {
         warn!("🔒 [TradingView Webhook] Từ chối passphrase không hợp lệ.");
         return (
             StatusCode::UNAUTHORIZED,
@@ -915,6 +936,41 @@ async fn push_candle(state: &AppState, candle: Candle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passphrase_matches_allows_empty_expected() {
+        assert!(passphrase_matches(None, ""));
+        assert!(passphrase_matches(Some("anything"), ""));
+    }
+
+    #[test]
+    fn passphrase_matches_accepts_exact_value() {
+        assert!(passphrase_matches(Some("long-secret"), "long-secret"));
+    }
+
+    #[test]
+    fn passphrase_matches_rejects_mismatch() {
+        assert!(!passphrase_matches(Some("wrong-secret"), "long-secret"));
+    }
+
+    #[test]
+    fn passphrase_matches_rejects_missing_provided_value() {
+        assert!(!passphrase_matches(None, "long-secret"));
+    }
+
+    #[test]
+    fn passphrase_matches_rejects_different_lengths() {
+        assert!(!passphrase_matches(Some("short"), "longer-secret"));
+        assert!(!passphrase_matches(Some("longer-secret"), "short"));
+    }
+
+    #[test]
+    fn constant_time_eq_matches_regular_equality() {
+        assert!(constant_time_eq("abc", "abc"));
+        assert!(!constant_time_eq("abc", "abd"));
+        assert!(!constant_time_eq("", "a"));
+        assert!(constant_time_eq("", ""));
+    }
 
     #[test]
     fn valid_gold_price_accepts_realistic_xauusd_range() {

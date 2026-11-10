@@ -101,6 +101,8 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "candleAgeSecs": candle_age_secs,
         "spotBasisAgeSecs": spot_basis_age_secs,
         "killSwitchActive": !is_market_safe,
+        "telegramConfigured": !config.telegram_bot_token.trim().is_empty(),
+        "webhookPassphraseConfigured": !config.webhook_passphrase.trim().is_empty(),
         "cron_schedule": "07:00 AM Daily",
         "tradingview_webhook": "/api/webhook/tradingview"
     }))

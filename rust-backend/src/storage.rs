@@ -90,13 +90,27 @@ impl PersistentStore {
         fs::write(&tmp_path, data)
             .map_err(|e| format!("Không ghi được file tạm {}: {}", tmp_path.display(), e))?;
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600));
+        }
+
         fs::rename(&tmp_path, &self.path).map_err(|e| {
             format!(
                 "Không thể thay thế file trạng thái {}: {}",
                 self.path.display(),
                 e
             )
-        })
+        })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600));
+        }
+
+        Ok(())
     }
 
     /// Khóa ngày giao dịch theo múi giờ Việt Nam (UTC+7), định dạng YYYY-MM-DD.
@@ -426,6 +440,33 @@ mod tests {
         assert_eq!(loaded.signals[0].dedup_key, "XAU/USD_M15_1");
         assert_eq!(loaded.config.max_signals_per_day, 1);
         assert_eq!(loaded.sent_session_alerts, state.sent_session_alerts);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_persistent_store_sets_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = format!(
+            "gold-signal-bot-perms-{}-{}.json",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let path = std::env::temp_dir().join(unique);
+        let store = PersistentStore::new(&path);
+
+        store
+            .save(&PersistentState::default())
+            .expect("save state with private permissions");
+
+        let mode = fs::metadata(&path)
+            .expect("state metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
 
         let _ = fs::remove_file(&path);
     }

@@ -150,7 +150,9 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
 Persistent paths:
 
 - `./data/bot_state.json` — config + signal history + daily quota/dedup state.
-- `./rust-backend/.env` — Telegram token/chat ID and runtime config.
+  The API rewrites it atomically and sets `chmod 600` on Unix.
+- `./rust-backend/.env` — Telegram token/chat ID and runtime config. Keep it
+  `chmod 600` and never commit it.
 - `./data` must be owned by UID 1000 (compose runs the API as `1000:1000`).
 
 ## 9. Optional log UI (Dozzle)
@@ -201,7 +203,13 @@ ls -lt backups | head
 ```
 
 The timer runs daily at 03:15 (randomized ±5 min) and keeps the newest 14
-snapshots. `backups/` is excluded from deploys and git.
+snapshots. `backups/` is excluded from deploys and git. The script uses
+`umask 077`, creates `backups/` with mode `700`, and forces each snapshot to
+`chmod 600` so state secrets are not world-readable.
+
+Rotate the Telegram bot token and webhook passphrase after any exposure (shared
+logs, screenshots, backups, or a public repository). Update the token in the
+dashboard and `rust-backend/.env`, then restart the API.
 
 ## 13. Webhook passphrase
 
@@ -212,8 +220,11 @@ TradingView alert must include the same value:
 {"passphrase":"<your-secret>","ticker":"XAUUSD","action":"BUY","price":4080.5}
 ```
 
-The dashboard webhook sandbox and Pine Script sample read the same config value.
-Leave it empty to disable the check (not recommended for public endpoints).
+Use a long random value (at least 16 characters; 32+ recommended). The API
+compares it in constant time. The dashboard webhook sandbox and Pine Script
+sample read the same config value. Leave it empty only for Tailscale-only use;
+empty disables the check and is not recommended for public endpoints. Rotate the
+passphrase after any exposure.
 
 ## 14. Optional AI macro report
 

@@ -681,10 +681,48 @@ function saveState(): void {
     };
     const tmpFile = `${STATE_FILE}.tmp`;
     fs.writeFileSync(tmpFile, JSON.stringify(payload, null, 2), 'utf-8');
+    try {
+      fs.chmodSync(tmpFile, 0o600);
+    } catch {
+      /* best-effort on filesystems without POSIX modes */
+    }
     fs.renameSync(tmpFile, STATE_FILE);
+    try {
+      fs.chmodSync(STATE_FILE, 0o600);
+    } catch {
+      /* best-effort */
+    }
   } catch (err) {
     console.warn('[Storage] Failed to persist bot state:', err instanceof Error ? err.message : err);
   }
+}
+
+/** True when the dashboard submitted no new secret (blank or masked placeholder). */
+function isBlankOrMaskedSecret(value: unknown): boolean {
+  if (typeof value !== 'string') return true;
+  const trimmed = value.trim();
+  return trimmed.length === 0 || /^[*•]+$/.test(trimmed);
+}
+
+/** Never return Telegram credentials or the webhook passphrase to the browser. */
+function redactedConfig(cfg: BotConfig): BotConfig {
+  return { ...cfg, telegram_bot_token: '', webhook_passphrase: '' };
+}
+
+/** Blank/masked secrets mean "keep the existing value". */
+function mergeSecrets(incoming: BotConfig, current: BotConfig): BotConfig {
+  return {
+    ...incoming,
+    telegram_bot_token: isBlankOrMaskedSecret(incoming.telegram_bot_token)
+      ? current.telegram_bot_token
+      : incoming.telegram_bot_token,
+    telegram_chat_id: incoming.telegram_chat_id.trim()
+      ? incoming.telegram_chat_id
+      : current.telegram_chat_id,
+    webhook_passphrase: isBlankOrMaskedSecret(incoming.webhook_passphrase)
+      ? current.webhook_passphrase
+      : incoming.webhook_passphrase,
+  };
 }
 
 function loadPersistedState(): void {
@@ -1755,12 +1793,13 @@ async function startServer() {
 
   /* API 4: Config get/update (persisted to data/bot_state.json) */
   app.get('/api/config', (_req: Request, res: Response) => {
-    res.json(config);
+    res.json(redactedConfig(config));
   });
 
   app.post('/api/config', (req: Request, res: Response) => {
     const previousDataSource = config.data_source;
-    config = normalizeConfig({ ...config, ...(req.body || {}) });
+    const incoming = normalizeConfig({ ...config, ...(req.body || {}) });
+    config = mergeSecrets(incoming, config);
     saveState();
 
     if (config.data_source !== previousDataSource) {
@@ -1770,7 +1809,7 @@ async function startServer() {
     res.json({
       status: 'success',
       message: 'Cấu hình Sniper đã được lưu bền vững xuống data/bot_state.json!',
-      config,
+      config: redactedConfig(config),
     });
   });
 

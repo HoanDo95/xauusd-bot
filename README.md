@@ -322,7 +322,7 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
 | `GET` | `/api/context` | Read-only D1/H4/H1 context + `rsi_m15`/`rsi_h1`/`rsi_h4` (204 until HTF ready) |
 | `GET` | `/api/signals` | Signal history + performance stats |
 | `GET` | `/api/stats` | Win rate, avg R, net R, profit factor (real signals only) |
-| `GET/POST` | `/api/config` | Read/update sanitized bot config |
+| `GET/POST` | `/api/config` | Read/update bot config (secrets redacted; blank keeps current) |
 | `POST` | `/api/calculate-lot` | Lot size calculator; returns snake_case + camelCase fields |
 | `GET` | `/api/news-calendar` | ForexFactory events + kill switch |
 | `POST` | `/api/simulate-setup` | Simulated signal (never consumes live quota) |
@@ -333,13 +333,21 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
 
 ## Security notes
 
-- The dashboard is intended for **Tailscale-only** access. If you expose it
+- `GET /api/config` and the `POST /api/config` response **redact** the Telegram
+  bot token and webhook passphrase. They are never returned by the API.
+- Leaving the Telegram token or webhook passphrase blank in the dashboard keeps
+  the currently stored secret; enter a new value only when you want to rotate it.
+- Set a long, random, non-empty `webhook_passphrase`; TradingView alerts must
+  include the same `passphrase` field. Empty means the webhook check is disabled.
+- Rotate the `@BotFather` token immediately if it was ever exposed (logs, chat,
+  screenshot, public repo), then update it in the dashboard **and**
+  `rust-backend/.env`.
+- The dashboard is intended for **Tailscale-only** access; Tailscale remains the
+  perimeter. There is no built-in dashboard authentication yet. If you expose it
   publicly, put authentication in front of it (Cloudflare Access / Nginx basic
-  auth) because `/api/config` returns the Telegram token.
-- Set `webhook_passphrase` in the dashboard; TradingView alerts must include the
-  same `passphrase` field.
-- Revoke a leaked `@BotFather` token immediately and update it in the dashboard
-  **and** `rust-backend/.env`.
+  auth).
+- The persistent state file is written with `0600` permissions on Unix, and
+  backups use `umask 077` + `chmod 600`.
 - Deploy workflow never overwrites `.env` or `data/`.
 
 ## Backup

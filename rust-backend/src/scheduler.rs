@@ -300,7 +300,7 @@ impl DailyScheduler {
             Err(err) => {
                 warn!(
                     "⚠️ Không kết nối được ForexFactory ({}), dùng lịch fallback.",
-                    err
+                    err.without_url()
                 );
                 Self::fallback_economic_events()
             }
@@ -573,7 +573,7 @@ impl DailyScheduler {
                 warn!(
                     "Không thể kết nối AI provider '{}' ({}). Dùng báo cáo định lượng EMA.",
                     self.provider.as_str(),
-                    err
+                    err.without_url()
                 );
                 return fallback;
             }
