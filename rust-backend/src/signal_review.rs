@@ -479,6 +479,9 @@ mod tests {
             ai_verdict: None,
             ai_confidence: None,
             ai_reason: None,
+            delta_ratio: None,
+            cvd: None,
+            delta: None,
         }
     }
 

@@ -6,12 +6,13 @@ use gold_signal_bot::market_context::{
     build_market_context, htf_allows_signal, shift_candles_prices, MarketContext,
 };
 use gold_signal_bot::market_feed::{MarketDataFeed, MarketFeedSnapshot};
-use gold_signal_bot::models::{BotConfig, Timeframe};
+use gold_signal_bot::models::{BotConfig, Candle, Timeframe};
 use gold_signal_bot::news_filter::{ImpactLevel, NewsFilterConfig, NewsFilterService};
 use gold_signal_bot::scheduler::DailyScheduler;
 use gold_signal_bot::signal_review::{review_blocks_signal, review_signal};
 use gold_signal_bot::storage::PersistentStore;
 use gold_signal_bot::telegram::TelegramNotifier;
+use gold_signal_bot::volume_delta::delta_allows_signal;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -97,10 +98,11 @@ fn htf_price_source(spot_basis: Option<f64>) -> String {
 }
 
 /// Fetch H4/D1/H1 đã đóng cửa và dựng MarketContext. Trả None nếu thiếu H4/D1.
+/// Kèm theo nến H4/D1 (đã căn basis) để dashboard vẽ "view toàn cảnh".
 async fn fetch_market_context(
     market_feed: &MarketDataFeed,
     spot_basis: Option<f64>,
-) -> Option<MarketContext> {
+) -> Option<(MarketContext, Vec<Candle>, Vec<Candle>)> {
     let (mut h4, mut d1, mut h1) = tokio::join!(
         market_feed.fetch_htf_candles(Timeframe::H4, 300),
         market_feed.fetch_daily_htf_candles(300),
@@ -125,12 +127,10 @@ async fn fetch_market_context(
         warn!("⚠️ [HTF Context] Không có nến H1, panel H1 sẽ trống.");
     }
 
-    Some(build_market_context(
-        &d1,
-        &h4,
-        &h1,
-        &htf_price_source(spot_basis),
-        spot_basis,
+    Some((
+        build_market_context(&d1, &h4, &h1, &htf_price_source(spot_basis), spot_basis),
+        h4,
+        d1,
     ))
 }
 
@@ -221,7 +221,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // 3b. Bối cảnh đa khung D1/H4/H1 (read-only) — căn basis spot như nến tín hiệu.
-    let initial_market_context = fetch_market_context(&market_feed, initial_spot_basis).await;
+    let initial_htf = fetch_market_context(&market_feed, initial_spot_basis).await;
+    let (initial_market_context, initial_h4_candles, initial_d1_candles) = match initial_htf {
+        Some((context, h4, d1)) => (Some(context), h4, d1),
+        None => (None, Vec::new(), Vec::new()),
+    };
     if let Some(context) = initial_market_context.as_ref() {
         info!(
             "🧭 [HTF Context] D1={} ({} nến) · H4={} ({} nến) · H1={} ({} nến) · source={}",
@@ -264,6 +268,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         spot_basis: Arc::new(RwLock::new(initial_spot_basis)),
         sent_session_alerts: Arc::new(RwLock::new(persisted.sent_session_alerts)),
         market_context: Arc::new(RwLock::new(initial_market_context)),
+        htf_h4_candles: Arc::new(RwLock::new(initial_h4_candles)),
+        htf_d1_candles: Arc::new(RwLock::new(initial_d1_candles)),
     };
 
     // 6. Background Scanner 24/7 — quét mỗi 60 giây
@@ -412,7 +418,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                // 6.7c AI Chief Risk Officer tùy chọn (mặc định OFF).
+                // 6.7c Volume Delta/CVD tùy chọn (mặc định OFF).
+                // Chỉ áp dụng cho tín hiệu thật; simulation bỏ qua hoàn toàn.
+                if config.volume_delta_filter_enabled && !signal.is_simulated {
+                    let (allowed, reason, snapshot) =
+                        delta_allows_signal(signal.signal_type.as_str(), &candles, &config);
+                    if !allowed {
+                        warn!(
+                            "🛑 [Volume Delta] Bỏ qua {} {}: {}",
+                            signal.signal_type, signal.symbol, reason
+                        );
+                        continue;
+                    }
+                    signal.delta_ratio = Some(snapshot.delta_ratio);
+                    signal.cvd = Some(snapshot.cvd);
+                    signal.delta = Some(snapshot.delta);
+                    info!("📊 [Volume Delta] {} — {}", signal.id, reason);
+                }
+
+                // 6.7d AI Chief Risk Officer tùy chọn (mặc định OFF).
                 // AI chỉ được veto/standby; không bao giờ sửa SL/TP live.
                 if config.ai_signal_review_enabled {
                     let context = scanner_state.market_context.read().await.clone();
@@ -494,8 +518,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
             let spot_basis = *htf_state.spot_basis.read().await;
-            if let Some(context) = fetch_market_context(&htf_state.market_feed, spot_basis).await {
+            if let Some((context, h4, d1)) =
+                fetch_market_context(&htf_state.market_feed, spot_basis).await
+            {
                 *htf_state.market_context.write().await = Some(context);
+                *htf_state.htf_h4_candles.write().await = h4;
+                *htf_state.htf_d1_candles.write().await = d1;
                 info!("✅ [HTF Context] Đã cập nhật bối cảnh D1/H4/H1.");
             }
         }

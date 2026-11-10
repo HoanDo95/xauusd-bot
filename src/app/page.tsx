@@ -9,6 +9,7 @@ import {
   Signal,
   SupportResistanceZone,
   TrendBias,
+  VolumeDeltaSnapshot,
 } from '../types';
 import {
   fetchCandles,
@@ -25,6 +26,7 @@ import {
 import { Header, type DashboardTab } from '../components/Header';
 import { MetricCards } from '../components/MetricCards';
 import { MacroContextCard } from '../components/MacroContextCard';
+import { HtfChartCard } from '../components/HtfChartCard';
 import { CandlestickChart } from '../components/CandlestickChart';
 import { SimulateToolbar } from '../components/SimulateToolbar';
 import { SignalCard } from '../components/SignalCard';
@@ -70,6 +72,10 @@ const DEFAULT_CONFIG: BotConfig = {
   ai_signal_review_enabled: false,
   ai_signal_review_min_confidence: 0.75,
   ai_signal_review_fail_open: true,
+  volume_delta_filter_enabled: false,
+  volume_delta_mode: 'BOTH',
+  volume_delta_lookback: 20,
+  volume_delta_min_ratio: 0.1,
 };
 
 export default function DashboardPage() {
@@ -94,6 +100,7 @@ export default function DashboardPage() {
   const [inspectingSignal, setInspectingSignal] = useState<Signal | null>(null);
   const [newsData, setNewsData] = useState<NewsCalendarData | null>(null);
   const [marketContext, setMarketContext] = useState<MarketContext | null>(null);
+  const [volumeDelta, setVolumeDelta] = useState<VolumeDeltaSnapshot | null>(null);
 
   const [config, setConfig] = useState<BotConfig>(DEFAULT_CONFIG);
   const [isLoading, setIsLoading] = useState(false);
@@ -114,6 +121,7 @@ export default function DashboardPage() {
         if (data.dataSource) setDataSource(data.dataSource);
         setSpotPrice(typeof data.spotPrice === 'number' ? data.spotPrice : null);
         setSpotBasis(typeof data.spotBasis === 'number' ? data.spotBasis : null);
+        setVolumeDelta(data.volumeDelta ?? null);
       }
     } catch (err) {
       console.error('Lỗi tải dữ liệu nến:', err);
@@ -313,7 +321,10 @@ export default function DashboardPage() {
         {currentTab === 'monitor' && (
           <div className="flex flex-col gap-6">
             {/* Read-only D1/H4/H1 "view toàn cảnh" context */}
-            <MacroContextCard context={marketContext} />
+            <MacroContextCard context={marketContext} volumeDelta={volumeDelta} />
+
+            {/* Closed H4 candles — context only, never an entry trigger */}
+            <HtfChartCard />
 
             {/* Manual Simulation Controls (explicitly quota-free) */}
             <SimulateToolbar

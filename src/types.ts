@@ -49,6 +49,34 @@ export interface MarketContext {
   spot_basis: number | null;
 }
 
+/** Aggressive taker flow of the latest M15 candle + CVD over the lookback window. */
+export interface VolumeDeltaSnapshot {
+  buy_volume: number;
+  sell_volume: number;
+  delta: number;
+  delta_ratio: number;
+  cvd: number;
+  cvd_change: number;
+}
+
+/** GET /api/candles response: closed OHLCV + dynamic S/R + EMA + volume delta. */
+export interface CandlesResponse {
+  candles: Candle[];
+  supports: SupportResistanceZone[];
+  resistances: SupportResistanceZone[];
+  volumeMA: number;
+  currentPrice: number;
+  lastClosedPrice?: number;
+  ema50?: number;
+  ema200?: number;
+  trendBias?: TrendBias;
+  dataSource?: string;
+  priceSource?: string;
+  spotPrice?: number | null;
+  spotBasis?: number | null;
+  volumeDelta?: VolumeDeltaSnapshot;
+}
+
 export interface Signal {
   id: string;
   symbol: string;
@@ -100,6 +128,12 @@ export interface Signal {
   ai_confidence?: number | null;
   /** Short AI risk explanation (advisory only). */
   ai_reason?: string | null;
+  /** Signal-candle delta ratio (only present when the Volume Delta filter is enabled). */
+  delta_ratio?: number | null;
+  /** CVD over the configured lookback window. */
+  cvd?: number | null;
+  /** Absolute buy-minus-sell volume of the signal candle. */
+  delta?: number | null;
 }
 
 /** AI Chief Risk Officer review — veto-only, never live SL/TP. */
@@ -202,6 +236,14 @@ export interface BotConfig {
   ai_signal_review_min_confidence?: number;
   /** When AI errors/times out: true = pass (fail-open, default), false = block. */
   ai_signal_review_fail_open?: boolean;
+  /** Optional Volume Delta/CVD gate. Default OFF — no behavior change when false. */
+  volume_delta_filter_enabled: boolean;
+  /** ALIGN = aggressive flow on trade side; DIVERGENCE = price/CVD divergence; BOTH = OR. */
+  volume_delta_mode: 'ALIGN' | 'DIVERGENCE' | 'BOTH';
+  /** CVD/divergence lookback in candles (5–100). */
+  volume_delta_lookback: number;
+  /** Minimum |delta_ratio| for ALIGN mode (0–1). */
+  volume_delta_min_ratio: number;
 }
 
 export interface DailyMacroReport {

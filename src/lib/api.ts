@@ -2,33 +2,22 @@ import type {
   AiSignalReview,
   BotConfig,
   Candle,
+  CandlesResponse,
   DailyMacroReport,
   EconomicEvent,
   MacroBias,
   MarketContext,
   NewsCalendarData,
   Signal,
-  SupportResistanceZone,
   TrendBias,
   TradingViewWebhookPayload,
 } from '../types';
 
 export type SimulateSetupType = 'BUY_PINBAR' | 'SELL_PINBAR' | 'RANDOM_CANDLE';
 
-export interface CandlesResponse {
+export interface HtfCandlesResponse {
+  timeframe: string;
   candles: Candle[];
-  supports: SupportResistanceZone[];
-  resistances: SupportResistanceZone[];
-  volumeMA: number;
-  currentPrice: number;
-  lastClosedPrice?: number;
-  ema50?: number;
-  ema200?: number;
-  trendBias?: TrendBias;
-  dataSource?: string;
-  priceSource?: string;
-  spotPrice?: number | null;
-  spotBasis?: number | null;
 }
 
 export interface SignalsResponse {
@@ -68,6 +57,8 @@ export interface HealthResponse {
   h4FilterEnabled?: boolean;
   /** Optional AI Chief Risk Officer veto gate (default false). */
   aiReviewEnabled?: boolean;
+  /** Optional Volume Delta/CVD gate state (default false). */
+  volumeDeltaFilterEnabled?: boolean;
 }
 
 export interface AiReviewResponse {
@@ -157,6 +148,29 @@ export async function fetchMarketContext(): Promise<MarketContext | null> {
   const contentType = res.headers.get('content-type') || '';
   if (!contentType.includes('application/json')) return null;
   return (await res.json()) as MarketContext;
+}
+
+/**
+ * GET /api/htf-candles — closed H4/D1 candles for the "view toàn cảnh" chart.
+ * The Express dev fallback has no HTF endpoint; resolve to an empty list there.
+ */
+export async function fetchHtfCandles(
+  timeframe: 'H4' | 'D1' = 'H4',
+  limit = 120
+): Promise<HtfCandlesResponse> {
+  const params = new URLSearchParams({
+    timeframe,
+    limit: String(limit),
+  });
+  const res = await fetch(`/api/htf-candles?${params.toString()}`);
+  if (!res.ok) return { timeframe, candles: [] };
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) return { timeframe, candles: [] };
+  const payload = (await res.json()) as Partial<HtfCandlesResponse>;
+  return {
+    timeframe: payload.timeframe || timeframe,
+    candles: Array.isArray(payload.candles) ? payload.candles : [],
+  };
 }
 
 /** GET /api/signals — signal history plus today's Sniper quota counters. */

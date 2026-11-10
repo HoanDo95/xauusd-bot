@@ -12,8 +12,9 @@ use crate::signal_review::{review_blocks_signal, review_signal};
 use crate::storage::{PersistentState, PersistentStore};
 use crate::telegram::TelegramNotifier;
 use crate::tracker::{compute_stats, evaluate_active_signals};
+use crate::volume_delta::{compute_delta, delta_allows_signal};
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -51,6 +52,10 @@ pub struct AppState {
     pub sent_session_alerts: Arc<RwLock<Vec<String>>>,
     /// Bối cảnh D1/H4/H1 read-only (None khi chưa fetch được HTF).
     pub market_context: Arc<RwLock<Option<MarketContext>>>,
+    /// Nến H4 đã đóng (đã căn spot basis) cho chart "view toàn cảnh".
+    pub htf_h4_candles: Arc<RwLock<Vec<Candle>>>,
+    /// Nến D1 đã đóng (đã căn spot basis) cho chart "view toàn cảnh".
+    pub htf_d1_candles: Arc<RwLock<Vec<Candle>>>,
 }
 
 /// Ghi snapshot Config + Signals + DailyReport + session alert dedup xuống đĩa
@@ -101,6 +106,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/candles/webhook", post(receive_candle_webhook))
         // Bối cảnh đa khung D1/H4/H1 (read-only, 204 khi chưa sẵn sàng)
         .route("/api/context", get(get_market_context))
+        // Nến H4/D1 đã đóng cho chart "view toàn cảnh" (read-only)
+        .route("/api/htf-candles", get(get_htf_candles))
         // Endpoint nhận TradingView Webhook Alert (cả 2 alias)
         .route("/api/webhook", post(receive_tradingview_webhook))
         .route(
@@ -165,6 +172,7 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
         "h4FilterEnabled": config.htf_h4_filter_enabled,
         "d1FilterEnabled": config.htf_d1_filter_enabled,
         "aiReviewEnabled": config.ai_signal_review_enabled,
+        "volumeDeltaFilterEnabled": config.volume_delta_filter_enabled,
         "dataSource": active_data_source,
         "priceSource": price_source,
         "spotPrice": spot_price,
@@ -236,7 +244,8 @@ async fn get_recent_candles(State(state): State<AppState>) -> impl IntoResponse 
         "spotBasis": spot_basis,
         "ema50": (ema50 * 100.0).round() / 100.0,
         "ema200": (ema200 * 100.0).round() / 100.0,
-        "trendBias": trend_bias.as_str()
+        "trendBias": trend_bias.as_str(),
+        "volumeDelta": compute_delta(&candles, config.volume_delta_lookback)
     }))
 }
 
@@ -247,6 +256,38 @@ async fn get_market_context(State(state): State<AppState>) -> impl IntoResponse 
         Some(context) => (StatusCode::OK, Json(context)).into_response(),
         None => StatusCode::NO_CONTENT.into_response(),
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct HtfCandlesQuery {
+    #[serde(default)]
+    timeframe: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// GET /api/htf-candles?timeframe=H4&limit=120 — nến H4/D1 đã đóng cho chart toàn cảnh.
+async fn get_htf_candles(
+    State(state): State<AppState>,
+    Query(query): Query<HtfCandlesQuery>,
+) -> impl IntoResponse {
+    let timeframe = query
+        .timeframe
+        .as_deref()
+        .unwrap_or("H4")
+        .trim()
+        .to_uppercase();
+    let (label, candles) = match timeframe.as_str() {
+        "D1" => ("D1", state.htf_d1_candles.read().await.clone()),
+        _ => ("H4", state.htf_h4_candles.read().await.clone()),
+    };
+    let limit = query.limit.unwrap_or(120).clamp(20, 300);
+    let start = candles.len().saturating_sub(limit);
+
+    Json(json!({
+        "timeframe": label,
+        "candles": &candles[start..]
+    }))
 }
 
 /// Trả lý do chặn nếu bộ lọc H4/D1 đang bật, context sẵn sàng và tín hiệu bị chặn.
@@ -272,6 +313,29 @@ async fn htf_block_reason(
     } else {
         Some(reason)
     }
+}
+
+/// Áp bộ lọc Volume Delta/CVD cho tín hiệu thật. Trả lý do nếu bị chặn;
+/// nếu cho qua thì điền delta_ratio/cvd/delta vào signal.
+fn apply_volume_delta_filter(
+    config: &BotConfig,
+    signal: &mut Signal,
+    candles: &[Candle],
+) -> Option<String> {
+    if !config.volume_delta_filter_enabled || signal.is_simulated {
+        return None;
+    }
+
+    let (allowed, reason, snapshot) =
+        delta_allows_signal(signal.signal_type.as_str(), candles, config);
+    if !allowed {
+        return Some(reason);
+    }
+
+    signal.delta_ratio = Some(snapshot.delta_ratio);
+    signal.cvd = Some(snapshot.cvd);
+    signal.delta = Some(snapshot.delta);
+    None
 }
 
 /// Chạy AI Risk Officer cho tín hiệu thật và trả lý do nếu bị chặn.
@@ -513,6 +577,20 @@ async fn receive_candle_webhook(
                 StatusCode::OK,
                 Json(json!({
                     "status": "blocked_by_htf",
+                    "reason": reason
+                })),
+            );
+        }
+
+        if let Some(reason) = apply_volume_delta_filter(&config, &mut signal, &candles_snapshot) {
+            warn!(
+                "🛑 [Candle Webhook] Volume Delta chặn {}: {}",
+                signal.signal_type, reason
+            );
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "blocked_by_volume_delta",
                     "reason": reason
                 })),
             );
@@ -852,7 +930,27 @@ async fn receive_tradingview_webhook(
         ai_verdict: None,
         ai_confidence: None,
         ai_reason: None,
+        delta_ratio: None,
+        cvd: None,
+        delta: None,
     };
+
+    // Bước 6a: Volume Delta/CVD tùy chọn (mặc định OFF) — chỉ tín hiệu thật.
+    let candles_snapshot = state.candles.read().await.clone();
+    if let Some(reason) = apply_volume_delta_filter(&config, &mut signal, &candles_snapshot) {
+        warn!(
+            "🛑 [TradingView Webhook] Volume Delta chặn {}: {}",
+            action_upper, reason
+        );
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "status": "blocked_by_volume_delta",
+                "action_taken": "DROPPED",
+                "reason": reason
+            })),
+        );
+    }
 
     // Bước 6b: AI Risk Officer tùy chọn (chỉ veto/standby, không sửa SL/TP).
     if let Some(reason) = ai_review_block_reason(&state, &config, &mut signal).await {

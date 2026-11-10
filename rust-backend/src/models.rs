@@ -218,6 +218,15 @@ pub struct Signal {
     /// Lý do ngắn gọn từ AI Risk Officer (advisory).
     #[serde(default)]
     pub ai_reason: Option<String>,
+    /// Delta ratio của cây nến tín hiệu (chỉ điền khi bật Volume Delta filter).
+    #[serde(default)]
+    pub delta_ratio: Option<f64>,
+    /// CVD tích lũy trong cửa sổ lookback (chỉ điền khi bật Volume Delta filter).
+    #[serde(default)]
+    pub cvd: Option<f64>,
+    /// Delta tuyệt đối của cây nến tín hiệu (chỉ điền khi bật Volume Delta filter).
+    #[serde(default)]
+    pub delta: Option<f64>,
 }
 
 fn default_entry_filled() -> bool {
@@ -316,6 +325,18 @@ pub struct BotConfig {
     /// Khi AI lỗi/timeout: true = cho tín hiệu qua (fail-open), false = chặn.
     #[serde(default = "default_true")]
     pub ai_signal_review_fail_open: bool,
+    /// Bật bộ lọc Volume Delta/CVD trước khi phát tín hiệu thật. Mặc định TẮT.
+    #[serde(default)]
+    pub volume_delta_filter_enabled: bool,
+    /// Chế độ lọc: "ALIGN", "DIVERGENCE" hoặc "BOTH" (mặc định).
+    #[serde(default = "default_volume_delta_mode")]
+    pub volume_delta_mode: String,
+    /// Số nến dùng cho CVD và divergence (5..=100, mặc định 20).
+    #[serde(default = "default_volume_delta_lookback")]
+    pub volume_delta_lookback: usize,
+    /// Ngưỡng |delta_ratio| tối thiểu cho chế độ ALIGN (0..=1, mặc định 0.10).
+    #[serde(default = "default_volume_delta_min_ratio")]
+    pub volume_delta_min_ratio: f64,
 }
 
 fn default_max_signals_per_day() -> usize {
@@ -358,6 +379,18 @@ fn default_ai_signal_review_min_confidence() -> f64 {
     0.75
 }
 
+fn default_volume_delta_mode() -> String {
+    "BOTH".to_string()
+}
+
+fn default_volume_delta_lookback() -> usize {
+    20
+}
+
+fn default_volume_delta_min_ratio() -> f64 {
+    0.10
+}
+
 impl Default for BotConfig {
     fn default() -> Self {
         Self {
@@ -396,6 +429,10 @@ impl Default for BotConfig {
             ai_signal_review_enabled: false,
             ai_signal_review_min_confidence: default_ai_signal_review_min_confidence(),
             ai_signal_review_fail_open: true,
+            volume_delta_filter_enabled: false,
+            volume_delta_mode: default_volume_delta_mode(),
+            volume_delta_lookback: default_volume_delta_lookback(),
+            volume_delta_min_ratio: default_volume_delta_min_ratio(),
         }
     }
 }
@@ -457,6 +494,15 @@ impl BotConfig {
         self.session_alert_lead_minutes = self.session_alert_lead_minutes.clamp(15, 120);
         self.ai_signal_review_min_confidence =
             finite_or(self.ai_signal_review_min_confidence, 0.75).clamp(0.5, 1.0);
+
+        self.volume_delta_mode = match self.volume_delta_mode.trim().to_uppercase().as_str() {
+            "ALIGN" => "ALIGN",
+            "DIVERGENCE" => "DIVERGENCE",
+            _ => "BOTH",
+        }
+        .to_string();
+        self.volume_delta_lookback = self.volume_delta_lookback.clamp(5, 100);
+        self.volume_delta_min_ratio = finite_or(self.volume_delta_min_ratio, 0.10).clamp(0.0, 1.0);
 
         self.telegram_bot_token = self.telegram_bot_token.trim().to_string();
         self.telegram_chat_id = self.telegram_chat_id.trim().to_string();
@@ -732,6 +778,62 @@ mod tests {
         assert!(valid.ai_signal_review_enabled);
         assert_eq!(valid.ai_signal_review_min_confidence, 0.82);
         assert!(!valid.ai_signal_review_fail_open);
+    }
+
+    #[test]
+    fn volume_delta_defaults_off_and_is_backward_compatible() {
+        let defaults = BotConfig::default();
+        assert!(!defaults.volume_delta_filter_enabled);
+        assert_eq!(defaults.volume_delta_mode, "BOTH");
+        assert_eq!(defaults.volume_delta_lookback, 20);
+        assert_eq!(defaults.volume_delta_min_ratio, 0.10);
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        object.remove("volume_delta_filter_enabled");
+        object.remove("volume_delta_mode");
+        object.remove("volume_delta_lookback");
+        object.remove("volume_delta_min_ratio");
+
+        let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(!config.volume_delta_filter_enabled);
+        assert_eq!(config.volume_delta_mode, "BOTH");
+        assert_eq!(config.volume_delta_lookback, 20);
+        assert_eq!(config.volume_delta_min_ratio, 0.10);
+    }
+
+    #[test]
+    fn sanitize_volume_delta_settings_normalizes_and_clamps() {
+        let config = BotConfig {
+            volume_delta_filter_enabled: true,
+            volume_delta_mode: " divergence ".to_string(),
+            volume_delta_lookback: 1,
+            volume_delta_min_ratio: 5.0,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert!(config.volume_delta_filter_enabled);
+        assert_eq!(config.volume_delta_mode, "DIVERGENCE");
+        assert_eq!(config.volume_delta_lookback, 5);
+        assert_eq!(config.volume_delta_min_ratio, 1.0);
+
+        let invalid = BotConfig {
+            volume_delta_mode: "garbage".to_string(),
+            volume_delta_lookback: 999,
+            volume_delta_min_ratio: f64::NAN,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(invalid.volume_delta_mode, "BOTH");
+        assert_eq!(invalid.volume_delta_lookback, 100);
+        assert_eq!(invalid.volume_delta_min_ratio, 0.10);
+
+        let zero_ratio = BotConfig {
+            volume_delta_min_ratio: 0.0,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(zero_ratio.volume_delta_min_ratio, 0.0);
     }
 
     #[test]

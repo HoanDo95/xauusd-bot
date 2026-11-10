@@ -19,6 +19,8 @@ interface Candle {
   low: number;
   close: number;
   volume: number;
+  /** Binance kline field 9 (taker buy base volume); absent for TwelveData. */
+  taker_buy_volume?: number;
   timeframe: string;
 }
 
@@ -65,6 +67,9 @@ interface Signal {
   retest_limit_price?: number | null;
   data_source?: string;
   is_entry_filled?: boolean;
+  delta_ratio?: number | null;
+  cvd?: number | null;
+  delta?: number | null;
 }
 
 interface EconomicEvent {
@@ -117,6 +122,11 @@ interface BotConfig {
   ai_signal_review_min_confidence: number;
   /** AI error/timeout policy: true = pass (fail-open), false = block. Default true. */
   ai_signal_review_fail_open: boolean;
+  /** Optional Volume Delta/CVD gate. Default false — no behavior change. */
+  volume_delta_filter_enabled: boolean;
+  volume_delta_mode: 'ALIGN' | 'DIVERGENCE' | 'BOTH';
+  volume_delta_lookback: number;
+  volume_delta_min_ratio: number;
 }
 
 interface DailyMacroReport {
@@ -252,6 +262,10 @@ const DEFAULT_CONFIG: BotConfig = {
   ai_signal_review_enabled: false,
   ai_signal_review_min_confidence: 0.75,
   ai_signal_review_fail_open: true,
+  volume_delta_filter_enabled: false,
+  volume_delta_mode: 'BOTH',
+  volume_delta_lookback: 20,
+  volume_delta_min_ratio: 0.1,
 };
 
 function normalizeConfig(input: Partial<BotConfig>): BotConfig {
@@ -275,6 +289,17 @@ function normalizeConfig(input: Partial<BotConfig>): BotConfig {
     input.entry_mode === 'MARKET'
       ? input.entry_mode
       : base.entry_mode;
+
+  const rawVolumeDeltaMode =
+    typeof input.volume_delta_mode === 'string'
+      ? input.volume_delta_mode.trim().toUpperCase()
+      : '';
+  const volumeDeltaMode: BotConfig['volume_delta_mode'] =
+    rawVolumeDeltaMode === 'ALIGN' ||
+    rawVolumeDeltaMode === 'DIVERGENCE' ||
+    rawVolumeDeltaMode === 'BOTH'
+      ? (rawVolumeDeltaMode as BotConfig['volume_delta_mode'])
+      : base.volume_delta_mode;
 
   return {
     symbol: typeof input.symbol === 'string' && input.symbol.trim() ? input.symbol.trim() : base.symbol,
@@ -388,6 +413,22 @@ function normalizeConfig(input: Partial<BotConfig>): BotConfig {
     ai_signal_review_fail_open: booleanOr(
       input.ai_signal_review_fail_open,
       base.ai_signal_review_fail_open
+    ),
+    volume_delta_filter_enabled: booleanOr(
+      input.volume_delta_filter_enabled,
+      base.volume_delta_filter_enabled
+    ),
+    volume_delta_mode: volumeDeltaMode,
+    volume_delta_lookback: clampInt(
+      input.volume_delta_lookback,
+      base.volume_delta_lookback,
+      5,
+      100
+    ),
+    volume_delta_min_ratio: clamp(
+      numeric(input.volume_delta_min_ratio, base.volume_delta_min_ratio),
+      0,
+      1
     ),
   };
 }
@@ -671,6 +712,7 @@ async function fetchBinanceCandles(timeframe: string): Promise<Candle[]> {
       low: Number.parseFloat(String(row[3])),
       close: Number.parseFloat(String(row[4])),
       volume: Number.parseFloat(String(row[5])),
+      taker_buy_volume: Number.parseFloat(String(row[9] ?? 0)),
       timeframe,
     };
 
@@ -945,6 +987,40 @@ function calculateVolumeMA(candles: Candle[], period = 20): number {
   const take = Math.min(period, candles.length);
   const subset = candles.slice(candles.length - take);
   return subset.reduce((acc, c) => acc + c.volume, 0) / take;
+}
+
+/** Mirrors rust-backend/src/volume_delta.rs for the Express dev fallback. */
+function computeVolumeDelta(candles: Candle[], lookback = 20) {
+  const latest = candles[candles.length - 1];
+  if (!latest) {
+    return { buy_volume: 0, sell_volume: 0, delta: 0, delta_ratio: 0, cvd: 0, cvd_change: 0 };
+  }
+
+  const candleDelta = (candle: Candle) => {
+    const buy = Math.min(candle.taker_buy_volume ?? 0, candle.volume);
+    const sell = candle.volume - buy;
+    return buy - sell;
+  };
+
+  const buy = Math.min(latest.taker_buy_volume ?? 0, latest.volume);
+  const sell = latest.volume - buy;
+  const delta = buy - sell;
+  const deltaRatio = latest.volume > 0 ? delta / latest.volume : 0;
+
+  const take = Math.min(Math.max(1, lookback), candles.length);
+  const window = candles.slice(candles.length - take);
+  const deltas = window.map(candleDelta);
+  const cvd = deltas.reduce((acc, value) => acc + value, 0);
+  const cvdChange = deltas.length > 1 ? cvd - deltas[0] : 0;
+
+  return {
+    buy_volume: buy,
+    sell_volume: sell,
+    delta,
+    delta_ratio: deltaRatio,
+    cvd,
+    cvd_change: cvdChange,
+  };
 }
 
 function checkPinbar(candle: Candle, wickRatio = 2.0) {
@@ -1580,6 +1656,7 @@ async function startServer() {
       h4FilterEnabled: config.htf_h4_filter_enabled,
       d1FilterEnabled: config.htf_d1_filter_enabled,
       aiReviewEnabled: config.ai_signal_review_enabled,
+      volumeDeltaFilterEnabled: config.volume_delta_filter_enabled,
       tradingviewWebhook: '/api/webhook/tradingview',
     });
   });
@@ -1608,6 +1685,7 @@ async function startServer() {
       trendBias: detectEmaTrendBias(candlesBuffer),
       dataSource: activeDataSource,
       dataSourceLabel: dataSourceLabel(activeDataSource),
+      volumeDelta: computeVolumeDelta(candlesBuffer, config.volume_delta_lookback),
     });
   });
 

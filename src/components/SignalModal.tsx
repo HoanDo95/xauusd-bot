@@ -42,6 +42,12 @@ export const SignalModal: React.FC<Props> = ({
   const aiTelegramLine = signal.ai_verdict
     ? `\n🤖 AI Risk Officer: ${signal.ai_verdict} · confidence ${aiConfidencePct}%\n• ${signal.ai_reason ?? ''}`
     : '';
+  const volumeDeltaLine =
+    typeof signal.delta_ratio === 'number'
+      ? `\n📊 Volume Delta: ${signal.delta_ratio.toFixed(2)}${
+          typeof signal.cvd === 'number' ? ` | CVD: ${signal.cvd.toFixed(0)}` : ''
+        }`
+      : '';
 
   const baseTelegramMessage = `${simulationPrefix}🚨 GOLD SIGNAL ALERT | ${signal.symbol} 🚨
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -56,7 +62,7 @@ export const SignalModal: React.FC<Props> = ({
 ━━━━━━━━━━━━━━━━━━━━━━
 🔍 Phân tích Kỹ thuật & Volume:
 • Price Action: ${signal.price_action_notes}
-• Volume Absorption: ${signal.volume_analysis_notes}
+• Volume Absorption: ${signal.volume_analysis_notes}${volumeDeltaLine}
 • Đánh giá: ${signal.full_rationale}${aiTelegramLine}
 ━━━━━━━━━━━━━━━━━━━━━━
 ⚠️ Quản lý rủi ro tối đa 1-2% tài khoản. Chúc bạn giao dịch kỷ luật!
@@ -213,6 +219,65 @@ export const SignalModal: React.FC<Props> = ({
                   <span className="text-indigo-300 font-mono">•</span> {signal.ai_reason}
                 </p>
               )}
+            </div>
+          )}
+
+          {/* Volume Delta/CVD (only present when the optional filter ran) */}
+          {typeof signal.delta_ratio === 'number' && (
+            <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-3.5 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs font-mono">
+              <span className="text-cyan-300 font-bold">📊 Volume Delta</span>
+              <span
+                className={
+                  signal.delta_ratio > 0
+                    ? 'text-emerald-400'
+                    : signal.delta_ratio < 0
+                      ? 'text-rose-400'
+                      : 'text-neutral-300'
+                }
+              >
+                Ratio{' '}
+                <strong>
+                  {signal.delta_ratio >= 0 ? '+' : ''}
+                  {signal.delta_ratio.toFixed(2)}
+                </strong>
+              </span>
+              {typeof signal.delta === 'number' && (
+                <span
+                  className={
+                    signal.delta > 0
+                      ? 'text-emerald-400'
+                      : signal.delta < 0
+                        ? 'text-rose-400'
+                        : 'text-neutral-300'
+                  }
+                >
+                  Delta{' '}
+                  <strong>
+                    {signal.delta >= 0 ? '+' : ''}
+                    {signal.delta.toFixed(0)}
+                  </strong>
+                </span>
+              )}
+              {typeof signal.cvd === 'number' && (
+                <span
+                  className={
+                    signal.cvd > 0
+                      ? 'text-emerald-400'
+                      : signal.cvd < 0
+                        ? 'text-rose-400'
+                        : 'text-neutral-300'
+                  }
+                >
+                  CVD{' '}
+                  <strong>
+                    {signal.cvd >= 0 ? '+' : ''}
+                    {signal.cvd.toFixed(0)}
+                  </strong>
+                </span>
+              )}
+              <span className="text-[10px] text-neutral-500">
+                taker buy − sell · chỉ hiển thị khi filter bật
+              </span>
             </div>
           )}
 

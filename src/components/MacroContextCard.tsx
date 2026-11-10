@@ -1,10 +1,11 @@
 'use client';
 
 import React from 'react';
-import { MarketContext, TimeframeContext } from '../types';
+import { MarketContext, TimeframeContext, VolumeDeltaSnapshot } from '../types';
 
 interface Props {
   context: MarketContext | null;
+  volumeDelta?: VolumeDeltaSnapshot | null;
 }
 
 function price(value: number | null | undefined): string {
@@ -39,6 +40,38 @@ function channelColor(position: number): string {
 function timeframeLabel(context: TimeframeContext): string {
   return context.timeframe || '—';
 }
+
+function deltaColor(value: number): string {
+  if (value > 0) return 'text-emerald-400';
+  if (value < 0) return 'text-rose-400';
+  return 'text-neutral-400';
+}
+
+function signed(value: number, digits: number): string {
+  if (!Number.isFinite(value)) return '—';
+  return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}`;
+}
+
+const DeltaBadge: React.FC<{ delta?: VolumeDeltaSnapshot | null }> = ({ delta }) => {
+  if (!delta) return null;
+  const ratio = Number.isFinite(delta.delta_ratio) ? delta.delta_ratio : 0;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-950/60 px-3 py-2 text-[10px] font-mono">
+      <span className="text-neutral-500 uppercase tracking-wider">M15 Volume Delta</span>
+      <span className={`px-1.5 py-0.5 rounded bg-neutral-900 border border-neutral-800 tabular-nums ${deltaColor(delta.delta)}`}>
+        Delta {signed(delta.delta, 0)}
+      </span>
+      <span className={`px-1.5 py-0.5 rounded bg-neutral-900 border border-neutral-800 tabular-nums ${deltaColor(ratio)}`}>
+        Ratio {signed(ratio, 2)}
+      </span>
+      <span className={`px-1.5 py-0.5 rounded bg-neutral-900 border border-neutral-800 tabular-nums ${deltaColor(delta.cvd)}`}>
+        CVD {signed(delta.cvd, 0)}
+      </span>
+      <span className="text-neutral-600">taker buy − sell · lookback window</span>
+    </div>
+  );
+};
 
 const TimeframePanel: React.FC<{ context: TimeframeContext; highlight?: boolean }> = ({
   context,
@@ -134,13 +167,14 @@ const TimeframePanel: React.FC<{ context: TimeframeContext; highlight?: boolean 
  * "View toàn cảnh" — D1/H4/H1 context. Read-only and advisory: it never opens
  * a trade on its own; the H4 filter is opt-in via ConfigPanel (default OFF).
  */
-export const MacroContextCard: React.FC<Props> = ({ context }) => {
+export const MacroContextCard: React.FC<Props> = ({ context, volumeDelta }) => {
   if (!context) {
     return (
-      <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-4 flex flex-col gap-1">
+      <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-4 flex flex-col gap-3">
         <div className="text-sm font-bold text-white tracking-tight">
           View toàn cảnh — không tự vào lệnh
         </div>
+        <DeltaBadge delta={volumeDelta} />
         <p className="text-xs text-neutral-500 font-mono">
           Đang chờ bối cảnh D1/H4/H1 từ Rust engine (204). Dữ liệu sẽ xuất hiện sau khi feed HTF
           sẵn sàng.
@@ -184,6 +218,8 @@ export const MacroContextCard: React.FC<Props> = ({ context }) => {
           <span className="text-neutral-600">cập nhật {updatedLabel}</span>
         </div>
       </div>
+
+      <DeltaBadge delta={volumeDelta} />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <TimeframePanel context={context.d1} />

@@ -76,6 +76,16 @@ impl TelegramNotifier {
                 )
             })
             .unwrap_or_default();
+        let volume_delta_line = signal
+            .delta_ratio
+            .map(|ratio| {
+                format!(
+                    "📊 <b>Volume Delta:</b> <code>{:.2}</code> | CVD: <code>{:.0}</code>\n",
+                    ratio,
+                    signal.cvd.unwrap_or(0.0)
+                )
+            })
+            .unwrap_or_default();
 
         format!(
             "🚨 <b>GOLD SIGNAL ALERT | {}</b> 🚨\n\
@@ -96,6 +106,7 @@ impl TelegramNotifier {
             🔍 <b>Phân tích Kỹ thuật & Volume:</b>\n\
             • <b>Price Action:</b> {}\n\
             • <b>Volume Absorption:</b> {}\n\
+            {}\
             • <b>Đánh giá:</b> {}\n\
             {}\
             ━━━━━━━━━━━━━━━━━━━━━━\n\
@@ -124,6 +135,7 @@ impl TelegramNotifier {
             signal.recommended_lot_size,
             price_action,
             volume_analysis,
+            volume_delta_line,
             rationale,
             ai_review_line
         )
@@ -472,6 +484,9 @@ mod tests {
             ai_verdict: None,
             ai_confidence: None,
             ai_reason: None,
+            delta_ratio: None,
+            cvd: None,
+            delta: None,
         }
     }
 
@@ -534,6 +549,22 @@ mod tests {
         let signal = sample_signal();
         let message = TelegramNotifier::format_signal_message(&signal);
         assert!(!message.contains("AI Risk Officer"));
+    }
+
+    #[test]
+    fn format_signal_message_includes_volume_delta_when_present() {
+        let mut signal = sample_signal();
+        signal.delta_ratio = Some(0.42);
+        signal.cvd = Some(1250.0);
+        signal.delta = Some(420.0);
+
+        let message = TelegramNotifier::format_signal_message(&signal);
+        assert!(message.contains("Volume Delta:"));
+        assert!(message.contains("0.42"));
+        assert!(message.contains("CVD: <code>1250</code>"));
+
+        let without = TelegramNotifier::format_signal_message(&sample_signal());
+        assert!(!without.contains("Volume Delta:"));
     }
 
     #[test]
