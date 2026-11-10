@@ -87,6 +87,16 @@ impl std::fmt::Display for SignalType {
     }
 }
 
+impl SignalType {
+    /// Mã ngắn dùng cho log/filter ("BUY" | "SELL").
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SignalType::Buy => "BUY",
+            SignalType::Sell => "SELL",
+        }
+    }
+}
+
 /// Cách vào lệnh: khớp thị trường ngay, chờ retest giới hạn, hoặc breakout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "UPPERCASE")]
@@ -278,6 +288,10 @@ pub struct BotConfig {
     /// Số phút báo trước khi phiên mở (15..=120, mặc định 60).
     #[serde(default = "default_session_alert_lead_minutes")]
     pub session_alert_lead_minutes: i64,
+    /// Chặn tín hiệu ngược xu hướng H4 (BUY khi H4 BEARISH / SELL khi H4 BULLISH).
+    /// Mặc định TẮT — D1/H4/H1 chỉ mang tính tham khảo, không đổi hành vi mặc định.
+    #[serde(default)]
+    pub htf_h4_filter_enabled: bool,
 }
 
 fn default_max_signals_per_day() -> usize {
@@ -349,6 +363,7 @@ impl Default for BotConfig {
             max_candle_age_secs: default_max_candle_age_secs(),
             session_alerts_enabled: default_session_alerts_enabled(),
             session_alert_lead_minutes: default_session_alert_lead_minutes(),
+            htf_h4_filter_enabled: false,
         }
     }
 }
@@ -608,6 +623,26 @@ mod tests {
         let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
         assert!(config.session_alerts_enabled);
         assert_eq!(config.session_alert_lead_minutes, 60);
+    }
+
+    #[test]
+    fn htf_h4_filter_defaults_false_and_is_backward_compatible() {
+        let defaults = BotConfig::default();
+        assert!(!defaults.htf_h4_filter_enabled);
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        object.remove("htf_h4_filter_enabled");
+
+        let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(!config.htf_h4_filter_enabled);
+
+        let enabled = BotConfig {
+            htf_h4_filter_enabled: true,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert!(enabled.htf_h4_filter_enabled);
     }
 
     #[test]

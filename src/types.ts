@@ -25,6 +25,30 @@ export type EntryMode = 'MARKET' | 'LIMIT_RETEST' | 'BREAKOUT';
 export type MacroBias = 'BULLISH' | 'BEARISH' | 'NEUTRAL' | 'AUTO';
 export type TrendBias = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
 
+/** Read-only higher-timeframe snapshot (D1/H4/H1) from the Rust engine. */
+export interface TimeframeContext {
+  timeframe: string;
+  bias: TrendBias;
+  close: number;
+  ema50: number;
+  ema200: number;
+  /** Donchian(20) position 0..1 (0 = lower band, 1 = upper band). */
+  channel_position: number;
+  atr14: number;
+  nearest_support: number | null;
+  nearest_resistance: number | null;
+  candles: number;
+}
+
+export interface MarketContext {
+  d1: TimeframeContext;
+  h4: TimeframeContext;
+  h1: TimeframeContext;
+  updated_at: string;
+  price_source: string;
+  spot_basis: number | null;
+}
+
 export interface Signal {
   id: string;
   symbol: string;
@@ -150,6 +174,8 @@ export interface BotConfig {
   max_entry_drift_points: number;
   /** Reject signals when the closed candle is older than this many seconds. */
   max_candle_age_secs: number;
+  /** Optional H4 trend filter — blocks counter-H4 signals only when true. Default OFF. */
+  htf_h4_filter_enabled: boolean;
 }
 
 export interface DailyMacroReport {

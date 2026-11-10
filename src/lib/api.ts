@@ -4,6 +4,7 @@ import type {
   DailyMacroReport,
   EconomicEvent,
   MacroBias,
+  MarketContext,
   NewsCalendarData,
   Signal,
   SupportResistanceZone,
@@ -62,6 +63,8 @@ export interface HealthResponse {
   ema50?: number;
   trendBias?: TrendBias;
   killSwitchActive?: boolean;
+  /** Optional H4 trend filter state (default false). */
+  h4FilterEnabled?: boolean;
 }
 
 export interface MacroBiasResponse {
@@ -131,6 +134,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 /** GET /api/candles — live closed OHLCV candles + dynamic S/R + EMA trend. */
 export function fetchCandles(): Promise<CandlesResponse> {
   return request<CandlesResponse>('/api/candles');
+}
+
+/**
+ * GET /api/context — read-only D1/H4/H1 market context.
+ * The Rust engine returns 204 until the higher-timeframe feed is ready;
+ * the Express fallback has no context endpoint, so resolve to null.
+ */
+export async function fetchMarketContext(): Promise<MarketContext | null> {
+  const res = await fetch('/api/context');
+  if (res.status === 204) return null;
+  if (!res.ok) throw new Error(`API request failed: /api/context (${res.status})`);
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) return null;
+  return (await res.json()) as MarketContext;
 }
 
 /** GET /api/signals — signal history plus today's Sniper quota counters. */

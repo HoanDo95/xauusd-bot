@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   BotConfig,
   Candle,
+  MarketContext,
   NewsCalendarData,
   Signal,
   SupportResistanceZone,
@@ -12,6 +13,7 @@ import {
 import {
   fetchCandles,
   fetchConfig,
+  fetchMarketContext,
   fetchNewsCalendar,
   fetchSignals,
   saveConfig,
@@ -22,6 +24,7 @@ import {
 } from '../lib/api';
 import { Header, type DashboardTab } from '../components/Header';
 import { MetricCards } from '../components/MetricCards';
+import { MacroContextCard } from '../components/MacroContextCard';
 import { CandlestickChart } from '../components/CandlestickChart';
 import { SimulateToolbar } from '../components/SimulateToolbar';
 import { SignalCard } from '../components/SignalCard';
@@ -62,6 +65,7 @@ const DEFAULT_CONFIG: BotConfig = {
   use_auto_spot_basis: true,
   max_entry_drift_points: 2.5,
   max_candle_age_secs: 120,
+  htf_h4_filter_enabled: false,
 };
 
 export default function DashboardPage() {
@@ -85,6 +89,7 @@ export default function DashboardPage() {
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>('M15');
   const [inspectingSignal, setInspectingSignal] = useState<Signal | null>(null);
   const [newsData, setNewsData] = useState<NewsCalendarData | null>(null);
+  const [marketContext, setMarketContext] = useState<MarketContext | null>(null);
 
   const [config, setConfig] = useState<BotConfig>(DEFAULT_CONFIG);
   const [isLoading, setIsLoading] = useState(false);
@@ -152,21 +157,33 @@ export default function DashboardPage() {
     }
   }, []);
 
+  // Fetch read-only D1/H4/H1 context for the "view toàn cảnh" panel.
+  const loadMarketContext = useCallback(async () => {
+    try {
+      const data = await fetchMarketContext();
+      setMarketContext(data);
+    } catch (err) {
+      console.error('Lỗi tải bối cảnh D1/H4/H1:', err);
+    }
+  }, []);
+
   useEffect(() => {
     void loadCandles();
     void loadSignals();
     void loadConfig();
     void loadNewsCalendar();
+    void loadMarketContext();
 
     // Keep the desk in sync with the 60-second backend scanner.
     const timer = setInterval(() => {
       void loadCandles();
       void loadSignals();
       void loadNewsCalendar();
+      void loadMarketContext();
     }, 60_000);
 
     return () => clearInterval(timer);
-  }, [loadCandles, loadSignals, loadConfig, loadNewsCalendar]);
+  }, [loadCandles, loadSignals, loadConfig, loadNewsCalendar, loadMarketContext]);
 
   // Handle a manual simulation (never consumes the daily Sniper quota).
   const handleSimulate = async (type: SimulateSetupType) => {
@@ -291,6 +308,9 @@ export default function DashboardPage() {
         {/* Tab 1: Live Trading Desk & Candlestick Monitor */}
         {currentTab === 'monitor' && (
           <div className="flex flex-col gap-6">
+            {/* Read-only D1/H4/H1 "view toàn cảnh" context */}
+            <MacroContextCard context={marketContext} />
+
             {/* Manual Simulation Controls (explicitly quota-free) */}
             <SimulateToolbar
               onSimulate={handleSimulate}

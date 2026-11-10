@@ -159,6 +159,69 @@ impl MarketDataFeed {
             .candles
     }
 
+    /// Nến HTF đã đóng cửa cho bối cảnh D1/H4/H1 — chỉ Binance PAXGUSDT.
+    /// Không fallback seed: lỗi mạng trả về rỗng để caller giữ context cũ.
+    pub async fn fetch_htf_candles(&self, timeframe: Timeframe, limit: usize) -> Vec<Candle> {
+        let interval = binance_interval(timeframe);
+        self.fetch_binance_closed_candles(interval, timeframe, limit)
+            .await
+            .unwrap_or_default()
+    }
+
+    /// Nến ngày (1d) từ Binance PAXGUSDT cho bối cảnh D1.
+    ///
+    /// `models::Timeframe` chưa có biến thể D1 (để không đụng tới backtest), nên nến
+    /// được gắn tag H4 — chỉ dùng nội bộ để tính context, không phát tín hiệu.
+    pub async fn fetch_daily_htf_candles(&self, limit: usize) -> Vec<Candle> {
+        self.fetch_binance_closed_candles("1d", Timeframe::H4, limit)
+            .await
+            .unwrap_or_default()
+    }
+
+    async fn fetch_binance_closed_candles(
+        &self,
+        interval: &str,
+        timeframe: Timeframe,
+        limit: usize,
+    ) -> Result<Vec<Candle>, String> {
+        let limit = limit.max(5);
+        // limit + 1 để luôn có cây nến vừa đóng cửa ngay cả khi API trả cây đang chạy.
+        let url = format!(
+            "https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval={}&limit={}",
+            interval,
+            limit + 1
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("Binance HTF request error: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(format!("Binance HTF HTTP {}", response.status()));
+        }
+
+        let payload: Value = response
+            .json()
+            .await
+            .map_err(|e| format!("Binance HTF JSON parse error: {}", e))?;
+
+        let (candles, _) = Self::parse_binance_klines_snapshot_with_now(
+            &payload,
+            timeframe,
+            Utc::now().timestamp_millis(),
+        );
+
+        info!(
+            "📡 [MarketFeed] Binance PAXGUSDT HTF interval={}: {} nến đã đóng cửa.",
+            interval,
+            candles.len()
+        );
+        Ok(candles)
+    }
+
     /// Kéo ảnh chụp thị trường: nến đã đóng, giá live và nguồn thực tế.
     ///
     /// `preferred_source` quyết định provider được thử trước. Nếu provider ưu tiên
@@ -275,11 +338,7 @@ impl MarketDataFeed {
         timeframe: Timeframe,
         limit: usize,
     ) -> Result<MarketFeedSnapshot, String> {
-        let interval = match timeframe {
-            Timeframe::M15 => "15m",
-            Timeframe::H1 => "1h",
-            Timeframe::H4 => "4h",
-        };
+        let interval = binance_interval(timeframe);
         // limit + 1 để luôn có cây nến vừa đóng cửa ngay cả khi API trả cây đang chạy.
         let url = format!(
             "https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval={}&limit={}",
@@ -595,6 +654,14 @@ fn timeframe_millis(timeframe: Timeframe) -> i64 {
         Timeframe::M15 => 15 * 60 * 1000,
         Timeframe::H1 => 60 * 60 * 1000,
         Timeframe::H4 => 4 * 60 * 60 * 1000,
+    }
+}
+
+fn binance_interval(timeframe: Timeframe) -> &'static str {
+    match timeframe {
+        Timeframe::M15 => "15m",
+        Timeframe::H1 => "1h",
+        Timeframe::H4 => "4h",
     }
 }
 
@@ -975,5 +1042,12 @@ mod tests {
         assert_eq!(snapshot.source, "FALLBACK_SEED");
         assert_eq!(snapshot.candles.len(), 10);
         assert_eq!(snapshot.live_price, None);
+    }
+
+    #[test]
+    fn test_binance_interval_maps_supported_timeframes() {
+        assert_eq!(binance_interval(Timeframe::M15), "15m");
+        assert_eq!(binance_interval(Timeframe::H1), "1h");
+        assert_eq!(binance_interval(Timeframe::H4), "4h");
     }
 }

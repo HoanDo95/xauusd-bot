@@ -1,5 +1,6 @@
 pub mod analyzer;
 pub mod api;
+pub mod market_context;
 pub mod market_feed;
 pub mod models;
 pub mod news_filter;

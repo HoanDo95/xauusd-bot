@@ -1,4 +1,5 @@
 use crate::analyzer::GoldMarketAnalyzer;
+use crate::market_context::{h4_allows_signal, MarketContext};
 use crate::market_feed::MarketDataFeed;
 use crate::models::{
     BotConfig, Candle, DailyMacroReport, EntryType, NewCandleWebhook, Signal, SignalStatus,
@@ -47,6 +48,8 @@ pub struct AppState {
     pub spot_basis: Arc<RwLock<Option<f64>>>,
     /// Dedup key các briefing trước phiên đã gửi (mới nhất ở cuối).
     pub sent_session_alerts: Arc<RwLock<Vec<String>>>,
+    /// Bối cảnh D1/H4/H1 read-only (None khi chưa fetch được HTF).
+    pub market_context: Arc<RwLock<Option<MarketContext>>>,
 }
 
 /// Ghi snapshot Config + Signals + DailyReport + session alert dedup xuống đĩa
@@ -95,6 +98,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/stats", get(get_stats))
         .route("/api/candles", get(get_recent_candles))
         .route("/api/candles/webhook", post(receive_candle_webhook))
+        // Bối cảnh đa khung D1/H4/H1 (read-only, 204 khi chưa sẵn sàng)
+        .route("/api/context", get(get_market_context))
         // Endpoint nhận TradingView Webhook Alert (cả 2 alias)
         .route("/api/webhook", post(receive_tradingview_webhook))
         .route(
@@ -154,6 +159,7 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
         "maxSignalsPerDay": config.max_signals_per_day,
         "dailyQuotaReached": daily_quota_reached,
         "sessionFilterEnabled": config.session_filter_enabled,
+        "h4FilterEnabled": config.htf_h4_filter_enabled,
         "dataSource": active_data_source,
         "priceSource": price_source,
         "spotPrice": spot_price,
@@ -227,6 +233,35 @@ async fn get_recent_candles(State(state): State<AppState>) -> impl IntoResponse 
         "ema200": (ema200 * 100.0).round() / 100.0,
         "trendBias": trend_bias.as_str()
     }))
+}
+
+/// Bối cảnh D1/H4/H1 read-only cho dashboard. 204 khi chưa fetch được HTF.
+async fn get_market_context(State(state): State<AppState>) -> impl IntoResponse {
+    let context = state.market_context.read().await.clone();
+    match context {
+        Some(context) => (StatusCode::OK, Json(context)).into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
+    }
+}
+
+/// Trả lý do chặn nếu bộ lọc H4 đang bật, context sẵn sàng và tín hiệu ngược H4.
+async fn htf_block_reason(
+    state: &AppState,
+    config: &BotConfig,
+    signal_type: &str,
+) -> Option<String> {
+    if !config.htf_h4_filter_enabled {
+        return None;
+    }
+
+    let guard = state.market_context.read().await;
+    let context = guard.as_ref()?;
+    let (allowed, reason) = h4_allows_signal(signal_type, context);
+    if allowed {
+        None
+    } else {
+        Some(reason)
+    }
 }
 
 /// Webhook nhận nến mới từ sàn giao dịch (Binance / MetaTrader EA).
@@ -345,6 +380,20 @@ async fn receive_candle_webhook(
                     "status": "duplicate_candle",
                     "message": "Tín hiệu cho cây nến này đã tồn tại.",
                     "dedup_key": signal.dedup_key
+                })),
+            );
+        }
+
+        if let Some(reason) = htf_block_reason(&state, &config, signal.signal_type.as_str()).await {
+            warn!(
+                "🛑 [Candle Webhook] Chặn {} do bộ lọc H4: {}",
+                signal.signal_type, reason
+            );
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "blocked_by_htf",
+                    "reason": reason
                 })),
             );
         }
@@ -555,7 +604,25 @@ async fn receive_tradingview_webhook(
         );
     }
 
-    // Bước 5: Xây dựng tín hiệu từ TradingView Alert
+    // Bước 5: Bộ lọc H4 tùy chọn (mặc định OFF) — chặn tín hiệu ngược xu hướng H4.
+    if let Some(reason) =
+        htf_block_reason(&state, &config, if is_buy { "BUY" } else { "SELL" }).await
+    {
+        warn!(
+            "🛑 [TradingView Webhook] Chặn {} do bộ lọc H4: {}",
+            action_upper, reason
+        );
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "status": "blocked_by_htf",
+                "action_taken": "DROPPED",
+                "reason": reason
+            })),
+        );
+    }
+
+    // Bước 6: Xây dựng tín hiệu từ TradingView Alert
     let entry_price = payload.price;
     let sl_buffer = config.gold_sl_buffer_points.max(4.0);
 
@@ -649,13 +716,13 @@ async fn receive_tradingview_webhook(
         is_entry_filled: true,
     };
 
-    // Bước 6: Bắn cảnh báo tức thì tới Telegram
+    // Bước 7: Bắn cảnh báo tức thì tới Telegram
     let telegram = state.telegram.read().await.clone();
     if let Ok(msg_id) = telegram.send_signal_alert(&signal).await {
         signal.telegram_message_id = Some(msg_id);
     }
 
-    // Bước 7: Lưu vào bộ nhớ + đĩa
+    // Bước 8: Lưu vào bộ nhớ + đĩa
     state.signals.write().await.insert(0, signal.clone());
     if let Err(err) = persist_state(&state).await {
         warn!("⚠️ Không lưu được trạng thái sau webhook: {}", err);

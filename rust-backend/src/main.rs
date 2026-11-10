@@ -2,8 +2,11 @@ use axum::http::HeaderValue;
 use chrono::Utc;
 use gold_signal_bot::analyzer::GoldMarketAnalyzer;
 use gold_signal_bot::api::{create_router, persist_state, AppState};
+use gold_signal_bot::market_context::{
+    build_market_context, h4_allows_signal, shift_candles_prices, MarketContext,
+};
 use gold_signal_bot::market_feed::{MarketDataFeed, MarketFeedSnapshot};
-use gold_signal_bot::models::BotConfig;
+use gold_signal_bot::models::{BotConfig, Timeframe};
 use gold_signal_bot::news_filter::{ImpactLevel, NewsFilterConfig, NewsFilterService};
 use gold_signal_bot::scheduler::DailyScheduler;
 use gold_signal_bot::storage::PersistentStore;
@@ -81,6 +84,53 @@ fn migrate_ohlcv_source_to_binance(config: &mut BotConfig) {
         );
         config.data_source = "BINANCE_PAXG".to_string();
     }
+}
+
+/// Nhãn nguồn giá cho panel "view toàn cảnh" (HTF luôn lấy từ Binance PAXG).
+fn htf_price_source(spot_basis: Option<f64>) -> String {
+    if spot_basis.is_some() {
+        "BINANCE_PAXG+TWELVEDATA_SPOT".to_string()
+    } else {
+        "BINANCE_PAXG".to_string()
+    }
+}
+
+/// Fetch H4/D1/H1 đã đóng cửa và dựng MarketContext. Trả None nếu thiếu H4/D1.
+async fn fetch_market_context(
+    market_feed: &MarketDataFeed,
+    spot_basis: Option<f64>,
+) -> Option<MarketContext> {
+    let (mut h4, mut d1, mut h1) = tokio::join!(
+        market_feed.fetch_htf_candles(Timeframe::H4, 300),
+        market_feed.fetch_daily_htf_candles(300),
+        market_feed.fetch_htf_candles(Timeframe::H1, 300),
+    );
+
+    if let Some(basis) = spot_basis {
+        shift_candles_prices(&mut h4, basis);
+        shift_candles_prices(&mut d1, basis);
+        shift_candles_prices(&mut h1, basis);
+    }
+
+    if h4.is_empty() || d1.is_empty() {
+        warn!(
+            "⚠️ [HTF Context] Thiếu nến H4 ({}) hoặc D1 ({}), giữ bối cảnh cũ.",
+            h4.len(),
+            d1.len()
+        );
+        return None;
+    }
+    if h1.is_empty() {
+        warn!("⚠️ [HTF Context] Không có nến H1, panel H1 sẽ trống.");
+    }
+
+    Some(build_market_context(
+        &d1,
+        &h4,
+        &h1,
+        &htf_price_source(spot_basis),
+        spot_basis,
+    ))
 }
 
 #[tokio::main]
@@ -169,6 +219,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         initial_live_price
     );
 
+    // 3b. Bối cảnh đa khung D1/H4/H1 (read-only) — căn basis spot như nến tín hiệu.
+    let initial_market_context = fetch_market_context(&market_feed, initial_spot_basis).await;
+    if let Some(context) = initial_market_context.as_ref() {
+        info!(
+            "🧭 [HTF Context] D1={} ({} nến) · H4={} ({} nến) · H1={} ({} nến) · source={}",
+            context.d1.bias,
+            context.d1.candles,
+            context.h4.bias,
+            context.h4.candles,
+            context.h1.bias,
+            context.h1.candles,
+            context.price_source
+        );
+    } else {
+        warn!("⚠️ [HTF Context] Chưa sẵn sàng — dashboard sẽ hiển thị trạng thái chờ.");
+    }
+
     // 4. Nạp lịch tin kinh tế thật từ ForexFactory (fallback an toàn nếu offline)
     // AI là tùy chọn; from_env tự chọn Gemini/OpenRouter hoặc EMA fallback.
     let scheduler = DailyScheduler::from_env();
@@ -195,6 +262,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         spot_price: Arc::new(RwLock::new(initial_spot_price)),
         spot_basis: Arc::new(RwLock::new(initial_spot_basis)),
         sent_session_alerts: Arc::new(RwLock::new(persisted.sent_session_alerts)),
+        market_context: Arc::new(RwLock::new(initial_market_context)),
     };
 
     // 6. Background Scanner 24/7 — quét mỗi 60 giây
@@ -323,6 +391,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
 
+                // 6.7b Bộ lọc H4 tùy chọn (mặc định OFF) — chặn ngược xu hướng H4.
+                if config.htf_h4_filter_enabled {
+                    let context = scanner_state.market_context.read().await;
+                    if let Some(context) = context.as_ref() {
+                        let (allowed, reason) =
+                            h4_allows_signal(signal.signal_type.as_str(), context);
+                        if !allowed {
+                            warn!(
+                                "🛑 [HTF H4 Filter] Bỏ qua {} {}: {}",
+                                signal.signal_type, signal.symbol, reason
+                            );
+                            continue;
+                        }
+                    }
+                }
+
                 info!(
                     "🚨 [Sniper Scanner] Tín hiệu {} {} | Entry={} | SL={} | Confluence={}/100",
                     signal.signal_type,
@@ -343,6 +427,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Err(err) = persist_state(&scanner_state).await {
                     warn!("⚠️ Không lưu được trạng thái sau tín hiệu: {}", err);
                 }
+            }
+        }
+    });
+
+    // 6b. HTF Context Worker — refresh D1/H4/H1 mỗi 15 phút (read-only, không vào lệnh).
+    let htf_state = state.clone();
+    tokio::spawn(async move {
+        info!("🧭 [HTF Context] Worker làm mới D1/H4/H1 mỗi 15 phút...");
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+            let spot_basis = *htf_state.spot_basis.read().await;
+            if let Some(context) = fetch_market_context(&htf_state.market_feed, spot_basis).await {
+                *htf_state.market_context.write().await = Some(context);
+                info!("✅ [HTF Context] Đã cập nhật bối cảnh D1/H4/H1.");
             }
         }
     });
