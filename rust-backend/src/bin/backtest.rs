@@ -42,6 +42,14 @@ const RSI_OVERSOLD_ALT: f64 = 35.0;
 /// inside the last 60 closed M15 candles (15 hours).
 const RSI_DIVERGENCE_LOOKBACK: usize = 60;
 const RSI_PIVOT_K: usize = 2;
+/// Phase R1: recent-window extremes, regime, and slope variants.
+const RSI_RECENT_LOOKBACK_SHORT: usize = 10;
+const RSI_RECENT_LOOKBACK_LONG: usize = 20;
+const RSI_REGIME_LOOKBACK: usize = 3;
+const RSI_REGIME_CROSS_LOOKBACK: usize = 5;
+const RSI_REGIME_THRESHOLD: f64 = 50.0;
+const RSI_SLOPE_LOOKBACK: usize = 3;
+const RSI_SLOPE_MIN_DELTA: f64 = 2.0;
 /// Phase R0 volume modes. The analyzer surge threshold is 1.5x MA20(volume).
 const VOLUME_SURGE_MULTIPLIER: f64 = 1.5;
 const VOLUME_EXHAUSTION_MULTIPLIER: f64 = 0.7;
@@ -172,6 +180,21 @@ enum Variant {
     VolumeEither,
     RsiDivergenceVolumeExhaustion,
     HtfH4D1RsiVolumeEither,
+    RsiRecentExtreme10,
+    RsiRecentExtreme20,
+    RsiRecentExtreme10_6535,
+    RsiRecentExtreme20_6535,
+    RsiRecentExtreme20OrDivergence,
+    RsiRegime50,
+    RsiRegimeCross50,
+    RsiSlope3,
+    HtfH4D1RsiRecentExtreme10,
+    HtfH4D1RsiRecentExtreme20,
+    HtfH4D1RsiRecentExtreme20_6535,
+    HtfH4D1RsiRecentExtreme20OrDivergence,
+    HtfH4D1RsiRegime50,
+    HtfH4D1RsiRegimeCross50,
+    HtfH4D1RsiSlope3,
 }
 
 impl Variant {
@@ -226,6 +249,23 @@ impl Variant {
             "volume_either" => Some(Self::VolumeEither),
             "rsi_divergence_volume_exhaustion" => Some(Self::RsiDivergenceVolumeExhaustion),
             "htf_h4_d1_rsi_volume_either" => Some(Self::HtfH4D1RsiVolumeEither),
+            "rsi_recent_extreme_10" => Some(Self::RsiRecentExtreme10),
+            "rsi_recent_extreme_20" => Some(Self::RsiRecentExtreme20),
+            "rsi_recent_extreme_10_65_35" => Some(Self::RsiRecentExtreme10_6535),
+            "rsi_recent_extreme_20_65_35" => Some(Self::RsiRecentExtreme20_6535),
+            "rsi_recent_extreme_20_or_divergence" => Some(Self::RsiRecentExtreme20OrDivergence),
+            "rsi_regime_50" => Some(Self::RsiRegime50),
+            "rsi_regime_cross_50" => Some(Self::RsiRegimeCross50),
+            "rsi_slope_3" => Some(Self::RsiSlope3),
+            "htf_h4_d1_rsi_recent_extreme_10" => Some(Self::HtfH4D1RsiRecentExtreme10),
+            "htf_h4_d1_rsi_recent_extreme_20" => Some(Self::HtfH4D1RsiRecentExtreme20),
+            "htf_h4_d1_rsi_recent_extreme_20_65_35" => Some(Self::HtfH4D1RsiRecentExtreme20_6535),
+            "htf_h4_d1_rsi_recent_extreme_20_or_divergence" => {
+                Some(Self::HtfH4D1RsiRecentExtreme20OrDivergence)
+            }
+            "htf_h4_d1_rsi_regime_50" => Some(Self::HtfH4D1RsiRegime50),
+            "htf_h4_d1_rsi_regime_cross_50" => Some(Self::HtfH4D1RsiRegimeCross50),
+            "htf_h4_d1_rsi_slope_3" => Some(Self::HtfH4D1RsiSlope3),
             _ => None,
         }
     }
@@ -281,6 +321,23 @@ impl Variant {
             Self::VolumeEither => "volume_either",
             Self::RsiDivergenceVolumeExhaustion => "rsi_divergence_volume_exhaustion",
             Self::HtfH4D1RsiVolumeEither => "htf_h4_d1_rsi_volume_either",
+            Self::RsiRecentExtreme10 => "rsi_recent_extreme_10",
+            Self::RsiRecentExtreme20 => "rsi_recent_extreme_20",
+            Self::RsiRecentExtreme10_6535 => "rsi_recent_extreme_10_65_35",
+            Self::RsiRecentExtreme20_6535 => "rsi_recent_extreme_20_65_35",
+            Self::RsiRecentExtreme20OrDivergence => "rsi_recent_extreme_20_or_divergence",
+            Self::RsiRegime50 => "rsi_regime_50",
+            Self::RsiRegimeCross50 => "rsi_regime_cross_50",
+            Self::RsiSlope3 => "rsi_slope_3",
+            Self::HtfH4D1RsiRecentExtreme10 => "htf_h4_d1_rsi_recent_extreme_10",
+            Self::HtfH4D1RsiRecentExtreme20 => "htf_h4_d1_rsi_recent_extreme_20",
+            Self::HtfH4D1RsiRecentExtreme20_6535 => "htf_h4_d1_rsi_recent_extreme_20_65_35",
+            Self::HtfH4D1RsiRecentExtreme20OrDivergence => {
+                "htf_h4_d1_rsi_recent_extreme_20_or_divergence"
+            }
+            Self::HtfH4D1RsiRegime50 => "htf_h4_d1_rsi_regime_50",
+            Self::HtfH4D1RsiRegimeCross50 => "htf_h4_d1_rsi_regime_cross_50",
+            Self::HtfH4D1RsiSlope3 => "htf_h4_d1_rsi_slope_3",
         }
     }
 }
@@ -348,7 +405,15 @@ fn print_usage() {
                                    rsi_extreme,rsi_extreme_65_35,rsi_divergence,rsi_both,\n\
                                    htf_h4_d1_rsi_extreme,htf_h4_d1_rsi_both,volume_exhaustion,\n\
                                    volume_either,rsi_divergence_volume_exhaustion,\n\
-                                   htf_h4_d1_rsi_volume_either\n\
+                                   htf_h4_d1_rsi_volume_either,rsi_recent_extreme_10,\n\
+                                   rsi_recent_extreme_20,rsi_recent_extreme_10_65_35,\n\
+                                   rsi_recent_extreme_20_65_35,rsi_recent_extreme_20_or_divergence,\n\
+                                   rsi_regime_50,rsi_regime_cross_50,rsi_slope_3,\n\
+                                   htf_h4_d1_rsi_recent_extreme_10,htf_h4_d1_rsi_recent_extreme_20,\n\
+                                   htf_h4_d1_rsi_recent_extreme_20_65_35,\n\
+                                   htf_h4_d1_rsi_recent_extreme_20_or_divergence,\n\
+                                   htf_h4_d1_rsi_regime_50,htf_h4_d1_rsi_regime_cross_50,\n\
+                                   htf_h4_d1_rsi_slope_3\n\
            --early-be <POINTS>     Early break-even distance for partial_be (default: 0 = off)\n\
            --cost-usd <USD>        Round-turn spread+slippage cost in USD/oz, subtracted\n\
                                    as cost_usd / risk from every trade R (default: 0)\n\
@@ -1951,9 +2016,37 @@ fn delta_filter_allows(
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum RsiGate {
-    Extreme { overbought: f64, oversold: f64 },
+    Extreme {
+        overbought: f64,
+        oversold: f64,
+    },
     Divergence,
-    Both { overbought: f64, oversold: f64 },
+    Both {
+        overbought: f64,
+        oversold: f64,
+    },
+    RecentExtreme {
+        overbought: f64,
+        oversold: f64,
+        lookback: usize,
+    },
+    RecentExtremeOrDivergence {
+        overbought: f64,
+        oversold: f64,
+        lookback: usize,
+    },
+    Regime {
+        lookback: usize,
+        threshold: f64,
+    },
+    RegimeCross {
+        lookback: usize,
+        threshold: f64,
+    },
+    Slope {
+        lookback: usize,
+        min_delta: f64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1982,6 +2075,141 @@ fn rsi_extreme_allows(
         Ok(())
     } else {
         Err("rsi_extreme")
+    }
+}
+
+fn rsi_recent_extreme_allows(
+    is_buy: bool,
+    rsi: &[Option<f64>],
+    index: usize,
+    lookback: usize,
+    overbought: f64,
+    oversold: f64,
+) -> std::result::Result<(), &'static str> {
+    if lookback == 0 || index >= rsi.len() || index + 1 < lookback {
+        return Err("rsi_recent_extreme");
+    }
+
+    let start = index + 1 - lookback;
+    let touched = rsi[start..=index].iter().flatten().copied().any(|value| {
+        value.is_finite()
+            && if is_buy {
+                value <= oversold
+            } else {
+                value >= overbought
+            }
+    });
+
+    if touched {
+        Ok(())
+    } else {
+        Err("rsi_recent_extreme")
+    }
+}
+
+fn finite_rsi_at(rsi: &[Option<f64>], index: usize) -> Option<f64> {
+    rsi.get(index)
+        .copied()
+        .flatten()
+        .filter(|value| value.is_finite())
+}
+
+fn rsi_regime_allows(
+    is_buy: bool,
+    rsi: &[Option<f64>],
+    index: usize,
+    lookback: usize,
+    threshold: f64,
+) -> std::result::Result<(), &'static str> {
+    if lookback == 0 {
+        return Err("rsi_regime");
+    }
+    let Some(current) = finite_rsi_at(rsi, index) else {
+        return Err("rsi_regime");
+    };
+    let Some(prior) = index
+        .checked_sub(lookback)
+        .and_then(|prior_index| finite_rsi_at(rsi, prior_index))
+    else {
+        return Err("rsi_regime");
+    };
+
+    let allowed = if is_buy {
+        current > threshold && current > prior
+    } else {
+        current < threshold && current < prior
+    };
+
+    if allowed {
+        Ok(())
+    } else {
+        Err("rsi_regime")
+    }
+}
+
+fn rsi_regime_cross_allows(
+    is_buy: bool,
+    rsi: &[Option<f64>],
+    index: usize,
+    lookback: usize,
+    threshold: f64,
+) -> std::result::Result<(), &'static str> {
+    if lookback == 0 || index >= rsi.len() || index < lookback {
+        return Err("rsi_regime_cross");
+    }
+
+    let start = index - lookback;
+    let crossed = rsi[start..=index].windows(2).any(|pair| {
+        let (Some(previous), Some(current)) = (pair[0], pair[1]) else {
+            return false;
+        };
+        if !previous.is_finite() || !current.is_finite() {
+            return false;
+        }
+        if is_buy {
+            previous <= threshold && current > threshold
+        } else {
+            previous >= threshold && current < threshold
+        }
+    });
+
+    if crossed {
+        Ok(())
+    } else {
+        Err("rsi_regime_cross")
+    }
+}
+
+fn rsi_slope_allows(
+    is_buy: bool,
+    rsi: &[Option<f64>],
+    index: usize,
+    lookback: usize,
+    min_delta: f64,
+) -> std::result::Result<(), &'static str> {
+    if lookback == 0 {
+        return Err("rsi_slope");
+    }
+    let Some(current) = finite_rsi_at(rsi, index) else {
+        return Err("rsi_slope");
+    };
+    let Some(prior) = index
+        .checked_sub(lookback)
+        .and_then(|prior_index| finite_rsi_at(rsi, prior_index))
+    else {
+        return Err("rsi_slope");
+    };
+
+    let delta = if is_buy {
+        current - prior
+    } else {
+        prior - current
+    };
+
+    if delta >= min_delta {
+        Ok(())
+    } else {
+        Err("rsi_slope")
     }
 }
 
@@ -2052,6 +2280,37 @@ fn rsi_gate_allows(
                 Err("rsi_extreme")
             }
         }
+        RsiGate::RecentExtreme {
+            overbought,
+            oversold,
+            lookback,
+        } => rsi_recent_extreme_allows(is_buy, rsi, index, lookback, overbought, oversold),
+        RsiGate::RecentExtremeOrDivergence {
+            overbought,
+            oversold,
+            lookback,
+        } => {
+            let recent_passes =
+                rsi_recent_extreme_allows(is_buy, rsi, index, lookback, overbought, oversold)
+                    .is_ok();
+            if recent_passes || rsi_divergence_allows(is_buy, divergence).is_ok() {
+                Ok(())
+            } else {
+                Err("rsi_recent_extreme")
+            }
+        }
+        RsiGate::Regime {
+            lookback,
+            threshold,
+        } => rsi_regime_allows(is_buy, rsi, index, lookback, threshold),
+        RsiGate::RegimeCross {
+            lookback,
+            threshold,
+        } => rsi_regime_cross_allows(is_buy, rsi, index, lookback, threshold),
+        RsiGate::Slope {
+            lookback,
+            min_delta,
+        } => rsi_slope_allows(is_buy, rsi, index, lookback, min_delta),
     }
 }
 
@@ -4020,10 +4279,25 @@ fn variant_plan(variant: Variant) -> VariantPlan {
         | Variant::RsiBoth
         | Variant::VolumeExhaustion
         | Variant::VolumeEither
-        | Variant::RsiDivergenceVolumeExhaustion => {
-            (LevelSource::Analyzer, SimKind::Standard, None, None)
-        }
-        Variant::HtfH4D1RsiExtreme | Variant::HtfH4D1RsiBoth | Variant::HtfH4D1RsiVolumeEither => (
+        | Variant::RsiDivergenceVolumeExhaustion
+        | Variant::RsiRecentExtreme10
+        | Variant::RsiRecentExtreme20
+        | Variant::RsiRecentExtreme10_6535
+        | Variant::RsiRecentExtreme20_6535
+        | Variant::RsiRecentExtreme20OrDivergence
+        | Variant::RsiRegime50
+        | Variant::RsiRegimeCross50
+        | Variant::RsiSlope3 => (LevelSource::Analyzer, SimKind::Standard, None, None),
+        Variant::HtfH4D1RsiExtreme
+        | Variant::HtfH4D1RsiBoth
+        | Variant::HtfH4D1RsiVolumeEither
+        | Variant::HtfH4D1RsiRecentExtreme10
+        | Variant::HtfH4D1RsiRecentExtreme20
+        | Variant::HtfH4D1RsiRecentExtreme20_6535
+        | Variant::HtfH4D1RsiRecentExtreme20OrDivergence
+        | Variant::HtfH4D1RsiRegime50
+        | Variant::HtfH4D1RsiRegimeCross50
+        | Variant::HtfH4D1RsiSlope3 => (
             LevelSource::Analyzer,
             SimKind::Standard,
             Some(HtfFilter::H4D1),
@@ -4065,6 +4339,68 @@ fn variant_plan(variant: Variant) -> VariantPlan {
                 oversold: RSI_OVERSOLD,
             }),
             Some(VolumeFilter::Either),
+        ),
+        Variant::RsiRecentExtreme10 | Variant::HtfH4D1RsiRecentExtreme10 => (
+            Some(RsiGate::RecentExtreme {
+                overbought: RSI_OVERBOUGHT,
+                oversold: RSI_OVERSOLD,
+                lookback: RSI_RECENT_LOOKBACK_SHORT,
+            }),
+            None,
+        ),
+        Variant::RsiRecentExtreme20 | Variant::HtfH4D1RsiRecentExtreme20 => (
+            Some(RsiGate::RecentExtreme {
+                overbought: RSI_OVERBOUGHT,
+                oversold: RSI_OVERSOLD,
+                lookback: RSI_RECENT_LOOKBACK_LONG,
+            }),
+            None,
+        ),
+        Variant::RsiRecentExtreme10_6535 => (
+            Some(RsiGate::RecentExtreme {
+                overbought: RSI_OVERBOUGHT_ALT,
+                oversold: RSI_OVERSOLD_ALT,
+                lookback: RSI_RECENT_LOOKBACK_SHORT,
+            }),
+            None,
+        ),
+        Variant::RsiRecentExtreme20_6535 | Variant::HtfH4D1RsiRecentExtreme20_6535 => (
+            Some(RsiGate::RecentExtreme {
+                overbought: RSI_OVERBOUGHT_ALT,
+                oversold: RSI_OVERSOLD_ALT,
+                lookback: RSI_RECENT_LOOKBACK_LONG,
+            }),
+            None,
+        ),
+        Variant::RsiRecentExtreme20OrDivergence
+        | Variant::HtfH4D1RsiRecentExtreme20OrDivergence => (
+            Some(RsiGate::RecentExtremeOrDivergence {
+                overbought: RSI_OVERBOUGHT,
+                oversold: RSI_OVERSOLD,
+                lookback: RSI_RECENT_LOOKBACK_LONG,
+            }),
+            None,
+        ),
+        Variant::RsiRegime50 | Variant::HtfH4D1RsiRegime50 => (
+            Some(RsiGate::Regime {
+                lookback: RSI_REGIME_LOOKBACK,
+                threshold: RSI_REGIME_THRESHOLD,
+            }),
+            None,
+        ),
+        Variant::RsiRegimeCross50 | Variant::HtfH4D1RsiRegimeCross50 => (
+            Some(RsiGate::RegimeCross {
+                lookback: RSI_REGIME_CROSS_LOOKBACK,
+                threshold: RSI_REGIME_THRESHOLD,
+            }),
+            None,
+        ),
+        Variant::RsiSlope3 | Variant::HtfH4D1RsiSlope3 => (
+            Some(RsiGate::Slope {
+                lookback: RSI_SLOPE_LOOKBACK,
+                min_delta: RSI_SLOPE_MIN_DELTA,
+            }),
+            None,
         ),
         _ => (None, None),
     };
@@ -7126,6 +7462,456 @@ mod tests {
             ),
             Err("rsi_extreme")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase R1: recent-window extremes, regime, and slope gates
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rsi_recent_extreme_checks_only_the_lookback_window() {
+        let mut rsi = vec![Some(50.0); 40];
+
+        // A touch inside a 10-candle window ending at index 30 (21..=30).
+        rsi[21] = Some(25.0);
+        assert!(rsi_recent_extreme_allows(true, &rsi, 30, 10, 70.0, 30.0).is_ok());
+
+        // The same touch one candle older falls outside the window.
+        rsi[21] = Some(50.0);
+        rsi[20] = Some(25.0);
+        assert_eq!(
+            rsi_recent_extreme_allows(true, &rsi, 30, 10, 70.0, 30.0),
+            Err("rsi_recent_extreme")
+        );
+
+        // The signal candle itself counts and thresholds are inclusive.
+        rsi[20] = Some(50.0);
+        rsi[30] = Some(30.0);
+        assert!(rsi_recent_extreme_allows(true, &rsi, 30, 10, 70.0, 30.0).is_ok());
+
+        // SELL mirror: overbought touch passes, oversold does not.
+        let mut sell_rsi = vec![Some(50.0); 40];
+        sell_rsi[29] = Some(75.0);
+        assert!(rsi_recent_extreme_allows(false, &sell_rsi, 30, 10, 70.0, 30.0).is_ok());
+        assert_eq!(
+            rsi_recent_extreme_allows(true, &sell_rsi, 30, 10, 70.0, 30.0),
+            Err("rsi_recent_extreme")
+        );
+
+        // None/non-finite values are ignored and insufficient history rejects.
+        let mut missing = vec![Some(50.0); 40];
+        missing[29] = None;
+        missing[28] = Some(f64::NAN);
+        assert_eq!(
+            rsi_recent_extreme_allows(true, &missing, 30, 10, 70.0, 30.0),
+            Err("rsi_recent_extreme")
+        );
+        assert_eq!(
+            rsi_recent_extreme_allows(true, &missing, 5, 10, 70.0, 30.0),
+            Err("rsi_recent_extreme")
+        );
+        assert_eq!(
+            rsi_recent_extreme_allows(true, &missing, 39, 0, 70.0, 30.0),
+            Err("rsi_recent_extreme")
+        );
+    }
+
+    #[test]
+    fn rsi_recent_extreme_10_and_20_lookbacks_differ() {
+        let mut rsi = vec![Some(50.0); 40];
+        // 15 candles before index 30: outside 10, inside 20.
+        rsi[15] = Some(25.0);
+
+        assert_eq!(
+            rsi_recent_extreme_allows(true, &rsi, 30, 10, 70.0, 30.0),
+            Err("rsi_recent_extreme")
+        );
+        assert!(rsi_recent_extreme_allows(true, &rsi, 30, 20, 70.0, 30.0).is_ok());
+    }
+
+    #[test]
+    fn rsi_recent_extreme_respects_65_35_thresholds() {
+        let mut rsi = vec![Some(50.0); 20];
+        rsi[12] = Some(34.0);
+
+        assert!(rsi_recent_extreme_allows(true, &rsi, 19, 10, 65.0, 35.0).is_ok());
+        assert_eq!(
+            rsi_recent_extreme_allows(true, &rsi, 19, 10, 70.0, 30.0),
+            Err("rsi_recent_extreme")
+        );
+
+        // 35.0 exactly is inclusive for BUY.
+        rsi[12] = Some(35.0);
+        assert!(rsi_recent_extreme_allows(true, &rsi, 19, 10, 65.0, 35.0).is_ok());
+
+        // 66.0 passes 65/35 for SELL but not 70/30.
+        rsi[12] = Some(66.0);
+        assert!(rsi_recent_extreme_allows(false, &rsi, 19, 10, 65.0, 35.0).is_ok());
+        assert_eq!(
+            rsi_recent_extreme_allows(false, &rsi, 19, 10, 70.0, 30.0),
+            Err("rsi_recent_extreme")
+        );
+    }
+
+    #[test]
+    fn rsi_recent_extreme_or_divergence_accepts_either_leg() {
+        let start = utc_ms(2024, 1, 10, 15, 0);
+        let mut candles: Vec<Candle> = (0..20)
+            .map(|index| candle(start + index as i64 * STEP_MS, 100.0, 100.5, 99.5, 100.0))
+            .collect();
+        // Lower lows with higher RSI lows -> bullish divergence.
+        candles[5].low = 98.0;
+        candles[12].low = 97.0;
+
+        let mut rsi = vec![Some(50.0); candles.len()];
+        rsi[5] = Some(45.0);
+        rsi[12] = Some(55.0);
+
+        let gate = RsiGate::RecentExtremeOrDivergence {
+            overbought: 70.0,
+            oversold: 30.0,
+            lookback: 20,
+        };
+
+        // Divergence leg only: BUY passes, SELL does not.
+        assert!(rsi_gate_allows(gate, true, &candles, &rsi, 19).is_ok());
+        assert_eq!(
+            rsi_gate_allows(gate, false, &candles, &rsi, 19),
+            Err("rsi_recent_extreme")
+        );
+
+        // Recent-extreme leg only: remove the divergence and touch oversold.
+        let mut recent_only = rsi.clone();
+        recent_only[5] = Some(55.0);
+        recent_only[19] = Some(25.0);
+        assert!(rsi_gate_allows(gate, true, &candles, &recent_only, 19).is_ok());
+
+        // Neither leg: a single rejection is counted as rsi_recent_extreme.
+        let mut neither = recent_only.clone();
+        neither[19] = Some(50.0);
+        assert_eq!(
+            rsi_gate_allows(gate, true, &candles, &neither, 19),
+            Err("rsi_recent_extreme")
+        );
+        assert_eq!(
+            rsi_gate_allows(gate, false, &candles, &neither, 19),
+            Err("rsi_recent_extreme")
+        );
+    }
+
+    #[test]
+    fn rsi_regime_requires_direction_and_threshold() {
+        let mut rsi = vec![Some(50.0); 10];
+        rsi[7] = Some(45.0);
+        rsi[9] = Some(55.0);
+
+        // BUY: above 50 and rising over the lookback.
+        assert!(rsi_regime_allows(true, &rsi, 9, 2, 50.0).is_ok());
+        assert_eq!(
+            rsi_regime_allows(false, &rsi, 9, 2, 50.0),
+            Err("rsi_regime")
+        );
+
+        // SELL: below 50 and falling over the lookback.
+        rsi[7] = Some(55.0);
+        rsi[9] = Some(45.0);
+        assert!(rsi_regime_allows(false, &rsi, 9, 2, 50.0).is_ok());
+        assert_eq!(rsi_regime_allows(true, &rsi, 9, 2, 50.0), Err("rsi_regime"));
+
+        // Right direction but on the wrong side of the threshold.
+        rsi[7] = Some(35.0);
+        rsi[9] = Some(45.0);
+        assert_eq!(rsi_regime_allows(true, &rsi, 9, 2, 50.0), Err("rsi_regime"));
+
+        // Flat, missing values, and insufficient history all reject.
+        let flat = vec![Some(60.0); 10];
+        assert_eq!(
+            rsi_regime_allows(true, &flat, 9, 2, 50.0),
+            Err("rsi_regime")
+        );
+        let mut missing = rsi.clone();
+        missing[9] = None;
+        assert_eq!(
+            rsi_regime_allows(true, &missing, 9, 2, 50.0),
+            Err("rsi_regime")
+        );
+        assert_eq!(rsi_regime_allows(true, &rsi, 1, 2, 50.0), Err("rsi_regime"));
+        assert_eq!(rsi_regime_allows(true, &rsi, 9, 0, 50.0), Err("rsi_regime"));
+    }
+
+    #[test]
+    fn rsi_regime_cross_detects_crossings_inside_the_window() {
+        let mut rsi = vec![Some(50.0); 12];
+        rsi[6] = Some(48.0);
+        rsi[7] = Some(52.0);
+
+        // The 6->7 up-cross is inside the 5-candle window ending at 10 or 11.
+        assert!(rsi_regime_cross_allows(true, &rsi, 10, 5, 50.0).is_ok());
+        assert!(rsi_regime_cross_allows(true, &rsi, 11, 5, 50.0).is_ok());
+
+        // A shorter window ending at 10 starts at 7 and misses it.
+        assert_eq!(
+            rsi_regime_cross_allows(true, &rsi, 10, 3, 50.0),
+            Err("rsi_regime_cross")
+        );
+
+        // A touch at exactly 50 followed by a move above also counts as a BUY cross.
+        let mut touch = vec![Some(50.0); 12];
+        touch[10] = Some(51.0);
+        assert!(rsi_regime_cross_allows(true, &touch, 11, 5, 50.0).is_ok());
+
+        // SELL cross is the mirror image (values above 50 avoid a BUY up-cross).
+        let mut down = vec![Some(50.0); 12];
+        down[6] = Some(51.0);
+        down[7] = Some(51.0);
+        down[8] = Some(52.0);
+        down[9] = Some(48.0);
+        assert!(rsi_regime_cross_allows(false, &down, 11, 5, 50.0).is_ok());
+        assert_eq!(
+            rsi_regime_cross_allows(true, &down, 11, 5, 50.0),
+            Err("rsi_regime_cross")
+        );
+
+        // An older cross falls outside the window; a longer lookback still sees it.
+        let mut old_cross = vec![Some(50.0); 12];
+        old_cross[2] = Some(48.0);
+        old_cross[3] = Some(52.0);
+        assert_eq!(
+            rsi_regime_cross_allows(true, &old_cross, 11, 5, 50.0),
+            Err("rsi_regime_cross")
+        );
+        assert!(rsi_regime_cross_allows(true, &old_cross, 11, 10, 50.0).is_ok());
+
+        // Insufficient history and a zero lookback reject.
+        assert_eq!(
+            rsi_regime_cross_allows(true, &rsi, 4, 5, 50.0),
+            Err("rsi_regime_cross")
+        );
+        assert_eq!(
+            rsi_regime_cross_allows(true, &rsi, 11, 0, 50.0),
+            Err("rsi_regime_cross")
+        );
+    }
+
+    #[test]
+    fn rsi_slope_requires_minimum_delta_in_trade_direction() {
+        let mut rsi = vec![Some(50.0); 10];
+        rsi[6] = Some(50.0);
+        rsi[9] = Some(52.0);
+
+        assert!(rsi_slope_allows(true, &rsi, 9, 3, 2.0).is_ok());
+        assert_eq!(rsi_slope_allows(false, &rsi, 9, 3, 2.0), Err("rsi_slope"));
+
+        rsi[9] = Some(51.9);
+        assert_eq!(rsi_slope_allows(true, &rsi, 9, 3, 2.0), Err("rsi_slope"));
+
+        rsi[6] = Some(52.0);
+        rsi[9] = Some(50.0);
+        assert!(rsi_slope_allows(false, &rsi, 9, 3, 2.0).is_ok());
+        assert_eq!(rsi_slope_allows(true, &rsi, 9, 3, 2.0), Err("rsi_slope"));
+
+        // Insufficient history, missing values, and zero lookback reject.
+        assert_eq!(rsi_slope_allows(true, &rsi, 2, 3, 2.0), Err("rsi_slope"));
+        assert_eq!(rsi_slope_allows(true, &rsi, 9, 0, 2.0), Err("rsi_slope"));
+        let mut missing = rsi.clone();
+        missing[6] = None;
+        assert_eq!(
+            rsi_slope_allows(true, &missing, 9, 3, 2.0),
+            Err("rsi_slope")
+        );
+    }
+
+    #[test]
+    fn phase_r1_variant_names_and_plans_round_trip() {
+        let variants = [
+            (Variant::RsiRecentExtreme10, "rsi_recent_extreme_10", false),
+            (Variant::RsiRecentExtreme20, "rsi_recent_extreme_20", false),
+            (
+                Variant::RsiRecentExtreme10_6535,
+                "rsi_recent_extreme_10_65_35",
+                false,
+            ),
+            (
+                Variant::RsiRecentExtreme20_6535,
+                "rsi_recent_extreme_20_65_35",
+                false,
+            ),
+            (
+                Variant::RsiRecentExtreme20OrDivergence,
+                "rsi_recent_extreme_20_or_divergence",
+                false,
+            ),
+            (Variant::RsiRegime50, "rsi_regime_50", false),
+            (Variant::RsiRegimeCross50, "rsi_regime_cross_50", false),
+            (Variant::RsiSlope3, "rsi_slope_3", false),
+            (
+                Variant::HtfH4D1RsiRecentExtreme10,
+                "htf_h4_d1_rsi_recent_extreme_10",
+                true,
+            ),
+            (
+                Variant::HtfH4D1RsiRecentExtreme20,
+                "htf_h4_d1_rsi_recent_extreme_20",
+                true,
+            ),
+            (
+                Variant::HtfH4D1RsiRecentExtreme20_6535,
+                "htf_h4_d1_rsi_recent_extreme_20_65_35",
+                true,
+            ),
+            (
+                Variant::HtfH4D1RsiRecentExtreme20OrDivergence,
+                "htf_h4_d1_rsi_recent_extreme_20_or_divergence",
+                true,
+            ),
+            (Variant::HtfH4D1RsiRegime50, "htf_h4_d1_rsi_regime_50", true),
+            (
+                Variant::HtfH4D1RsiRegimeCross50,
+                "htf_h4_d1_rsi_regime_cross_50",
+                true,
+            ),
+            (Variant::HtfH4D1RsiSlope3, "htf_h4_d1_rsi_slope_3", true),
+        ];
+
+        for (variant, name, is_htf) in variants {
+            assert_eq!(variant.name(), name);
+            assert_eq!(Variant::parse(name), Some(variant));
+            let plan = variant_plan(variant);
+            assert!(matches!(plan.levels, LevelSource::Analyzer));
+            assert!(matches!(plan.simulation, SimKind::Standard));
+            assert!(plan.delta.is_none());
+            assert!(plan.volume.is_none());
+            assert_eq!(plan.htf, if is_htf { Some(HtfFilter::H4D1) } else { None });
+        }
+
+        assert_eq!(
+            variant_plan(Variant::RsiRecentExtreme10).rsi,
+            Some(RsiGate::RecentExtreme {
+                overbought: 70.0,
+                oversold: 30.0,
+                lookback: 10,
+            })
+        );
+        assert_eq!(
+            variant_plan(Variant::RsiRecentExtreme20).rsi,
+            Some(RsiGate::RecentExtreme {
+                overbought: 70.0,
+                oversold: 30.0,
+                lookback: 20,
+            })
+        );
+        assert_eq!(
+            variant_plan(Variant::RsiRecentExtreme10_6535).rsi,
+            Some(RsiGate::RecentExtreme {
+                overbought: 65.0,
+                oversold: 35.0,
+                lookback: 10,
+            })
+        );
+        assert_eq!(
+            variant_plan(Variant::HtfH4D1RsiRecentExtreme20_6535).rsi,
+            Some(RsiGate::RecentExtreme {
+                overbought: 65.0,
+                oversold: 35.0,
+                lookback: 20,
+            })
+        );
+        assert_eq!(
+            variant_plan(Variant::HtfH4D1RsiRecentExtreme20OrDivergence).rsi,
+            Some(RsiGate::RecentExtremeOrDivergence {
+                overbought: 70.0,
+                oversold: 30.0,
+                lookback: 20,
+            })
+        );
+        assert_eq!(
+            variant_plan(Variant::RsiRegime50).rsi,
+            Some(RsiGate::Regime {
+                lookback: 3,
+                threshold: 50.0,
+            })
+        );
+        assert_eq!(
+            variant_plan(Variant::HtfH4D1RsiRegimeCross50).rsi,
+            Some(RsiGate::RegimeCross {
+                lookback: 5,
+                threshold: 50.0,
+            })
+        );
+        assert_eq!(
+            variant_plan(Variant::RsiSlope3).rsi,
+            Some(RsiGate::Slope {
+                lookback: 3,
+                min_delta: 2.0,
+            })
+        );
+    }
+
+    #[test]
+    fn run_variant_records_phase_r1_rsi_rejection_reasons() {
+        let start = utc_ms(2024, 1, 10, 15, 0);
+        let candles: Vec<Candle> = (0..40)
+            .map(|index| flow_candle(start + index as i64 * STEP_MS, 100.0, 50.0))
+            .collect();
+        let neutral_rsi = vec![Some(50.0); candles.len()];
+        let htf = HtfContext::new(&candles);
+        let context = BacktestContext {
+            candles: &candles,
+            h1: &[],
+            h4: &[],
+            htf: &htf,
+            cvd: &[],
+            rsi: &neutral_rsi,
+            split_timestamp: start,
+            early_be: 0.0,
+            cost_usd: 0.0,
+            step_ms: STEP_MS,
+            walk_forward: &[],
+            rolling: &[],
+        };
+        let raw = raw_signal(25, SignalType::Buy, 100.0, 95.0, 110.0, 115.0);
+        let signals = std::slice::from_ref(&raw);
+
+        let recent = run_variant(Variant::RsiRecentExtreme10, signals, &context);
+        assert_eq!(recent.trades, 0);
+        assert_eq!(recent.reject_reasons.get("rsi_recent_extreme"), Some(&1));
+
+        let regime = run_variant(Variant::RsiRegime50, signals, &context);
+        assert_eq!(regime.trades, 0);
+        assert_eq!(regime.reject_reasons.get("rsi_regime"), Some(&1));
+
+        let cross = run_variant(Variant::RsiRegimeCross50, signals, &context);
+        assert_eq!(cross.trades, 0);
+        assert_eq!(cross.reject_reasons.get("rsi_regime_cross"), Some(&1));
+
+        let slope = run_variant(Variant::RsiSlope3, signals, &context);
+        assert_eq!(slope.trades, 0);
+        assert_eq!(slope.reject_reasons.get("rsi_slope"), Some(&1));
+
+        let or_gate = run_variant(Variant::RsiRecentExtreme20OrDivergence, signals, &context);
+        assert_eq!(or_gate.trades, 0);
+        assert_eq!(or_gate.reject_reasons.get("rsi_recent_extreme"), Some(&1));
+
+        // A recent oversold touch inside the lookback unlocks the trade.
+        let mut touched_rsi = vec![Some(50.0); candles.len()];
+        touched_rsi[20] = Some(25.0);
+        let touched_context = BacktestContext {
+            candles: &candles,
+            h1: &[],
+            h4: &[],
+            htf: &htf,
+            cvd: &[],
+            rsi: &touched_rsi,
+            split_timestamp: start,
+            early_be: 0.0,
+            cost_usd: 0.0,
+            step_ms: STEP_MS,
+            walk_forward: &[],
+            rolling: &[],
+        };
+        let recent = run_variant(Variant::RsiRecentExtreme10, signals, &touched_context);
+        assert_eq!(recent.trades, 1);
+        assert!(recent.reject_reasons.is_empty());
     }
 
     #[test]

@@ -172,6 +172,28 @@ Phase R0 backtest evidence (why the default stays OFF):
 default. **Recommendation:** keep RSI as context/AI input; do not enable the
 hard filter without new forward-test evidence.
 
+Phase R1 then tested whether the RSI extreme should be measured over a recent
+window instead of the trigger candle, plus regime/slope variants:
+
+| Variant | Trades | Net R | PF | MaxDD | OOS Net R | OOS PF |
+|---|---:|---:|---:|---:|---:|---:|
+| `rsi_recent_extreme_10` | 10 | −2.28 | 0.75 | 6.17 | +1.94 | 3.00 |
+| `rsi_recent_extreme_20` | 30 | −7.79 | 0.71 | 18.57 | +6.90 | 8.00 |
+| `rsi_recent_extreme_10_65_35` | 26 | +8.29 | 1.53 | 5.13 | +4.92 | 6.00 |
+| `rsi_recent_extreme_20_65_35` | 78 | −6.06 | 0.93 | 20.00 | +9.69 | 2.67 |
+| `rsi_regime_cross_50` | 376 | +54.01 | 1.25 | 38.00 | +47.52 | 2.53 |
+| `htf_h4_d1_rsi_regime_50` | 204 | +53.69 | 1.44 | 16.00 | +14.40 | 2.07 |
+| `htf_h4_d1` (reference) | 541 | +209.85 | 1.66 | 31.00 | +54.93 | 2.14 |
+
+Recent-extreme unlocks trades but does not create a robust edge: 10→20 lookback
+adds trades at negative marginal expectancy, and 70/30 vs 65/35 is not stable.
+Regime/slope variants are momentum-aligned and cut 57–64% of trades while
+lowering expectancy and raising full-sample drawdown. `htf_h4_d1` remains the
+best quality/return profile; no RSI gate beats it on net R or PF. **Phase R1
+conclusion: keep RSI context/AI-only.** If a drawdown-reduction experiment is
+wanted, `htf_h4_d1_rsi_regime_50` / `_regime_cross_50` can be forward-tested with
+the explicit expectation of lower profit and lower PF.
+
 ### Entry execution (dashboard config)
 
 | `entry_mode` | Behaviour |
