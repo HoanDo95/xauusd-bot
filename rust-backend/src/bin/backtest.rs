@@ -27,6 +27,10 @@ const FETCH_SLEEP_MS: u64 = 50;
 const MAX_FETCH_RETRIES: usize = 3;
 const IN_SAMPLE_FRACTION: f64 = 0.70;
 const BINANCE_KLINES_URL: &str = "https://api.binance.com/api/v3/klines";
+/// Phase 1D: M15 lookback for the CVD divergence filter.
+const DELTA_LOOKBACK: usize = 20;
+/// Phase 1D: minimum absolute delta ratio for the alignment filter.
+const DELTA_ALIGN_THRESHOLD: f64 = 0.10;
 
 #[tokio::main]
 async fn main() {
@@ -137,6 +141,12 @@ enum Variant {
     HtfH4Zone,
     HtfH4TpStructureSoft,
     HtfH4D1,
+    DeltaAlign,
+    DeltaDivergence,
+    DeltaBoth,
+    HtfH4DeltaAlign,
+    HtfH4D1DeltaAlign,
+    HtfH4D1DeltaBoth,
 }
 
 impl Variant {
@@ -175,6 +185,12 @@ impl Variant {
             "htf_h4_zone" => Some(Self::HtfH4Zone),
             "htf_h4_tp_structure_soft" => Some(Self::HtfH4TpStructureSoft),
             "htf_h4_d1" => Some(Self::HtfH4D1),
+            "delta_align" => Some(Self::DeltaAlign),
+            "delta_divergence" => Some(Self::DeltaDivergence),
+            "delta_both" => Some(Self::DeltaBoth),
+            "htf_h4_delta_align" => Some(Self::HtfH4DeltaAlign),
+            "htf_h4_d1_delta_align" => Some(Self::HtfH4D1DeltaAlign),
+            "htf_h4_d1_delta_both" => Some(Self::HtfH4D1DeltaBoth),
             _ => None,
         }
     }
@@ -214,6 +230,12 @@ impl Variant {
             Self::HtfH4Zone => "htf_h4_zone",
             Self::HtfH4TpStructureSoft => "htf_h4_tp_structure_soft",
             Self::HtfH4D1 => "htf_h4_d1",
+            Self::DeltaAlign => "delta_align",
+            Self::DeltaDivergence => "delta_divergence",
+            Self::DeltaBoth => "delta_both",
+            Self::HtfH4DeltaAlign => "htf_h4_delta_align",
+            Self::HtfH4D1DeltaAlign => "htf_h4_d1_delta_align",
+            Self::HtfH4D1DeltaBoth => "htf_h4_d1_delta_both",
         }
     }
 }
@@ -275,7 +297,9 @@ fn print_usage() {
                                    partial_25_at_20,trail_after_20,partial_25_trail,\n\
                                    htf_combined_partial_25_trail,partial_10_at_20,partial_15_at_25,\n\
                                    trail_after_30,htf_h4_partial_10,htf_h4_partial_15,htf_h4_trail_30,\n\
-                                   htf_h4_zone,htf_h4_tp_structure_soft,htf_h4_d1\n\
+                                   htf_h4_zone,htf_h4_tp_structure_soft,htf_h4_d1,\n\
+                                   delta_align,delta_divergence,delta_both,htf_h4_delta_align,\n\
+                                   htf_h4_d1_delta_align,htf_h4_d1_delta_both\n\
            --early-be <POINTS>     Early break-even distance for partial_be (default: 0 = off)\n\
            --cost-usd <USD>        Round-turn spread+slippage cost in USD/oz, subtracted\n\
                                    as cost_usd / risk from every trade R (default: 0)\n\
@@ -1753,6 +1777,123 @@ fn generate_signals(candles: &[Candle], config: &BotConfig) -> Vec<RawSignal> {
     }
 
     signals
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1D: volume delta / CVD filters
+// ---------------------------------------------------------------------------
+
+/// Aggressive-buyer volume minus aggressive-seller volume for one candle.
+///
+/// Binance reports taker buy base volume, so taker sell volume is
+/// `volume - taker_buy_volume`; the difference simplifies to
+/// `2 * taker_buy_volume - volume`.
+fn candle_delta(candle: &Candle) -> f64 {
+    2.0 * candle.taker_buy_volume - candle.volume
+}
+
+/// Delta normalized by candle volume, in [-1, 1] for valid Binance data.
+fn delta_ratio(candle: &Candle) -> f64 {
+    if candle.volume > 0.0 {
+        candle_delta(candle) / candle.volume
+    } else {
+        0.0
+    }
+}
+
+/// Cumulative delta through each candle (CVD[0] = delta of the first candle).
+fn cumulative_delta(candles: &[Candle]) -> Vec<f64> {
+    let mut cvd = Vec::with_capacity(candles.len());
+    let mut running = 0.0f64;
+    for candle in candles {
+        running += candle_delta(candle);
+        cvd.push(running);
+    }
+    cvd
+}
+
+/// Phase 1D alignment gate: the signal candle must show aggressive flow on
+/// the trade side (BUY delta ratio >= +0.10, SELL <= -0.10).
+fn delta_alignment_allows(
+    is_buy: bool,
+    candles: &[Candle],
+    index: usize,
+) -> std::result::Result<(), &'static str> {
+    let Some(candle) = candles.get(index) else {
+        return Err("delta_align");
+    };
+    let ratio = delta_ratio(candle);
+    let allowed = if is_buy {
+        ratio >= DELTA_ALIGN_THRESHOLD
+    } else {
+        ratio <= -DELTA_ALIGN_THRESHOLD
+    };
+
+    if allowed {
+        Ok(())
+    } else {
+        Err("delta_align")
+    }
+}
+
+/// Phase 1D divergence gate over the last 20 M15 candles.
+///
+/// BUY: price fell while CVD rose (bullish absorption).
+/// SELL: price rose while CVD fell (bearish exhaustion).
+fn delta_divergence_allows(
+    is_buy: bool,
+    candles: &[Candle],
+    cvd: &[f64],
+    index: usize,
+) -> std::result::Result<(), &'static str> {
+    if index < DELTA_LOOKBACK || index >= candles.len() || cvd.len() != candles.len() {
+        return Err("delta_divergence");
+    }
+
+    let price_change = candles[index].close - candles[index - DELTA_LOOKBACK].close;
+    let cvd_change = cvd[index] - cvd[index - DELTA_LOOKBACK];
+    let allowed = if is_buy {
+        price_change < 0.0 && cvd_change > 0.0
+    } else {
+        price_change > 0.0 && cvd_change < 0.0
+    };
+
+    if allowed {
+        Ok(())
+    } else {
+        Err("delta_divergence")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeltaFilter {
+    Align,
+    Divergence,
+    Both,
+}
+
+/// `delta_both` is an OR gate. When neither leg passes, the rejection is
+/// counted as `delta_align` so the report keeps a single reason per signal.
+fn delta_filter_allows(
+    filter: DeltaFilter,
+    is_buy: bool,
+    candles: &[Candle],
+    cvd: &[f64],
+    index: usize,
+) -> std::result::Result<(), &'static str> {
+    match filter {
+        DeltaFilter::Align => delta_alignment_allows(is_buy, candles, index),
+        DeltaFilter::Divergence => delta_divergence_allows(is_buy, candles, cvd, index),
+        DeltaFilter::Both => {
+            if delta_alignment_allows(is_buy, candles, index).is_ok()
+                || delta_divergence_allows(is_buy, candles, cvd, index).is_ok()
+            {
+                Ok(())
+            } else {
+                Err("delta_align")
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3459,6 +3600,8 @@ struct BacktestContext<'a> {
     h1: &'a [Candle],
     h4: &'a [Candle],
     htf: &'a HtfContext,
+    /// Phase 1D cumulative delta, aligned with `candles`.
+    cvd: &'a [f64],
     split_timestamp: i64,
     early_be: f64,
     cost_usd: f64,
@@ -3503,86 +3646,139 @@ struct VariantPlan {
     levels: LevelSource,
     simulation: SimKind,
     htf: Option<HtfFilter>,
+    delta: Option<DeltaFilter>,
 }
 
 fn variant_plan(variant: Variant) -> VariantPlan {
-    let (levels, simulation, htf) = match variant {
-        Variant::Baseline => (LevelSource::Analyzer, SimKind::Standard, None),
-        Variant::TpBand => (LevelSource::TpBand, SimKind::Standard, None),
-        Variant::PartialBe => (LevelSource::Analyzer, SimKind::PartialBe, None),
-        Variant::ConfirmSession => (LevelSource::ConfirmSession, SimKind::UsClose, None),
-        Variant::TimeOut02Am => (LevelSource::Analyzer, SimKind::TimeOutChoppy, None),
-        Variant::TimeOut02AmAll => (LevelSource::Analyzer, SimKind::TimeOutAll, None),
-        Variant::Be15 => (LevelSource::Analyzer, SimKind::Be15, None),
-        Variant::Be20 => (LevelSource::Analyzer, SimKind::Be20, None),
-        Variant::Scale50Tp1 => (LevelSource::Analyzer, SimKind::Scale50, None),
-        Variant::Scale50Tp1Be15 => (LevelSource::Analyzer, SimKind::Scale50Be15, None),
-        Variant::ConfirmationSoft => (LevelSource::ConfirmationSoft, SimKind::Standard, None),
-        Variant::TpStructure => (LevelSource::TpStructure, SimKind::Standard, None),
-        Variant::TpStructureSoft => (LevelSource::TpStructureSoft, SimKind::Standard, None),
-        Variant::TpStructureH4 => (LevelSource::TpStructureH4, SimKind::Standard, None),
+    let (levels, simulation, htf, delta) = match variant {
+        Variant::Baseline => (LevelSource::Analyzer, SimKind::Standard, None, None),
+        Variant::TpBand => (LevelSource::TpBand, SimKind::Standard, None, None),
+        Variant::PartialBe => (LevelSource::Analyzer, SimKind::PartialBe, None, None),
+        Variant::ConfirmSession => (LevelSource::ConfirmSession, SimKind::UsClose, None, None),
+        Variant::TimeOut02Am => (LevelSource::Analyzer, SimKind::TimeOutChoppy, None, None),
+        Variant::TimeOut02AmAll => (LevelSource::Analyzer, SimKind::TimeOutAll, None, None),
+        Variant::Be15 => (LevelSource::Analyzer, SimKind::Be15, None, None),
+        Variant::Be20 => (LevelSource::Analyzer, SimKind::Be20, None, None),
+        Variant::Scale50Tp1 => (LevelSource::Analyzer, SimKind::Scale50, None, None),
+        Variant::Scale50Tp1Be15 => (LevelSource::Analyzer, SimKind::Scale50Be15, None, None),
+        Variant::ConfirmationSoft => (LevelSource::ConfirmationSoft, SimKind::Standard, None, None),
+        Variant::TpStructure => (LevelSource::TpStructure, SimKind::Standard, None, None),
+        Variant::TpStructureSoft => (LevelSource::TpStructureSoft, SimKind::Standard, None, None),
+        Variant::TpStructureH4 => (LevelSource::TpStructureH4, SimKind::Standard, None, None),
         Variant::HtfH4 => (
             LevelSource::Analyzer,
             SimKind::Standard,
             Some(HtfFilter::H4),
+            None,
         ),
         Variant::HtfH1Channel => (
             LevelSource::Analyzer,
             SimKind::Standard,
             Some(HtfFilter::H1Channel),
+            None,
         ),
         Variant::HtfCombined => (
             LevelSource::Analyzer,
             SimKind::Standard,
             Some(HtfFilter::Combined),
+            None,
         ),
         Variant::HtfCombinedTpStructure => (
             LevelSource::TpStructureSoft,
             SimKind::Standard,
             Some(HtfFilter::Combined),
+            None,
         ),
-        Variant::SwingSl => (LevelSource::SwingSl, SimKind::Standard, None),
+        Variant::SwingSl => (LevelSource::SwingSl, SimKind::Standard, None, None),
         Variant::SwingSlHtf => (
             LevelSource::SwingSl,
             SimKind::Standard,
             Some(HtfFilter::Combined),
+            None,
         ),
-        Variant::Partial25At20 => (LevelSource::Analyzer, SimKind::Partial25, None),
-        Variant::TrailAfter20 => (LevelSource::Analyzer, SimKind::Trail20, None),
-        Variant::Partial25Trail => (LevelSource::Analyzer, SimKind::Partial25Trail, None),
+        Variant::Partial25At20 => (LevelSource::Analyzer, SimKind::Partial25, None, None),
+        Variant::TrailAfter20 => (LevelSource::Analyzer, SimKind::Trail20, None, None),
+        Variant::Partial25Trail => (LevelSource::Analyzer, SimKind::Partial25Trail, None, None),
         Variant::HtfCombinedPartial25Trail => (
             LevelSource::Analyzer,
             SimKind::Partial25Trail,
             Some(HtfFilter::Combined),
+            None,
         ),
-        Variant::Partial10At20 => (LevelSource::Analyzer, SimKind::Partial10At20, None),
-        Variant::Partial15At25 => (LevelSource::Analyzer, SimKind::Partial15At25, None),
-        Variant::TrailAfter30 => (LevelSource::Analyzer, SimKind::Trail30, None),
+        Variant::Partial10At20 => (LevelSource::Analyzer, SimKind::Partial10At20, None, None),
+        Variant::Partial15At25 => (LevelSource::Analyzer, SimKind::Partial15At25, None, None),
+        Variant::TrailAfter30 => (LevelSource::Analyzer, SimKind::Trail30, None, None),
         Variant::HtfH4Partial10 => (
             LevelSource::Analyzer,
             SimKind::Partial10At20,
             Some(HtfFilter::H4),
+            None,
         ),
         Variant::HtfH4Partial15 => (
             LevelSource::Analyzer,
             SimKind::Partial15At25,
             Some(HtfFilter::H4),
+            None,
         ),
-        Variant::HtfH4Trail30 => (LevelSource::Analyzer, SimKind::Trail30, Some(HtfFilter::H4)),
+        Variant::HtfH4Trail30 => (
+            LevelSource::Analyzer,
+            SimKind::Trail30,
+            Some(HtfFilter::H4),
+            None,
+        ),
         Variant::HtfH4Zone => (
             LevelSource::Analyzer,
             SimKind::Standard,
             Some(HtfFilter::H4Zone),
+            None,
         ),
         Variant::HtfH4TpStructureSoft => (
             LevelSource::TpStructureSoft,
             SimKind::Standard,
             Some(HtfFilter::H4),
+            None,
         ),
         Variant::HtfH4D1 => (
             LevelSource::Analyzer,
             SimKind::Standard,
             Some(HtfFilter::H4D1),
+            None,
+        ),
+        Variant::DeltaAlign => (
+            LevelSource::Analyzer,
+            SimKind::Standard,
+            None,
+            Some(DeltaFilter::Align),
+        ),
+        Variant::DeltaDivergence => (
+            LevelSource::Analyzer,
+            SimKind::Standard,
+            None,
+            Some(DeltaFilter::Divergence),
+        ),
+        Variant::DeltaBoth => (
+            LevelSource::Analyzer,
+            SimKind::Standard,
+            None,
+            Some(DeltaFilter::Both),
+        ),
+        Variant::HtfH4DeltaAlign => (
+            LevelSource::Analyzer,
+            SimKind::Standard,
+            Some(HtfFilter::H4),
+            Some(DeltaFilter::Align),
+        ),
+        Variant::HtfH4D1DeltaAlign => (
+            LevelSource::Analyzer,
+            SimKind::Standard,
+            Some(HtfFilter::H4D1),
+            Some(DeltaFilter::Align),
+        ),
+        Variant::HtfH4D1DeltaBoth => (
+            LevelSource::Analyzer,
+            SimKind::Standard,
+            Some(HtfFilter::H4D1),
+            Some(DeltaFilter::Both),
         ),
     };
 
@@ -3590,6 +3786,7 @@ fn variant_plan(variant: Variant) -> VariantPlan {
         levels,
         simulation,
         htf,
+        delta,
     }
 }
 
@@ -3802,6 +3999,15 @@ fn run_variant(
                 signal_candle.close,
             );
             if let Err(reason) = htf_filter_allows(filter, raw, &snapshot) {
+                *reject_reasons.entry(reason.to_string()).or_default() += 1;
+                continue;
+            }
+        }
+
+        if let Some(filter) = plan.delta {
+            if let Err(reason) =
+                delta_filter_allows(filter, is_buy, candles, context.cvd, raw.index)
+            {
                 *reject_reasons.entry(reason.to_string()).or_default() += 1;
                 continue;
             }
@@ -4072,7 +4278,7 @@ fn format_profit_factor(value: Option<f64>) -> String {
 
 fn print_row(name: &str, split: &str, metrics: &Metrics) {
     println!(
-        "{name:<18} {split:<4} {:>6} {:>4} {:>4} {:>4} {:>3} {:>4} {:>5} {:>5.1} {:>6.3} {:>8.2} {:>5} {:>6.2} {:>6.3} {:>8.2} {:>5} {:>6.2} {:>6.1} {:>5.1} {:>5.1}",
+        "{name:<24} {split:<4} {:>6} {:>4} {:>4} {:>4} {:>3} {:>4} {:>5} {:>5.1} {:>6.3} {:>8.2} {:>5} {:>6.2} {:>6.3} {:>8.2} {:>5} {:>6.2} {:>6.1} {:>5.1} {:>5.1}",
         metrics.trades,
         metrics.tp1,
         metrics.tp2,
@@ -4099,7 +4305,7 @@ fn print_table(report: &Report) {
     println!();
     println!("Gross metrics are before costs; net metrics subtract cost_usd / risk per trade.");
     println!(
-        "{:<18} {:<4} {:>6} {:>4} {:>4} {:>4} {:>3} {:>4} {:>5} {:>5} {:>6} {:>8} {:>5} {:>6} {:>6} {:>8} {:>5} {:>6} {:>6} {:>5} {:>5}",
+        "{:<24} {:<4} {:>6} {:>4} {:>4} {:>4} {:>3} {:>4} {:>5} {:>5} {:>6} {:>8} {:>5} {:>6} {:>6} {:>8} {:>5} {:>6} {:>6} {:>5} {:>5}",
         "variant",
         "split",
         "trades",
@@ -4145,7 +4351,7 @@ fn print_mfe_table(report: &Report) {
         "MFE sweep (ALL trades): % of trades reaching each favorable excursion and how they ended."
     );
     println!(
-        "{:<18} {:>5} {:>7} {:>8} {:>7} {:>7} {:>6} {:>8} {:>8} {:>8}",
+        "{:<24} {:>5} {:>7} {:>8} {:>7} {:>7} {:>6} {:>8} {:>8} {:>8}",
         "variant", "+USD", "reached", "%trades", "TP1/2", "SL", "BE", "TIME", "TRAIL", "reversed"
     );
 
@@ -4153,7 +4359,7 @@ fn print_mfe_table(report: &Report) {
         for bucket in &variant.overall.mfe_buckets {
             let ended_tp = bucket.ended_tp1 + bucket.ended_tp2;
             println!(
-                "{:<18} {:>5.0} {:>7} {:>7.1}% {:>7} {:>7} {:>6} {:>8} {:>8} {:>8}",
+                "{:<24} {:>5.0} {:>7} {:>7.1}% {:>7} {:>7} {:>6} {:>8} {:>8} {:>8}",
                 variant.name,
                 bucket.threshold_usd,
                 bucket.reached,
@@ -4173,7 +4379,7 @@ fn print_yearly_table(report: &Report) {
     println!();
     println!("Yearly net-of-cost performance (entry year in UTC+7):");
     println!(
-        "{:<18} {:>4} {:>6} {:>4} {:>4} {:>4} {:>3} {:>4} {:>5} {:>5} {:>8} {:>8} {:>5} {:>6} {:>6}",
+        "{:<24} {:>4} {:>6} {:>4} {:>4} {:>4} {:>3} {:>4} {:>5} {:>5} {:>8} {:>8} {:>5} {:>6} {:>6}",
         "variant",
         "year",
         "trades",
@@ -4194,7 +4400,7 @@ fn print_yearly_table(report: &Report) {
     for variant in &report.variants {
         for (year, metrics) in &variant.yearly {
             println!(
-                "{:<18} {:>4} {:>6} {:>4} {:>4} {:>4} {:>3} {:>4} {:>5} {:>5.1} {:>8.2} {:>8.3} {:>5} {:>6.2} {:>6.1}",
+                "{:<24} {:>4} {:>6} {:>4} {:>4} {:>4} {:>3} {:>4} {:>5} {:>5.1} {:>8.2} {:>8.3} {:>5} {:>6.2} {:>6.1}",
                 variant.name,
                 year,
                 metrics.trades,
@@ -4513,6 +4719,7 @@ async fn run() -> Result<()> {
     let h1_candles = aggregate_candles(&candles, timeframe_millis(Timeframe::H1), Timeframe::H1);
     let h4_candles = aggregate_candles(&candles, timeframe_millis(Timeframe::H4), Timeframe::H4);
     let htf_context = HtfContext::new(&candles);
+    let cvd = cumulative_delta(&candles);
     let walk_forward_defs = walk_forward_windows(args.start, args.end);
     let rolling_defs = rolling_is_oos_windows(args.start, args.end);
 
@@ -4558,6 +4765,7 @@ async fn run() -> Result<()> {
         h1: &h1_candles,
         h4: &h4_candles,
         htf: &htf_context,
+        cvd: &cvd,
         split_timestamp,
         early_be: args.early_be,
         cost_usd: args.cost_usd,
@@ -4632,7 +4840,11 @@ async fn run() -> Result<()> {
         "MFE/MAE are measured in USD from entry through the exit candle; MFE before TP1 includes the first TP1-touch candle and after-TP1 starts on the next candle.".to_string(),
         "Open trades remaining at the end of the dataset are closed at the final candle close with TIME_EXIT.".to_string(),
         "In-sample = first 70% of data by entry time; out-of-sample = final 30%.".to_string(),
-        "taker_buy_volume is cached for future order-flow work but is not used by the current analyzer or variants.".to_string(),
+        "Phase 1D delta: delta = 2 x taker_buy_volume - volume; delta_ratio = delta / volume (0 when volume is 0). Positive delta means aggressive buyers.".to_string(),
+        "delta_align: BUY requires signal-candle delta_ratio >= +0.10, SELL requires <= -0.10; otherwise the signal is rejected as delta_align.".to_string(),
+        "delta_divergence: over the last 20 M15 candles, BUY requires price change < 0 and CVD change > 0 (bullish absorption); SELL requires price change > 0 and CVD change < 0 (bearish exhaustion). CVD is cumulative delta.".to_string(),
+        "delta_both = delta_align OR delta_divergence. When neither leg passes, the rejection is counted once as delta_align.".to_string(),
+        "htf_h4_delta_align / htf_h4_d1_delta_align / htf_h4_d1_delta_both combine the Phase 1C HTF gates with delta. HTF is evaluated before delta, so rejection counts reflect the first failing gate.".to_string(),
     ];
     if args.early_be > 0.0 {
         notes.push(format!(
@@ -6232,5 +6444,190 @@ mod tests {
         assert!((summary.consistency_pct - 50.0).abs() < 1e-9);
         assert!((summary.best_net_r - 3.0).abs() < 1e-9);
         assert!((summary.worst_net_r + 1.0).abs() < 1e-9);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 1D: volume delta / CVD filters
+    // -----------------------------------------------------------------------
+
+    fn flow_candle(timestamp: i64, close: f64, taker_buy_volume: f64) -> Candle {
+        Candle {
+            timestamp,
+            open: close,
+            high: close + 0.5,
+            low: close - 0.5,
+            close,
+            volume: 100.0,
+            taker_buy_volume,
+            timeframe: Timeframe::M15,
+        }
+    }
+
+    #[test]
+    fn delta_math_matches_taker_flow_and_handles_zero_volume() {
+        let buy_flow = flow_candle(0, 100.0, 60.0);
+        assert!((candle_delta(&buy_flow) - 20.0).abs() < 1e-9);
+        assert!((delta_ratio(&buy_flow) - 0.20).abs() < 1e-9);
+
+        let sell_flow = flow_candle(0, 100.0, 30.0);
+        assert!((candle_delta(&sell_flow) + 40.0).abs() < 1e-9);
+        assert!((delta_ratio(&sell_flow) + 0.40).abs() < 1e-9);
+
+        let mut zero_volume = flow_candle(0, 100.0, 0.0);
+        zero_volume.volume = 0.0;
+        assert_eq!(delta_ratio(&zero_volume), 0.0);
+
+        let cvd = cumulative_delta(&[
+            flow_candle(0, 100.0, 60.0),
+            flow_candle(STEP_MS, 100.0, 40.0),
+        ]);
+        assert!((cvd[0] - 20.0).abs() < 1e-9);
+        assert!(cvd[1].abs() < 1e-9);
+    }
+
+    #[test]
+    fn delta_alignment_requires_ten_percent_aggressive_flow() {
+        assert!(delta_alignment_allows(true, &[flow_candle(0, 100.0, 55.0)], 0).is_ok());
+        assert_eq!(
+            delta_alignment_allows(true, &[flow_candle(0, 100.0, 54.9)], 0),
+            Err("delta_align")
+        );
+        assert!(delta_alignment_allows(false, &[flow_candle(0, 100.0, 45.0)], 0).is_ok());
+        assert_eq!(
+            delta_alignment_allows(false, &[flow_candle(0, 100.0, 45.1)], 0),
+            Err("delta_align")
+        );
+        assert_eq!(delta_alignment_allows(true, &[], 0), Err("delta_align"));
+    }
+
+    #[test]
+    fn delta_divergence_detects_absorption_and_exhaustion() {
+        // Price falls while aggressive buyers accumulate: bullish absorption.
+        let bullish: Vec<Candle> = (0..=DELTA_LOOKBACK)
+            .map(|i| flow_candle(i as i64 * STEP_MS, 100.0 - i as f64 * 0.1, 60.0))
+            .collect();
+        let bullish_cvd = cumulative_delta(&bullish);
+        assert!(delta_divergence_allows(true, &bullish, &bullish_cvd, DELTA_LOOKBACK).is_ok());
+        assert_eq!(
+            delta_divergence_allows(false, &bullish, &bullish_cvd, DELTA_LOOKBACK),
+            Err("delta_divergence")
+        );
+
+        // Price rises while aggressive sellers dominate: bearish exhaustion.
+        let bearish: Vec<Candle> = (0..=DELTA_LOOKBACK)
+            .map(|i| flow_candle(i as i64 * STEP_MS, 100.0 + i as f64 * 0.1, 40.0))
+            .collect();
+        let bearish_cvd = cumulative_delta(&bearish);
+        assert!(delta_divergence_allows(false, &bearish, &bearish_cvd, DELTA_LOOKBACK).is_ok());
+        assert_eq!(
+            delta_divergence_allows(true, &bearish, &bearish_cvd, DELTA_LOOKBACK),
+            Err("delta_divergence")
+        );
+
+        // Price and CVD both fall: no bullish divergence.
+        let both_fall: Vec<Candle> = (0..=DELTA_LOOKBACK)
+            .map(|i| flow_candle(i as i64 * STEP_MS, 100.0 - i as f64 * 0.1, 40.0))
+            .collect();
+        let both_fall_cvd = cumulative_delta(&both_fall);
+        assert_eq!(
+            delta_divergence_allows(true, &both_fall, &both_fall_cvd, DELTA_LOOKBACK),
+            Err("delta_divergence")
+        );
+        assert_eq!(
+            delta_divergence_allows(true, &bullish, &bullish_cvd, DELTA_LOOKBACK - 1),
+            Err("delta_divergence")
+        );
+    }
+
+    #[test]
+    fn delta_both_allows_either_leg_and_reports_align_when_both_fail() {
+        // Alignment passes; divergence is not required.
+        let aligned = vec![flow_candle(0, 100.0, 60.0)];
+        assert!(delta_filter_allows(DeltaFilter::Both, true, &aligned, &[20.0], 0).is_ok());
+
+        // Alignment fails at the signal candle, but bullish absorption passes.
+        let mut absorbing: Vec<Candle> = (0..=DELTA_LOOKBACK)
+            .map(|i| flow_candle(i as i64 * STEP_MS, 100.0 - i as f64 * 0.1, 60.0))
+            .collect();
+        absorbing[DELTA_LOOKBACK].taker_buy_volume = 50.0;
+        let absorbing_cvd = cumulative_delta(&absorbing);
+        assert!(delta_filter_allows(
+            DeltaFilter::Both,
+            true,
+            &absorbing,
+            &absorbing_cvd,
+            DELTA_LOOKBACK
+        )
+        .is_ok());
+
+        // Flat price with neutral flow fails both legs.
+        let flat: Vec<Candle> = (0..=DELTA_LOOKBACK)
+            .map(|i| flow_candle(i as i64 * STEP_MS, 100.0, 50.0))
+            .collect();
+        let flat_cvd = cumulative_delta(&flat);
+        assert_eq!(
+            delta_filter_allows(DeltaFilter::Both, true, &flat, &flat_cvd, DELTA_LOOKBACK),
+            Err("delta_align")
+        );
+    }
+
+    #[test]
+    fn phase1d_variant_names_round_trip_through_parse() {
+        let variants = [
+            (Variant::DeltaAlign, "delta_align"),
+            (Variant::DeltaDivergence, "delta_divergence"),
+            (Variant::DeltaBoth, "delta_both"),
+            (Variant::HtfH4DeltaAlign, "htf_h4_delta_align"),
+            (Variant::HtfH4D1DeltaAlign, "htf_h4_d1_delta_align"),
+            (Variant::HtfH4D1DeltaBoth, "htf_h4_d1_delta_both"),
+        ];
+
+        for (variant, name) in variants {
+            assert_eq!(variant.name(), name);
+            assert_eq!(Variant::parse(name), Some(variant));
+        }
+        assert_eq!(
+            variant_plan(Variant::HtfH4D1DeltaBoth).delta,
+            Some(DeltaFilter::Both)
+        );
+        assert_eq!(variant_plan(Variant::Baseline).delta, None);
+    }
+
+    #[test]
+    fn run_variant_records_delta_rejection_reasons() {
+        let start = utc_ms(2024, 1, 10, 15, 0);
+        let candles: Vec<Candle> = (0..40)
+            .map(|i| flow_candle(start + i as i64 * STEP_MS, 100.0, 50.0))
+            .collect();
+        let cvd = cumulative_delta(&candles);
+        let htf = HtfContext::new(&candles);
+        let context = BacktestContext {
+            candles: &candles,
+            h1: &[],
+            h4: &[],
+            htf: &htf,
+            cvd: &cvd,
+            split_timestamp: start,
+            early_be: 0.0,
+            cost_usd: 0.0,
+            step_ms: STEP_MS,
+            walk_forward: &[],
+            rolling: &[],
+        };
+        let raw = raw_signal(25, SignalType::Buy, 100.0, 95.0, 110.0, 115.0);
+        let signals = std::slice::from_ref(&raw);
+
+        let align = run_variant(Variant::DeltaAlign, signals, &context);
+        assert_eq!(align.trades, 0);
+        assert_eq!(align.rejected, 1);
+        assert_eq!(align.reject_reasons.get("delta_align"), Some(&1));
+
+        let divergence = run_variant(Variant::DeltaDivergence, signals, &context);
+        assert_eq!(divergence.rejected, 1);
+        assert_eq!(divergence.reject_reasons.get("delta_divergence"), Some(&1));
+
+        let both = run_variant(Variant::DeltaBoth, signals, &context);
+        assert_eq!(both.rejected, 1);
+        assert_eq!(both.reject_reasons.get("delta_align"), Some(&1));
     }
 }
