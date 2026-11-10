@@ -128,6 +128,15 @@ enum Variant {
     TrailAfter20,
     Partial25Trail,
     HtfCombinedPartial25Trail,
+    Partial10At20,
+    Partial15At25,
+    TrailAfter30,
+    HtfH4Partial10,
+    HtfH4Partial15,
+    HtfH4Trail30,
+    HtfH4Zone,
+    HtfH4TpStructureSoft,
+    HtfH4D1,
 }
 
 impl Variant {
@@ -157,6 +166,15 @@ impl Variant {
             "trail_after_20" => Some(Self::TrailAfter20),
             "partial_25_trail" => Some(Self::Partial25Trail),
             "htf_combined_partial_25_trail" => Some(Self::HtfCombinedPartial25Trail),
+            "partial_10_at_20" => Some(Self::Partial10At20),
+            "partial_15_at_25" => Some(Self::Partial15At25),
+            "trail_after_30" => Some(Self::TrailAfter30),
+            "htf_h4_partial_10" => Some(Self::HtfH4Partial10),
+            "htf_h4_partial_15" => Some(Self::HtfH4Partial15),
+            "htf_h4_trail_30" => Some(Self::HtfH4Trail30),
+            "htf_h4_zone" => Some(Self::HtfH4Zone),
+            "htf_h4_tp_structure_soft" => Some(Self::HtfH4TpStructureSoft),
+            "htf_h4_d1" => Some(Self::HtfH4D1),
             _ => None,
         }
     }
@@ -187,6 +205,15 @@ impl Variant {
             Self::TrailAfter20 => "trail_after_20",
             Self::Partial25Trail => "partial_25_trail",
             Self::HtfCombinedPartial25Trail => "htf_combined_partial_25_trail",
+            Self::Partial10At20 => "partial_10_at_20",
+            Self::Partial15At25 => "partial_15_at_25",
+            Self::TrailAfter30 => "trail_after_30",
+            Self::HtfH4Partial10 => "htf_h4_partial_10",
+            Self::HtfH4Partial15 => "htf_h4_partial_15",
+            Self::HtfH4Trail30 => "htf_h4_trail_30",
+            Self::HtfH4Zone => "htf_h4_zone",
+            Self::HtfH4TpStructureSoft => "htf_h4_tp_structure_soft",
+            Self::HtfH4D1 => "htf_h4_d1",
         }
     }
 }
@@ -202,6 +229,9 @@ struct Args {
     variants: Vec<Variant>,
     early_be: f64,
     cost_usd: f64,
+    /// Walk-forward analysis is always included in the report; the flag is
+    /// accepted so the requested invocation is explicit.
+    walk_forward: bool,
 }
 
 impl Default for Args {
@@ -221,6 +251,7 @@ impl Default for Args {
             ],
             early_be: 0.0,
             cost_usd: 0.0,
+            walk_forward: false,
         }
     }
 }
@@ -242,10 +273,13 @@ fn print_usage() {
                                    tp_structure_soft,tp_structure_h4,htf_h4,htf_h1_channel,\n\
                                    htf_combined,htf_combined_tp_structure,swing_sl,swing_sl_htf,\n\
                                    partial_25_at_20,trail_after_20,partial_25_trail,\n\
-                                   htf_combined_partial_25_trail\n\
+                                   htf_combined_partial_25_trail,partial_10_at_20,partial_15_at_25,\n\
+                                   trail_after_30,htf_h4_partial_10,htf_h4_partial_15,htf_h4_trail_30,\n\
+                                   htf_h4_zone,htf_h4_tp_structure_soft,htf_h4_d1\n\
            --early-be <POINTS>     Early break-even distance for partial_be (default: 0 = off)\n\
            --cost-usd <USD>        Round-turn spread+slippage cost in USD/oz, subtracted\n\
                                    as cost_usd / risk from every trade R (default: 0)\n\
+           --walk-forward          Explicitly enable walk-forward reporting (always on)\n\
            --help                  Show this help"
     );
 }
@@ -336,6 +370,9 @@ fn parse_args() -> Result<Args> {
             "--help" | "-h" => {
                 print_usage();
                 std::process::exit(0);
+            }
+            "--walk-forward" => {
+                args.walk_forward = true;
             }
             other => {
                 return Err(AppError::Message(format!(
@@ -1014,6 +1051,7 @@ impl HtfSeries {
 struct HtfSnapshot {
     d1_bias: Bias,
     h4_bias: Bias,
+    h4_channel: Option<f64>,
     h1_channel: Option<f64>,
     near_h4_support: bool,
     near_h4_resistance: bool,
@@ -1046,6 +1084,7 @@ impl HtfContext {
         let h4_bias = h4_index
             .map(|index| self.h4.bias(index))
             .unwrap_or(Bias::Neutral);
+        let h4_channel = h4_index.and_then(|index| self.h4.channel_position(index, 20));
 
         let h1_channel = self
             .h1
@@ -1073,6 +1112,7 @@ impl HtfContext {
         HtfSnapshot {
             d1_bias,
             h4_bias,
+            h4_channel,
             h1_channel,
             near_h4_support,
             near_h4_resistance,
@@ -1085,6 +1125,21 @@ enum HtfFilter {
     H4,
     H1Channel,
     Combined,
+    H4Zone,
+    H4D1,
+}
+
+fn htf_h4_bias_allows(
+    raw: &RawSignal,
+    snapshot: &HtfSnapshot,
+) -> std::result::Result<(), &'static str> {
+    if raw.is_buy() && snapshot.h4_bias == Bias::Bearish {
+        Err("htf_h4_bearish")
+    } else if !raw.is_buy() && snapshot.h4_bias == Bias::Bullish {
+        Err("htf_h4_bullish")
+    } else {
+        Ok(())
+    }
 }
 
 fn htf_filter_allows(
@@ -1095,15 +1150,7 @@ fn htf_filter_allows(
     let is_buy = raw.is_buy();
 
     match filter {
-        HtfFilter::H4 => {
-            if is_buy && snapshot.h4_bias == Bias::Bearish {
-                Err("htf_h4_bearish")
-            } else if !is_buy && snapshot.h4_bias == Bias::Bullish {
-                Err("htf_h4_bullish")
-            } else {
-                Ok(())
-            }
-        }
+        HtfFilter::H4 => htf_h4_bias_allows(raw, snapshot),
         HtfFilter::H1Channel => {
             let Some(position) = snapshot.h1_channel else {
                 return Err("htf_h1_channel_missing");
@@ -1117,12 +1164,7 @@ fn htf_filter_allows(
             }
         }
         HtfFilter::Combined => {
-            if is_buy && snapshot.h4_bias == Bias::Bearish {
-                return Err("htf_h4_bearish");
-            }
-            if !is_buy && snapshot.h4_bias == Bias::Bullish {
-                return Err("htf_h4_bullish");
-            }
+            htf_h4_bias_allows(raw, snapshot)?;
 
             let Some(position) = snapshot.h1_channel else {
                 return Err("htf_h1_channel_missing");
@@ -1139,6 +1181,32 @@ fn htf_filter_allows(
             }
             if !is_buy && snapshot.d1_bias == Bias::Bullish && !snapshot.near_h4_resistance {
                 return Err("htf_d1_countertrend_no_zone");
+            }
+
+            Ok(())
+        }
+        HtfFilter::H4Zone => {
+            htf_h4_bias_allows(raw, snapshot)?;
+
+            let Some(position) = snapshot.h4_channel else {
+                return Err("htf_h4_zone_missing");
+            };
+            if is_buy && position > 0.40 {
+                Err("htf_h4_zone_not_low")
+            } else if !is_buy && position < 0.60 {
+                Err("htf_h4_zone_not_high")
+            } else {
+                Ok(())
+            }
+        }
+        HtfFilter::H4D1 => {
+            htf_h4_bias_allows(raw, snapshot)?;
+
+            if is_buy && snapshot.d1_bias == Bias::Bearish {
+                return Err("htf_d1_bearish");
+            }
+            if !is_buy && snapshot.d1_bias == Bias::Bullish {
+                return Err("htf_d1_bullish");
             }
 
             Ok(())
@@ -2646,30 +2714,64 @@ fn simulate_managed(
     ))
 }
 
-/// Phase 1B partial/trailing management flags.
-#[derive(Debug, Clone, Copy, Default)]
-struct PartialTrailManagement {
-    /// Close 25% at +20 USD if reached before TP1.
-    partial_25_at_20: bool,
-    /// Once MFE >= 20 USD, trail the stop 10 USD behind the high/low water
-    /// mark in 1 USD steps, never worse than the initial stop.
-    trail_after_20: bool,
+/// Phase 1C partial/trailing management flags.
+#[derive(Debug, Clone, Copy)]
+struct PartialRule {
+    /// Fraction of the position closed at the trigger.
+    fraction: f64,
+    /// Favorable excursion in USD from entry that books the partial.
+    trigger_usd: f64,
 }
 
-fn blended_r(partial_taken: bool, partial_r: f64, remainder_r: f64) -> f64 {
+impl PartialRule {
+    const fn new(fraction: f64, trigger_usd: f64) -> Self {
+        Self {
+            fraction,
+            trigger_usd,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TrailRule {
+    /// MFE in USD required before the trail activates.
+    trigger_usd: f64,
+    /// Distance kept behind the high/low-water mark.
+    distance_usd: f64,
+    /// Price quantization step in USD.
+    step_usd: f64,
+}
+
+impl TrailRule {
+    const fn new(trigger_usd: f64, distance_usd: f64, step_usd: f64) -> Self {
+        Self {
+            trigger_usd,
+            distance_usd,
+            step_usd,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PartialTrailManagement {
+    partial: Option<PartialRule>,
+    trail: Option<TrailRule>,
+}
+
+fn blended_r(fraction: f64, partial_taken: bool, partial_r: f64, remainder_r: f64) -> f64 {
     if partial_taken {
-        0.25 * partial_r + 0.75 * remainder_r
+        fraction * partial_r + (1.0 - fraction) * remainder_r
     } else {
         remainder_r
     }
 }
 
-/// Baseline management plus optional 25%-at-+20 and trailing-stop rules.
+/// Baseline management plus optional partial booking and trailing-stop rules.
 ///
-/// The partial is booked before TP1 only when the +20 trigger is closer to
-/// entry than TP1. The trailing stop is computed from completed candles and
-/// becomes binding on the next M15 candle, so no same-candle optimistic fill
-/// is possible. After TP1, a stop-out settles at TP1 unless the trail has
+/// A partial is booked before TP1 only when its USD trigger is closer to entry
+/// than TP1. The trailing stop is computed from completed candles and becomes
+/// binding on the next M15 candle, so no same-candle optimistic fill is
+/// possible. After TP1, a stop-out settles at TP1 unless the trail has
 /// ratcheted beyond TP1, preserving baseline "TP1 banked" behavior without
 /// introducing a hard TP1 stop.
 fn simulate_partial_trail(
@@ -2689,17 +2791,23 @@ fn simulate_partial_trail(
     let take_profit_2 = levels.take_profit_2;
     let tp1_r = levels.r_multiple(is_buy, take_profit_1);
     let tp2_r = levels.r_multiple(is_buy, take_profit_2);
-    let partial_r = 20.0 / levels.risk();
-    let trigger = if is_buy {
-        levels.entry + 20.0
-    } else {
-        levels.entry - 20.0
-    };
-    let trigger_before_tp1 = if is_buy {
-        trigger < take_profit_1
-    } else {
-        trigger > take_profit_1
-    };
+    let partial = management.partial;
+    let partial_fraction = partial.map_or(0.0, |rule| rule.fraction.clamp(0.0, 1.0));
+    let partial_r = partial.map_or(0.0, |rule| rule.trigger_usd / levels.risk());
+    let partial_trigger = partial.map(|rule| {
+        if is_buy {
+            levels.entry + rule.trigger_usd
+        } else {
+            levels.entry - rule.trigger_usd
+        }
+    });
+    let trigger_before_tp1 = partial_trigger.is_some_and(|trigger| {
+        if is_buy {
+            trigger < take_profit_1
+        } else {
+            trigger > take_profit_1
+        }
+    });
 
     let mut tp1_hit = false;
     let mut partial_taken = false;
@@ -2757,19 +2865,21 @@ fn simulate_partial_trail(
                 TradeResult {
                     outcome,
                     exit_price,
-                    r_multiple: blended_r(partial_taken, partial_r, remainder_r),
+                    r_multiple: blended_r(partial_fraction, partial_taken, partial_r, remainder_r),
                 },
             ));
         }
 
-        // The +20 partial is closer than TP1 when it is booked before TP1.
-        if management.partial_25_at_20
-            && !partial_taken
-            && !tp1_hit
-            && trigger_before_tp1
-            && hit_target(candle, is_buy, trigger)
-        {
-            partial_taken = true;
+        // The partial trigger is booked before TP1 only when it is closer to
+        // entry than TP1.
+        if let Some(trigger) = partial_trigger {
+            if !partial_taken
+                && !tp1_hit
+                && trigger_before_tp1
+                && hit_target(candle, is_buy, trigger)
+            {
+                partial_taken = true;
+            }
         }
 
         if hit_target(candle, is_buy, take_profit_2) {
@@ -2782,7 +2892,7 @@ fn simulate_partial_trail(
                 TradeResult {
                     outcome: Outcome::Tp2,
                     exit_price: take_profit_2,
-                    r_multiple: blended_r(partial_taken, partial_r, tp2_r),
+                    r_multiple: blended_r(partial_fraction, partial_taken, partial_r, tp2_r),
                 },
             ));
         }
@@ -2798,17 +2908,21 @@ fn simulate_partial_trail(
         };
         mfe = mfe.max(favorable.max(0.0));
 
-        if management.trail_after_20 && mfe >= 20.0 {
-            let quantized_stop = if is_buy {
-                (levels.entry + mfe).floor() - 10.0
-            } else {
-                (levels.entry - mfe).ceil() + 10.0
-            };
-            trail_stop = if is_buy {
-                quantized_stop.max(initial_stop)
-            } else {
-                quantized_stop.min(initial_stop)
-            };
+        if let Some(rule) = management.trail {
+            if mfe >= rule.trigger_usd && rule.step_usd > 0.0 {
+                let quantized_stop = if is_buy {
+                    ((levels.entry + mfe) / rule.step_usd).floor() * rule.step_usd
+                        - rule.distance_usd
+                } else {
+                    ((levels.entry - mfe) / rule.step_usd).ceil() * rule.step_usd
+                        + rule.distance_usd
+                };
+                trail_stop = if is_buy {
+                    quantized_stop.max(initial_stop)
+                } else {
+                    quantized_stop.min(initial_stop)
+                };
+            }
         }
     }
 
@@ -2829,7 +2943,7 @@ fn simulate_partial_trail(
             TradeResult {
                 outcome: Outcome::Tp1,
                 exit_price: take_profit_1,
-                r_multiple: blended_r(partial_taken, partial_r, tp1_r),
+                r_multiple: blended_r(partial_fraction, partial_taken, partial_r, tp1_r),
             },
         ));
     }
@@ -2843,7 +2957,7 @@ fn simulate_partial_trail(
         TradeResult {
             outcome: Outcome::TimeExit,
             exit_price: last_close,
-            r_multiple: blended_r(partial_taken, partial_r, close_r),
+            r_multiple: blended_r(partial_fraction, partial_taken, partial_r, close_r),
         },
     ))
 }
@@ -3153,16 +3267,127 @@ fn compute_metrics<'a>(trades: impl IntoIterator<Item = &'a SimulatedTrade>) -> 
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct WindowMetrics {
+    trades: usize,
+    net_r: f64,
+    profit_factor: Option<f64>,
+    max_drawdown_r: f64,
+    expectancy_r: f64,
+    win_rate_pct: f64,
+    sample_thin: bool,
+}
+
+impl WindowMetrics {
+    fn from_metrics(metrics: &Metrics) -> Self {
+        Self {
+            trades: metrics.trades,
+            net_r: metrics.net_r_after_costs,
+            profit_factor: metrics.profit_factor_after_costs,
+            max_drawdown_r: metrics.max_drawdown_r_after_costs,
+            expectancy_r: metrics.expectancy_after_costs_r,
+            win_rate_pct: metrics.win_rate_pct,
+            sample_thin: metrics.trades < 30,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WalkForwardWindow {
+    label: String,
+    start: String,
+    end: String,
+    metrics: WindowMetrics,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+struct WalkForwardSummary {
+    windows: usize,
+    evaluated_windows: usize,
+    positive_windows: usize,
+    negative_windows: usize,
+    flat_windows: usize,
+    best_net_r: f64,
+    worst_net_r: f64,
+    consistency_pct: f64,
+}
+
+fn summarize_walk_forward(windows: &[WalkForwardWindow]) -> WalkForwardSummary {
+    let mut summary = WalkForwardSummary {
+        windows: windows.len(),
+        best_net_r: f64::NEG_INFINITY,
+        worst_net_r: f64::INFINITY,
+        ..WalkForwardSummary::default()
+    };
+
+    for window in windows {
+        let metrics = &window.metrics;
+        if metrics.trades == 0 {
+            continue;
+        }
+        summary.evaluated_windows += 1;
+        if metrics.net_r > 0.0 {
+            summary.positive_windows += 1;
+        } else if metrics.net_r < 0.0 {
+            summary.negative_windows += 1;
+        } else {
+            summary.flat_windows += 1;
+        }
+        summary.best_net_r = summary.best_net_r.max(metrics.net_r);
+        summary.worst_net_r = summary.worst_net_r.min(metrics.net_r);
+    }
+
+    if summary.evaluated_windows == 0 {
+        summary.best_net_r = 0.0;
+        summary.worst_net_r = 0.0;
+    }
+    summary.consistency_pct = if summary.evaluated_windows == 0 {
+        0.0
+    } else {
+        round_to(
+            summary.positive_windows as f64 / summary.evaluated_windows as f64 * 100.0,
+            2,
+        )
+    };
+    summary
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RollingWindow {
+    label: String,
+    is_start: String,
+    is_end: String,
+    oos_start: String,
+    oos_end: String,
+    is_metrics: WindowMetrics,
+    oos_metrics: WindowMetrics,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TopCandidate {
+    name: String,
+    trades: usize,
+    net_r: f64,
+    positive_windows: usize,
+    evaluated_windows: usize,
+    consistency_pct: f64,
+    rolling_is_oos: Vec<RollingWindow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct VariantReport {
     name: String,
     signals: usize,
     trades: usize,
     rejected: usize,
     reject_reasons: BTreeMap<String, usize>,
+    sample_thin: bool,
     overall: Metrics,
     in_sample: Metrics,
     out_of_sample: Metrics,
     yearly: BTreeMap<String, Metrics>,
+    walk_forward: Vec<WalkForwardWindow>,
+    walk_forward_summary: WalkForwardSummary,
+    rolling_is_oos: Vec<RollingWindow>,
     trade_log: Vec<TradeRecord>,
 }
 
@@ -3202,7 +3427,31 @@ struct Report {
     split_time_utc: String,
     config: ReportConfig,
     notes: Vec<String>,
+    top_candidate: Option<TopCandidate>,
     variants: Vec<VariantReport>,
+}
+
+#[derive(Debug, Clone)]
+struct DateWindow {
+    label: String,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    start_ms: i64,
+    /// Exclusive end timestamp used for filtering.
+    end_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+struct RollingWindowDef {
+    label: String,
+    is_start_date: NaiveDate,
+    is_end_date: NaiveDate,
+    oos_start_date: NaiveDate,
+    oos_end_date: NaiveDate,
+    is_start_ms: i64,
+    is_end_ms: i64,
+    oos_start_ms: i64,
+    oos_end_ms: i64,
 }
 
 struct BacktestContext<'a> {
@@ -3214,6 +3463,8 @@ struct BacktestContext<'a> {
     early_be: f64,
     cost_usd: f64,
     step_ms: i64,
+    walk_forward: &'a [DateWindow],
+    rolling: &'a [RollingWindowDef],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3242,6 +3493,9 @@ enum SimKind {
     Partial25,
     Trail20,
     Partial25Trail,
+    Partial10At20,
+    Partial15At25,
+    Trail30,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3301,6 +3555,35 @@ fn variant_plan(variant: Variant) -> VariantPlan {
             SimKind::Partial25Trail,
             Some(HtfFilter::Combined),
         ),
+        Variant::Partial10At20 => (LevelSource::Analyzer, SimKind::Partial10At20, None),
+        Variant::Partial15At25 => (LevelSource::Analyzer, SimKind::Partial15At25, None),
+        Variant::TrailAfter30 => (LevelSource::Analyzer, SimKind::Trail30, None),
+        Variant::HtfH4Partial10 => (
+            LevelSource::Analyzer,
+            SimKind::Partial10At20,
+            Some(HtfFilter::H4),
+        ),
+        Variant::HtfH4Partial15 => (
+            LevelSource::Analyzer,
+            SimKind::Partial15At25,
+            Some(HtfFilter::H4),
+        ),
+        Variant::HtfH4Trail30 => (LevelSource::Analyzer, SimKind::Trail30, Some(HtfFilter::H4)),
+        Variant::HtfH4Zone => (
+            LevelSource::Analyzer,
+            SimKind::Standard,
+            Some(HtfFilter::H4Zone),
+        ),
+        Variant::HtfH4TpStructureSoft => (
+            LevelSource::TpStructureSoft,
+            SimKind::Standard,
+            Some(HtfFilter::H4),
+        ),
+        Variant::HtfH4D1 => (
+            LevelSource::Analyzer,
+            SimKind::Standard,
+            Some(HtfFilter::H4D1),
+        ),
     };
 
     VariantPlan {
@@ -3314,6 +3597,184 @@ fn year_key(timestamp_ms: i64) -> String {
     DateTime::<Utc>::from_timestamp_millis(timestamp_ms)
         .map(|datetime| datetime.with_timezone(&vietnam_offset()).year().to_string())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn midnight_ms(date: NaiveDate) -> i64 {
+    date.and_hms_opt(0, 0, 0)
+        .expect("valid midnight")
+        .and_utc()
+        .timestamp_millis()
+}
+
+/// Exclusive timestamp for the instant after the final second of `date`.
+fn end_of_day_exclusive_ms(date: NaiveDate) -> i64 {
+    date.and_hms_opt(23, 59, 59)
+        .expect("valid end of day")
+        .and_utc()
+        .timestamp_millis()
+        .saturating_add(1)
+}
+
+/// Fixed one-year windows W1..W5 starting at the requested start date.
+///
+/// Intermediate windows end at midnight of their boundary date, so a signal at
+/// exactly 00:00 on 2022-11-10 belongs to W2. The final window extends through
+/// the requested end date.
+fn walk_forward_windows(start: NaiveDate, end: NaiveDate) -> Vec<DateWindow> {
+    const WINDOW_COUNT: u32 = 5;
+    const WINDOW_MONTHS: u32 = 12;
+
+    let range_end_exclusive = end_of_day_exclusive_ms(end);
+    let mut windows = Vec::new();
+
+    for index in 0..WINDOW_COUNT {
+        let Some(window_start) = start.checked_add_months(Months::new(index * WINDOW_MONTHS))
+        else {
+            break;
+        };
+        if window_start > end {
+            break;
+        }
+        let Some(window_end) = start.checked_add_months(Months::new((index + 1) * WINDOW_MONTHS))
+        else {
+            break;
+        };
+
+        let start_ms = midnight_ms(window_start);
+        let end_ms = if index + 1 == WINDOW_COUNT {
+            range_end_exclusive
+        } else {
+            midnight_ms(window_end)
+        }
+        .min(range_end_exclusive);
+        if start_ms >= end_ms {
+            break;
+        }
+
+        windows.push(DateWindow {
+            label: format!("W{}", index + 1),
+            start_date: window_start,
+            end_date: window_end.min(end),
+            start_ms,
+            end_ms,
+        });
+    }
+
+    windows
+}
+
+/// Rolling 3-year in-sample / 1-year out-of-sample windows, stepped annually.
+fn rolling_is_oos_windows(start: NaiveDate, end: NaiveDate) -> Vec<RollingWindowDef> {
+    const STEP_MONTHS: u32 = 12;
+    const IS_MONTHS: u32 = 36;
+    const OOS_MONTHS: u32 = 12;
+
+    let end_midnight = midnight_ms(end);
+    let range_end_exclusive = end_of_day_exclusive_ms(end);
+    let mut windows = Vec::new();
+    let mut index = 0u32;
+
+    while let Some(is_start) = start.checked_add_months(Months::new(index * STEP_MONTHS)) {
+        let Some(is_end) = start.checked_add_months(Months::new(index * STEP_MONTHS + IS_MONTHS))
+        else {
+            break;
+        };
+        let Some(oos_end) =
+            start.checked_add_months(Months::new(index * STEP_MONTHS + IS_MONTHS + OOS_MONTHS))
+        else {
+            break;
+        };
+
+        let is_start_ms = midnight_ms(is_start);
+        let is_end_ms = midnight_ms(is_end);
+        let oos_start_ms = is_end_ms;
+        if oos_start_ms >= end_midnight {
+            break;
+        }
+        let oos_end_ms = if oos_end >= end {
+            range_end_exclusive
+        } else {
+            midnight_ms(oos_end)
+        };
+
+        windows.push(RollingWindowDef {
+            label: format!("R{}", index + 1),
+            is_start_date: is_start,
+            is_end_date: is_end,
+            oos_start_date: is_end,
+            oos_end_date: oos_end.min(end),
+            is_start_ms,
+            is_end_ms,
+            oos_start_ms,
+            oos_end_ms,
+        });
+        index += 1;
+    }
+
+    windows
+}
+
+fn window_metrics_for_range(
+    trades: &[SimulatedTrade],
+    start_ms: i64,
+    end_ms: i64,
+) -> WindowMetrics {
+    WindowMetrics::from_metrics(&compute_metrics(trades.iter().filter(|trade| {
+        trade.entry_timestamp >= start_ms && trade.entry_timestamp < end_ms
+    })))
+}
+
+fn build_walk_forward(trades: &[SimulatedTrade], windows: &[DateWindow]) -> Vec<WalkForwardWindow> {
+    windows
+        .iter()
+        .map(|window| WalkForwardWindow {
+            label: window.label.clone(),
+            start: window.start_date.to_string(),
+            end: window.end_date.to_string(),
+            metrics: window_metrics_for_range(trades, window.start_ms, window.end_ms),
+        })
+        .collect()
+}
+
+fn build_rolling_is_oos(
+    trades: &[SimulatedTrade],
+    windows: &[RollingWindowDef],
+) -> Vec<RollingWindow> {
+    windows
+        .iter()
+        .map(|window| RollingWindow {
+            label: window.label.clone(),
+            is_start: window.is_start_date.to_string(),
+            is_end: window.is_end_date.to_string(),
+            oos_start: window.oos_start_date.to_string(),
+            oos_end: window.oos_end_date.to_string(),
+            is_metrics: window_metrics_for_range(trades, window.is_start_ms, window.is_end_ms),
+            oos_metrics: window_metrics_for_range(trades, window.oos_start_ms, window.oos_end_ms),
+        })
+        .collect()
+}
+
+/// Pick the most consistent non-thin variant: positive walk-forward windows
+/// first, full-sample net R as the tie-breaker.
+fn select_top_candidate(variants: &[VariantReport]) -> Option<TopCandidate> {
+    variants
+        .iter()
+        .filter(|variant| !variant.sample_thin)
+        .max_by(|left, right| {
+            left.walk_forward_summary
+                .positive_windows
+                .cmp(&right.walk_forward_summary.positive_windows)
+                .then_with(|| left.overall.net_r.total_cmp(&right.overall.net_r))
+        })
+        .map(|variant| TopCandidate {
+            name: variant.name.clone(),
+            trades: variant.trades,
+            net_r: variant.overall.net_r,
+            positive_windows: variant.walk_forward_summary.positive_windows,
+            evaluated_windows: variant.walk_forward_summary.evaluated_windows,
+            consistency_pct: variant.walk_forward_summary.consistency_pct,
+            rolling_is_oos: variant.rolling_is_oos.clone(),
+        })
 }
 
 fn run_variant(
@@ -3480,8 +3941,8 @@ fn run_variant(
                 raw,
                 levels,
                 PartialTrailManagement {
-                    partial_25_at_20: true,
-                    trail_after_20: false,
+                    partial: Some(PartialRule::new(0.25, 20.0)),
+                    trail: None,
                 },
             ),
             SimKind::Trail20 => simulate_partial_trail(
@@ -3490,8 +3951,8 @@ fn run_variant(
                 raw,
                 levels,
                 PartialTrailManagement {
-                    partial_25_at_20: false,
-                    trail_after_20: true,
+                    partial: None,
+                    trail: Some(TrailRule::new(20.0, 10.0, 1.0)),
                 },
             ),
             SimKind::Partial25Trail => simulate_partial_trail(
@@ -3500,8 +3961,38 @@ fn run_variant(
                 raw,
                 levels,
                 PartialTrailManagement {
-                    partial_25_at_20: true,
-                    trail_after_20: true,
+                    partial: Some(PartialRule::new(0.25, 20.0)),
+                    trail: Some(TrailRule::new(20.0, 10.0, 1.0)),
+                },
+            ),
+            SimKind::Partial10At20 => simulate_partial_trail(
+                candles,
+                entry_index,
+                raw,
+                levels,
+                PartialTrailManagement {
+                    partial: Some(PartialRule::new(0.10, 20.0)),
+                    trail: None,
+                },
+            ),
+            SimKind::Partial15At25 => simulate_partial_trail(
+                candles,
+                entry_index,
+                raw,
+                levels,
+                PartialTrailManagement {
+                    partial: Some(PartialRule::new(0.15, 25.0)),
+                    trail: None,
+                },
+            ),
+            SimKind::Trail30 => simulate_partial_trail(
+                candles,
+                entry_index,
+                raw,
+                levels,
+                PartialTrailManagement {
+                    partial: None,
+                    trail: Some(TrailRule::new(30.0, 10.0, 1.0)),
                 },
             ),
         };
@@ -3544,6 +4035,10 @@ fn run_variant(
         .collect();
 
     let rejected = reject_reasons.values().sum();
+    let walk_forward = build_walk_forward(&trades, context.walk_forward);
+    let walk_forward_summary = summarize_walk_forward(&walk_forward);
+    let rolling_is_oos = build_rolling_is_oos(&trades, context.rolling);
+    let sample_thin = trades.len() < 30;
 
     VariantReport {
         name: variant.name().to_string(),
@@ -3551,10 +4046,14 @@ fn run_variant(
         trades: trades.len(),
         rejected,
         reject_reasons,
+        sample_thin,
         overall,
         in_sample,
         out_of_sample,
         yearly,
+        walk_forward,
+        walk_forward_summary,
+        rolling_is_oos,
         trade_log: trades.iter().map(TradeRecord::from).collect(),
     }
 }
@@ -3625,9 +4124,18 @@ fn print_table(report: &Report) {
     );
 
     for variant in &report.variants {
-        print_row(&variant.name, "ALL", &variant.overall);
+        let display_name = if variant.sample_thin {
+            format!("{}*", variant.name)
+        } else {
+            variant.name.clone()
+        };
+        print_row(&display_name, "ALL", &variant.overall);
         print_row("", "IS", &variant.in_sample);
         print_row("", "OOS", &variant.out_of_sample);
+    }
+    if report.variants.iter().any(|variant| variant.sample_thin) {
+        println!();
+        println!("* sample-thin: fewer than 30 trades.");
     }
 }
 
@@ -3704,6 +4212,108 @@ fn print_yearly_table(report: &Report) {
                 metrics.avg_duration_candles,
             );
         }
+    }
+}
+
+fn print_walk_forward_table(report: &Report) {
+    println!();
+    println!("Walk-forward stability (fixed 12-month windows, net of costs; thin = <30 trades):");
+    println!(
+        "{:<24} {:<3} {:<10} {:<10} {:>6} {:>8} {:>6} {:>8} {:>8} {:>5}",
+        "variant", "win", "start", "end", "trades", "netR", "PFn", "maxDDn", "expR", "thin"
+    );
+
+    for variant in &report.variants {
+        for window in &variant.walk_forward {
+            let metrics = &window.metrics;
+            println!(
+                "{:<24} {:<3} {:<10} {:<10} {:>6} {:>8.2} {:>6} {:>8.2} {:>8.3} {:>5}",
+                variant.name,
+                window.label,
+                window.start,
+                window.end,
+                metrics.trades,
+                metrics.net_r,
+                format_profit_factor(metrics.profit_factor),
+                metrics.max_drawdown_r,
+                metrics.expectancy_r,
+                if metrics.sample_thin { "yes" } else { "" },
+            );
+        }
+        let summary = &variant.walk_forward_summary;
+        println!(
+            "  {}: {}/{} positive windows ({:.1}% consistency), worst {:.2}R, best {:.2}R",
+            variant.name,
+            summary.positive_windows,
+            summary.evaluated_windows,
+            summary.consistency_pct,
+            summary.worst_net_r,
+            summary.best_net_r,
+        );
+    }
+    println!();
+    println!("Sample-thin variants are flagged but still reported; no parameters are trained on these windows.");
+}
+
+fn print_top_candidate(report: &Report) {
+    let Some(candidate) = &report.top_candidate else {
+        println!();
+        println!("Top candidate: none (no variant reached 30 trades).");
+        return;
+    };
+
+    println!();
+    println!(
+        "Top candidate (consistency-first): {} | {} trades | netR {:.2} | {}/{} positive windows ({:.1}%)",
+        candidate.name,
+        candidate.trades,
+        candidate.net_r,
+        candidate.positive_windows,
+        candidate.evaluated_windows,
+        candidate.consistency_pct
+    );
+
+    if candidate.rolling_is_oos.is_empty() {
+        println!("Rolling 3y IS / 1y OOS: no complete window in the requested range.");
+        return;
+    }
+
+    println!();
+    println!("Rolling 3y IS / 1y OOS for the top candidate (net of costs):");
+    println!(
+        "{:<3} {:<24} {:>6} {:>8} {:>6} {:>6} {:>8} {:>6} {:>8} {:>5}",
+        "win",
+        "IS period",
+        "IS trd",
+        "IS netR",
+        "IS PF",
+        "OOS trd",
+        "OOS netR",
+        "OOS PF",
+        "OOS maxDD",
+        "OOS+"
+    );
+
+    for window in &candidate.rolling_is_oos {
+        let is_metrics = &window.is_metrics;
+        let oos_metrics = &window.oos_metrics;
+        println!(
+            "{:<3} {:<24} {:>6} {:>8.2} {:>6} {:>6} {:>8.2} {:>6} {:>8.2} {:>5}",
+            window.label,
+            format!("{}..{}", window.is_start, window.is_end),
+            is_metrics.trades,
+            is_metrics.net_r,
+            format_profit_factor(is_metrics.profit_factor),
+            oos_metrics.trades,
+            oos_metrics.net_r,
+            format_profit_factor(oos_metrics.profit_factor),
+            oos_metrics.max_drawdown_r,
+            if oos_metrics.trades > 0 && oos_metrics.net_r > 0.0 {
+                "yes"
+            } else {
+                "no"
+            },
+        );
     }
 }
 
@@ -3903,6 +4513,8 @@ async fn run() -> Result<()> {
     let h1_candles = aggregate_candles(&candles, timeframe_millis(Timeframe::H1), Timeframe::H1);
     let h4_candles = aggregate_candles(&candles, timeframe_millis(Timeframe::H4), Timeframe::H4);
     let htf_context = HtfContext::new(&candles);
+    let walk_forward_defs = walk_forward_windows(args.start, args.end);
+    let rolling_defs = rolling_is_oos_windows(args.start, args.end);
 
     println!(
         "Data: {} candles, {} .. {}, {} gap(s), ~{} missing candle(s), source={}",
@@ -3923,6 +4535,11 @@ async fn run() -> Result<()> {
         htf_context.d1.candles.len(),
         htf_context.h4.candles.len(),
         htf_context.h1.candles.len()
+    );
+    println!(
+        "Walk-forward: {} yearly window(s), {} rolling 3y IS / 1y OOS window(s)",
+        walk_forward_defs.len(),
+        rolling_defs.len()
     );
 
     let signals = generate_signals(&candles, &config);
@@ -3945,6 +4562,8 @@ async fn run() -> Result<()> {
         early_be: args.early_be,
         cost_usd: args.cost_usd,
         step_ms,
+        walk_forward: &walk_forward_defs,
+        rolling: &rolling_defs,
     };
 
     let mut variants = Vec::new();
@@ -3954,7 +4573,24 @@ async fn run() -> Result<()> {
             "Variant {}: signals={}, trades={}, rejected={} {:?}",
             report.name, report.signals, report.trades, report.rejected, report.reject_reasons
         );
+        if report.sample_thin {
+            println!(
+                "  note: {} has {} trade(s) (<30) and is flagged sample-thin.",
+                report.name, report.trades
+            );
+        }
         variants.push(report);
+    }
+    let top_candidate = select_top_candidate(&variants);
+    if let Some(candidate) = &top_candidate {
+        println!(
+            "Top candidate (consistency-first): {} ({} trades, netR {:.2}, {}/{} positive windows)",
+            candidate.name,
+            candidate.trades,
+            candidate.net_r,
+            candidate.positive_windows,
+            candidate.evaluated_windows
+        );
     }
 
     let mut notes = vec![
@@ -3984,6 +4620,13 @@ async fn run() -> Result<()> {
         "partial_25_at_20: 25% is booked at +20 USD only when +20 is reached before TP1; the remaining 75% keeps the original SL/TP. If +20 is never reached the variant behaves like baseline. Cost is still charged once against full-trade R.".to_string(),
         "trail_after_20: once MFE >= 20 USD the stop is trailed 10 USD behind the high-water/low-water mark, quantized to 1 USD steps (floor high / ceil low), and never worse than the initial stop. Trail updates on closed candles and binds from the next M15 candle; after TP1 a stop-out settles at TP1 unless the trail has ratcheted beyond it. TRAIL is reported when the trailing stop is the binding exit.".to_string(),
         "partial_25_trail combines both rules; htf_combined_partial_25_trail adds the htf_combined filter. TRAIL outcomes are counted as wins because trailing only activates after +20 USD and never exits worse than the initial stop.".to_string(),
+        "partial_10_at_20: 10% is booked at +20 USD only when +20 is reached before TP1; the remaining 90% keeps the original SL/TP. partial_15_at_25 does the same with 15% at +25 USD. If the trigger is never reached the variant behaves like baseline.".to_string(),
+        "trail_after_30: once MFE >= 30 USD the stop is trailed 10 USD behind the high-water/low-water mark, quantized to 1 USD steps (floor high / ceil low), and never worse than the initial stop. Trail updates on closed candles and binds from the next M15 candle.".to_string(),
+        "htf_h4_partial_10 / htf_h4_partial_15 / htf_h4_trail_30 apply the htf_h4 filter to those management rules. htf_h4_tp_structure_soft combines the htf_h4 filter with tp_structure_soft levels.".to_string(),
+        "htf_h4_zone adds H4 Donchian(20) location to htf_h4: BUY only when the last closed H4 channel position is <= 0.40, SELL only when >= 0.60; a missing channel rejects with htf_h4_zone_missing.".to_string(),
+        "htf_h4_d1 adds a non-opposing D1 bias to htf_h4: BUY is blocked when D1 is BEARISH and SELL is blocked when D1 is BULLISH; NEUTRAL allows both.".to_string(),
+        "Walk-forward W1..W5 are fixed 12-month windows starting at --start. They are a stability check, not parameter training; every window reports trades, net R, PF, maxDD, expectancy and a sample-thin flag (<30 trades).".to_string(),
+        "Rolling analysis: 3-year in-sample followed by the next 1-year out-of-sample, stepped annually. The top candidate is selected consistency-first (most positive walk-forward windows, then full-sample net R) among variants with at least 30 trades.".to_string(),
         "Cost model: each trade subtracts cost_usd / risk from gross R; gross and net metrics are reported separately.".to_string(),
         "R fields: gross_r/avg_r/PF/maxDD are pre-cost; net_r/avg_net_r/PF_after_costs/maxDD_after_costs are after cost. net_r_after_costs is kept as an explicit alias of net_r.".to_string(),
         "MFE/MAE are measured in USD from entry through the exit candle; MFE before TP1 includes the first TP1-touch candle and after-TP1 starts on the next candle.".to_string(),
@@ -4002,6 +4645,12 @@ async fn run() -> Result<()> {
             "Round-turn cost {:.4} USD/oz subtracted from every trade as cost_usd / risk R.",
             args.cost_usd
         ));
+    }
+    if args.walk_forward {
+        notes.push(
+            "--walk-forward supplied; yearly windows and rolling IS/OOS are always included."
+                .to_string(),
+        );
     }
     if used_partial_cache {
         notes.push("Binance download failed; metrics use a partial local cache.".to_string());
@@ -4053,6 +4702,7 @@ async fn run() -> Result<()> {
             same_candle_policy: "SL wins over TP on the same candle".to_string(),
         },
         notes,
+        top_candidate,
         variants,
     };
 
@@ -4060,6 +4710,8 @@ async fn run() -> Result<()> {
     print_table(&report);
     print_mfe_table(&report);
     print_yearly_table(&report);
+    print_walk_forward_table(&report);
+    print_top_candidate(&report);
     println!();
     println!("JSON report: {}", args.out_path.display());
     Ok(())
@@ -4875,6 +5527,7 @@ mod tests {
     fn htf_snapshot(
         d1_bias: Bias,
         h4_bias: Bias,
+        h4_channel: Option<f64>,
         h1_channel: Option<f64>,
         near_h4_support: bool,
         near_h4_resistance: bool,
@@ -4882,6 +5535,7 @@ mod tests {
         HtfSnapshot {
             d1_bias,
             h4_bias,
+            h4_channel,
             h1_channel,
             near_h4_support,
             near_h4_resistance,
@@ -4893,14 +5547,28 @@ mod tests {
         let buy = raw_signal(0, SignalType::Buy, 100.0, 95.0, 110.0, 115.0);
         let sell = raw_signal(0, SignalType::Sell, 100.0, 105.0, 90.0, 85.0);
 
-        let bearish = htf_snapshot(Bias::Neutral, Bias::Bearish, Some(0.5), false, false);
+        let bearish = htf_snapshot(
+            Bias::Neutral,
+            Bias::Bearish,
+            Some(0.5),
+            Some(0.5),
+            false,
+            false,
+        );
         assert_eq!(
             htf_filter_allows(HtfFilter::H4, &buy, &bearish),
             Err("htf_h4_bearish")
         );
         assert_eq!(htf_filter_allows(HtfFilter::H4, &sell, &bearish), Ok(()));
 
-        let bullish = htf_snapshot(Bias::Neutral, Bias::Bullish, Some(0.5), false, false);
+        let bullish = htf_snapshot(
+            Bias::Neutral,
+            Bias::Bullish,
+            Some(0.5),
+            Some(0.5),
+            false,
+            false,
+        );
         assert_eq!(
             htf_filter_allows(HtfFilter::H4, &sell, &bullish),
             Err("htf_h4_bullish")
@@ -4913,14 +5581,28 @@ mod tests {
         let buy = raw_signal(0, SignalType::Buy, 100.0, 95.0, 110.0, 115.0);
         let sell = raw_signal(0, SignalType::Sell, 100.0, 105.0, 90.0, 85.0);
 
-        let low = htf_snapshot(Bias::Neutral, Bias::Neutral, Some(0.25), false, false);
+        let low = htf_snapshot(
+            Bias::Neutral,
+            Bias::Neutral,
+            Some(0.5),
+            Some(0.25),
+            false,
+            false,
+        );
         assert_eq!(htf_filter_allows(HtfFilter::H1Channel, &buy, &low), Ok(()));
         assert_eq!(
             htf_filter_allows(HtfFilter::H1Channel, &sell, &low),
             Err("htf_h1_channel_not_high")
         );
 
-        let high = htf_snapshot(Bias::Neutral, Bias::Neutral, Some(0.75), false, false);
+        let high = htf_snapshot(
+            Bias::Neutral,
+            Bias::Neutral,
+            Some(0.5),
+            Some(0.75),
+            false,
+            false,
+        );
         assert_eq!(
             htf_filter_allows(HtfFilter::H1Channel, &buy, &high),
             Err("htf_h1_channel_not_low")
@@ -4930,7 +5612,7 @@ mod tests {
             Ok(())
         );
 
-        let missing = htf_snapshot(Bias::Neutral, Bias::Neutral, None, false, false);
+        let missing = htf_snapshot(Bias::Neutral, Bias::Neutral, Some(0.5), None, false, false);
         assert_eq!(
             htf_filter_allows(HtfFilter::H1Channel, &buy, &missing),
             Err("htf_h1_channel_missing")
@@ -4942,27 +5624,172 @@ mod tests {
         let buy = raw_signal(0, SignalType::Buy, 100.0, 95.0, 110.0, 115.0);
         let sell = raw_signal(0, SignalType::Sell, 100.0, 105.0, 90.0, 85.0);
 
-        let allowed = htf_snapshot(Bias::Bearish, Bias::Neutral, Some(0.2), true, false);
+        let allowed = htf_snapshot(
+            Bias::Bearish,
+            Bias::Neutral,
+            Some(0.5),
+            Some(0.2),
+            true,
+            false,
+        );
         assert_eq!(
             htf_filter_allows(HtfFilter::Combined, &buy, &allowed),
             Ok(())
         );
 
-        let blocked = htf_snapshot(Bias::Bearish, Bias::Neutral, Some(0.2), false, false);
+        let blocked = htf_snapshot(
+            Bias::Bearish,
+            Bias::Neutral,
+            Some(0.5),
+            Some(0.2),
+            false,
+            false,
+        );
         assert_eq!(
             htf_filter_allows(HtfFilter::Combined, &buy, &blocked),
             Err("htf_d1_countertrend_no_zone")
         );
 
-        let sell_allowed = htf_snapshot(Bias::Bullish, Bias::Neutral, Some(0.8), false, true);
+        let sell_allowed = htf_snapshot(
+            Bias::Bullish,
+            Bias::Neutral,
+            Some(0.5),
+            Some(0.8),
+            false,
+            true,
+        );
         assert_eq!(
             htf_filter_allows(HtfFilter::Combined, &sell, &sell_allowed),
             Ok(())
         );
 
-        let opposing_h4 = htf_snapshot(Bias::Neutral, Bias::Bearish, Some(0.2), true, false);
+        let opposing_h4 = htf_snapshot(
+            Bias::Neutral,
+            Bias::Bearish,
+            Some(0.5),
+            Some(0.2),
+            true,
+            false,
+        );
         assert_eq!(
             htf_filter_allows(HtfFilter::Combined, &buy, &opposing_h4),
+            Err("htf_h4_bearish")
+        );
+    }
+
+    #[test]
+    fn htf_h4_zone_requires_low_buy_and_high_sell() {
+        let buy = raw_signal(0, SignalType::Buy, 100.0, 95.0, 110.0, 115.0);
+        let sell = raw_signal(0, SignalType::Sell, 100.0, 105.0, 90.0, 85.0);
+
+        let low = htf_snapshot(
+            Bias::Neutral,
+            Bias::Neutral,
+            Some(0.40),
+            Some(0.5),
+            false,
+            false,
+        );
+        assert_eq!(htf_filter_allows(HtfFilter::H4Zone, &buy, &low), Ok(()));
+        assert_eq!(
+            htf_filter_allows(HtfFilter::H4Zone, &sell, &low),
+            Err("htf_h4_zone_not_high")
+        );
+
+        let high = htf_snapshot(
+            Bias::Neutral,
+            Bias::Neutral,
+            Some(0.60),
+            Some(0.5),
+            false,
+            false,
+        );
+        assert_eq!(
+            htf_filter_allows(HtfFilter::H4Zone, &buy, &high),
+            Err("htf_h4_zone_not_low")
+        );
+        assert_eq!(htf_filter_allows(HtfFilter::H4Zone, &sell, &high), Ok(()));
+
+        let missing = htf_snapshot(Bias::Neutral, Bias::Neutral, None, Some(0.5), false, false);
+        assert_eq!(
+            htf_filter_allows(HtfFilter::H4Zone, &buy, &missing),
+            Err("htf_h4_zone_missing")
+        );
+
+        let opposing_h4 = htf_snapshot(
+            Bias::Neutral,
+            Bias::Bearish,
+            Some(0.2),
+            Some(0.5),
+            false,
+            false,
+        );
+        assert_eq!(
+            htf_filter_allows(HtfFilter::H4Zone, &buy, &opposing_h4),
+            Err("htf_h4_bearish")
+        );
+    }
+
+    #[test]
+    fn htf_h4_d1_blocks_only_opposing_daily_bias() {
+        let buy = raw_signal(0, SignalType::Buy, 100.0, 95.0, 110.0, 115.0);
+        let sell = raw_signal(0, SignalType::Sell, 100.0, 105.0, 90.0, 85.0);
+
+        let d1_bearish = htf_snapshot(
+            Bias::Bearish,
+            Bias::Neutral,
+            Some(0.5),
+            Some(0.5),
+            false,
+            false,
+        );
+        assert_eq!(
+            htf_filter_allows(HtfFilter::H4D1, &buy, &d1_bearish),
+            Err("htf_d1_bearish")
+        );
+        assert_eq!(
+            htf_filter_allows(HtfFilter::H4D1, &sell, &d1_bearish),
+            Ok(())
+        );
+
+        let d1_bullish = htf_snapshot(
+            Bias::Bullish,
+            Bias::Neutral,
+            Some(0.5),
+            Some(0.5),
+            false,
+            false,
+        );
+        assert_eq!(
+            htf_filter_allows(HtfFilter::H4D1, &sell, &d1_bullish),
+            Err("htf_d1_bullish")
+        );
+        assert_eq!(
+            htf_filter_allows(HtfFilter::H4D1, &buy, &d1_bullish),
+            Ok(())
+        );
+
+        let neutral = htf_snapshot(
+            Bias::Neutral,
+            Bias::Neutral,
+            Some(0.5),
+            Some(0.5),
+            false,
+            false,
+        );
+        assert_eq!(htf_filter_allows(HtfFilter::H4D1, &buy, &neutral), Ok(()));
+        assert_eq!(htf_filter_allows(HtfFilter::H4D1, &sell, &neutral), Ok(()));
+
+        let opposing_h4 = htf_snapshot(
+            Bias::Neutral,
+            Bias::Bearish,
+            Some(0.5),
+            Some(0.5),
+            false,
+            false,
+        );
+        assert_eq!(
+            htf_filter_allows(HtfFilter::H4D1, &buy, &opposing_h4),
             Err("htf_h4_bearish")
         );
     }
@@ -5070,8 +5897,8 @@ mod tests {
         ];
         let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 130.0, 140.0);
         let management = PartialTrailManagement {
-            partial_25_at_20: true,
-            trail_after_20: false,
+            partial: Some(PartialRule::new(0.25, 20.0)),
+            trail: None,
         };
 
         let trade =
@@ -5089,8 +5916,8 @@ mod tests {
         ];
         let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 115.0, 140.0);
         let management = PartialTrailManagement {
-            partial_25_at_20: true,
-            trail_after_20: false,
+            partial: Some(PartialRule::new(0.25, 20.0)),
+            trail: None,
         };
 
         let trade =
@@ -5111,8 +5938,8 @@ mod tests {
         ];
         let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 110.0, 125.0);
         let management = PartialTrailManagement {
-            partial_25_at_20: true,
-            trail_after_20: false,
+            partial: Some(PartialRule::new(0.25, 20.0)),
+            trail: None,
         };
 
         let trade =
@@ -5131,8 +5958,8 @@ mod tests {
         ];
         let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 150.0, 160.0);
         let management = PartialTrailManagement {
-            partial_25_at_20: false,
-            trail_after_20: true,
+            partial: None,
+            trail: Some(TrailRule::new(20.0, 10.0, 1.0)),
         };
 
         let trade =
@@ -5151,8 +5978,8 @@ mod tests {
         ];
         let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 130.0, 140.0);
         let management = PartialTrailManagement {
-            partial_25_at_20: false,
-            trail_after_20: true,
+            partial: None,
+            trail: Some(TrailRule::new(20.0, 10.0, 1.0)),
         };
 
         let trade =
@@ -5170,8 +5997,8 @@ mod tests {
         ];
         let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 150.0, 160.0);
         let management = PartialTrailManagement {
-            partial_25_at_20: true,
-            trail_after_20: true,
+            partial: Some(PartialRule::new(0.25, 20.0)),
+            trail: Some(TrailRule::new(20.0, 10.0, 1.0)),
         };
 
         let trade =
@@ -5182,11 +6009,228 @@ mod tests {
     }
 
     #[test]
+    fn partial_10_books_ten_percent_at_twenty_before_tp1() {
+        let candles = vec![
+            candle(0, 100.0, 100.5, 99.5, 100.0),
+            candle(STEP_MS, 100.0, 121.0, 99.0, 120.0),
+            candle(2 * STEP_MS, 120.0, 121.0, 94.0, 95.0),
+        ];
+        let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 130.0, 140.0);
+        let management = PartialTrailManagement {
+            partial: Some(PartialRule::new(0.10, 20.0)),
+            trail: None,
+        };
+
+        let trade =
+            simulate_partial_trail(&candles, 0, &raw, raw.levels(), management).expect("trade");
+        assert_eq!(trade.outcome, Outcome::Sl);
+        assert!((trade.r_multiple - -0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn partial_15_books_fifteen_percent_at_twenty_five_before_tp1() {
+        let candles = vec![
+            candle(0, 100.0, 100.5, 99.5, 100.0),
+            candle(STEP_MS, 100.0, 126.0, 99.0, 125.0),
+            candle(2 * STEP_MS, 125.0, 126.0, 94.0, 95.0),
+        ];
+        let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 130.0, 140.0);
+        let management = PartialTrailManagement {
+            partial: Some(PartialRule::new(0.15, 25.0)),
+            trail: None,
+        };
+
+        let trade =
+            simulate_partial_trail(&candles, 0, &raw, raw.levels(), management).expect("trade");
+        assert_eq!(trade.outcome, Outcome::Sl);
+        assert!((trade.r_multiple - -0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn partial_15_does_not_book_after_tp1() {
+        let candles = vec![
+            candle(0, 100.0, 100.5, 99.5, 100.0),
+            candle(STEP_MS, 100.0, 126.0, 99.0, 125.0),
+            candle(2 * STEP_MS, 125.0, 126.0, 94.0, 95.0),
+        ];
+        let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 120.0, 140.0);
+        let management = PartialTrailManagement {
+            partial: Some(PartialRule::new(0.15, 25.0)),
+            trail: None,
+        };
+
+        let trade =
+            simulate_partial_trail(&candles, 0, &raw, raw.levels(), management).expect("trade");
+        assert_eq!(trade.outcome, Outcome::Tp1);
+        assert!((trade.r_multiple - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trail_after_30_requires_thirty_usd_mfe() {
+        let candles = vec![
+            candle(0, 100.0, 100.5, 99.5, 100.0),
+            candle(STEP_MS, 100.0, 129.0, 99.0, 110.0),
+            candle(2 * STEP_MS, 110.0, 111.0, 94.0, 95.0),
+        ];
+        let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 150.0, 160.0);
+        let management = PartialTrailManagement {
+            partial: None,
+            trail: Some(TrailRule::new(30.0, 10.0, 1.0)),
+        };
+
+        let trade =
+            simulate_partial_trail(&candles, 0, &raw, raw.levels(), management).expect("trade");
+        assert_eq!(trade.outcome, Outcome::Sl);
+        assert!((trade.r_multiple + 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trail_after_30_ratchets_ten_behind_high_water_mark() {
+        let candles = vec![
+            candle(0, 100.0, 100.5, 99.5, 100.0),
+            candle(STEP_MS, 100.0, 131.0, 112.0, 130.0),
+            candle(2 * STEP_MS, 130.0, 132.0, 120.0, 121.0),
+        ];
+        let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 150.0, 160.0);
+        let management = PartialTrailManagement {
+            partial: None,
+            trail: Some(TrailRule::new(30.0, 10.0, 1.0)),
+        };
+
+        let trade =
+            simulate_partial_trail(&candles, 0, &raw, raw.levels(), management).expect("trade");
+        assert_eq!(trade.outcome, Outcome::Trail);
+        assert!((trade.exit_price - 121.0).abs() < 1e-9);
+        assert!((trade.r_multiple - 4.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trail_after_30_ratchets_for_sell_side() {
+        let candles = vec![
+            candle(0, 100.0, 100.5, 99.5, 100.0),
+            candle(STEP_MS, 100.0, 88.0, 69.0, 70.0),
+            candle(2 * STEP_MS, 70.0, 80.0, 68.0, 79.0),
+        ];
+        let raw = raw_signal(0, SignalType::Sell, 100.0, 105.0, 60.0, 50.0);
+        let management = PartialTrailManagement {
+            partial: None,
+            trail: Some(TrailRule::new(30.0, 10.0, 1.0)),
+        };
+
+        let trade =
+            simulate_partial_trail(&candles, 0, &raw, raw.levels(), management).expect("trade");
+        assert_eq!(trade.outcome, Outcome::Trail);
+        assert!((trade.exit_price - 79.0).abs() < 1e-9);
+        assert!((trade.r_multiple - 4.2).abs() < 1e-9);
+    }
+
+    #[test]
     fn trail_outcome_is_counted_as_a_win_and_reported() {
         let trades = vec![simulated_trade(Outcome::Trail, 4.2, 5.0, 0.4, 31.0)];
         let metrics = compute_metrics(&trades);
         assert_eq!(metrics.trail, 1);
         assert_eq!(metrics.wins, 1);
         assert!((metrics.net_r - 4.12).abs() < 1e-9);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 1C: variants and walk-forward
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn phase1c_variant_names_round_trip_through_parse() {
+        let variants = [
+            (Variant::Partial10At20, "partial_10_at_20"),
+            (Variant::Partial15At25, "partial_15_at_25"),
+            (Variant::TrailAfter30, "trail_after_30"),
+            (Variant::HtfH4Partial10, "htf_h4_partial_10"),
+            (Variant::HtfH4Partial15, "htf_h4_partial_15"),
+            (Variant::HtfH4Trail30, "htf_h4_trail_30"),
+            (Variant::HtfH4Zone, "htf_h4_zone"),
+            (Variant::HtfH4TpStructureSoft, "htf_h4_tp_structure_soft"),
+            (Variant::HtfH4D1, "htf_h4_d1"),
+        ];
+
+        for (variant, name) in variants {
+            assert_eq!(variant.name(), name);
+            assert_eq!(Variant::parse(name), Some(variant));
+        }
+    }
+
+    #[test]
+    fn walk_forward_windows_cover_five_fixed_years() {
+        let start = NaiveDate::from_ymd_opt(2021, 11, 10).expect("valid start");
+        let end = NaiveDate::from_ymd_opt(2026, 11, 10).expect("valid end");
+        let windows = walk_forward_windows(start, end);
+
+        assert_eq!(windows.len(), 5);
+        assert_eq!(windows[0].label, "W1");
+        assert_eq!(windows[0].start_date.to_string(), "2021-11-10");
+        assert_eq!(windows[0].end_date.to_string(), "2022-11-10");
+        assert_eq!(windows[4].label, "W5");
+        assert_eq!(windows[4].start_date.to_string(), "2025-11-10");
+        assert_eq!(windows[4].end_date.to_string(), "2026-11-10");
+        assert_eq!(windows[0].end_ms, windows[1].start_ms);
+    }
+
+    #[test]
+    fn rolling_windows_build_three_year_is_and_one_year_oos() {
+        let start = NaiveDate::from_ymd_opt(2021, 11, 10).expect("valid start");
+        let end = NaiveDate::from_ymd_opt(2026, 11, 10).expect("valid end");
+        let windows = rolling_is_oos_windows(start, end);
+
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].label, "R1");
+        assert_eq!(windows[0].is_start_date.to_string(), "2021-11-10");
+        assert_eq!(windows[0].is_end_date.to_string(), "2024-11-10");
+        assert_eq!(windows[0].oos_end_date.to_string(), "2025-11-10");
+        assert_eq!(windows[1].is_start_date.to_string(), "2022-11-10");
+        assert_eq!(windows[1].oos_end_date.to_string(), "2026-11-10");
+    }
+
+    #[test]
+    fn window_metrics_use_net_r_and_flag_thin_samples() {
+        let trades = vec![simulated_trade(Outcome::Tp1, 2.0, 10.0, 0.4, 20.0)];
+        let metrics = window_metrics_for_range(&trades, 0, 2);
+
+        assert_eq!(metrics.trades, 1);
+        assert!(metrics.sample_thin);
+        assert!((metrics.net_r - 1.96).abs() < 1e-9);
+        assert!((metrics.expectancy_r - 1.96).abs() < 1e-9);
+    }
+
+    #[test]
+    fn walk_forward_summary_counts_positive_and_negative_windows() {
+        let window = |label: &str, trades: usize, net_r: f64| WalkForwardWindow {
+            label: label.to_string(),
+            start: "2021-11-10".to_string(),
+            end: "2022-11-10".to_string(),
+            metrics: WindowMetrics {
+                trades,
+                net_r,
+                profit_factor: None,
+                max_drawdown_r: 0.0,
+                expectancy_r: net_r,
+                win_rate_pct: 0.0,
+                sample_thin: trades < 30,
+            },
+        };
+        let windows = vec![
+            window("W1", 10, 2.0),
+            window("W2", 10, -1.0),
+            window("W3", 0, 0.0),
+            window("W4", 10, 0.0),
+            window("W5", 10, 3.0),
+        ];
+
+        let summary = summarize_walk_forward(&windows);
+        assert_eq!(summary.windows, 5);
+        assert_eq!(summary.evaluated_windows, 4);
+        assert_eq!(summary.positive_windows, 2);
+        assert_eq!(summary.negative_windows, 1);
+        assert_eq!(summary.flat_windows, 1);
+        assert!((summary.consistency_pct - 50.0).abs() < 1e-9);
+        assert!((summary.best_net_r - 3.0).abs() < 1e-9);
+        assert!((summary.worst_net_r + 1.0).abs() < 1e-9);
     }
 }

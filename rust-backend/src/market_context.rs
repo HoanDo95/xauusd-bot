@@ -158,6 +158,53 @@ pub fn h4_allows_signal(signal_type: &str, context: &MarketContext) -> (bool, St
     }
 }
 
+/// Bộ lọc tổng hợp H4 + D1 tùy chọn. Mặc định cả hai tắt => luôn cho qua.
+pub fn htf_allows_signal(
+    signal_type: &str,
+    context: &MarketContext,
+    h4_enabled: bool,
+    d1_enabled: bool,
+) -> (bool, String) {
+    if !h4_enabled && !d1_enabled {
+        return (true, "HTF filter disabled".to_string());
+    }
+
+    if h4_enabled {
+        let (allowed, reason) = h4_allows_signal(signal_type, context);
+        if !allowed {
+            return (false, reason);
+        }
+    }
+
+    if d1_enabled {
+        let signal = signal_type.trim().to_uppercase();
+        let d1_bias = context.d1.bias.trim().to_uppercase();
+        match signal.as_str() {
+            "BUY" | "LONG" if d1_bias == "BEARISH" => {
+                return (
+                    false,
+                    format!(
+                        "D1 đang BEARISH (EMA50 {:.2} < EMA200 {:.2}) — chặn BUY ngược xu hướng D1.",
+                        context.d1.ema50, context.d1.ema200
+                    ),
+                );
+            }
+            "SELL" | "SHORT" if d1_bias == "BULLISH" => {
+                return (
+                    false,
+                    format!(
+                        "D1 đang BULLISH (EMA50 {:.2} > EMA200 {:.2}) — chặn SELL ngược xu hướng D1.",
+                        context.d1.ema50, context.d1.ema200
+                    ),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    (true, "HTF filter passed".to_string())
+}
+
 /// Dịch toàn bộ OHLC của nến theo basis spot (PAXG → XAU/USD), làm tròn 2 chữ số.
 /// Basis không hữu hạn hoặc bằng 0 là no-op.
 pub fn shift_candles_prices(candles: &mut [Candle], basis: f64) {
@@ -461,6 +508,21 @@ mod tests {
         let neutral = context_with_h4_bias("NEUTRAL");
         assert!(h4_allows_signal("BUY", &neutral).0);
         assert!(h4_allows_signal("SELL", &neutral).0);
+    }
+
+    #[test]
+    fn htf_filter_combines_h4_and_d1() {
+        let mut context = context_with_h4_bias("NEUTRAL");
+        context.d1.bias = "BEARISH".to_string();
+        assert!(!htf_allows_signal("BUY", &context, false, true).0);
+        assert!(htf_allows_signal("SELL", &context, false, true).0);
+        assert!(htf_allows_signal("BUY", &context, false, false).0);
+
+        let mut context = context_with_h4_bias("BULLISH");
+        context.d1.bias = "BEARISH".to_string();
+        assert!(!htf_allows_signal("BUY", &context, true, true).0);
+        assert!(!htf_allows_signal("SELL", &context, true, true).0);
+        assert!(htf_allows_signal("BUY", &context, true, false).0);
     }
 
     #[test]

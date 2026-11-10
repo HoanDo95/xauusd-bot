@@ -292,6 +292,10 @@ pub struct BotConfig {
     /// Mặc định TẮT — D1/H4/H1 chỉ mang tính tham khảo, không đổi hành vi mặc định.
     #[serde(default)]
     pub htf_h4_filter_enabled: bool,
+    /// Chặn thêm tín hiệu ngược D1 khi bật (BUY khi D1 BEARISH / SELL khi D1 BULLISH).
+    /// Mặc định TẮT.
+    #[serde(default)]
+    pub htf_d1_filter_enabled: bool,
 }
 
 fn default_max_signals_per_day() -> usize {
@@ -364,6 +368,7 @@ impl Default for BotConfig {
             session_alerts_enabled: default_session_alerts_enabled(),
             session_alert_lead_minutes: default_session_alert_lead_minutes(),
             htf_h4_filter_enabled: false,
+            htf_d1_filter_enabled: false,
         }
     }
 }
@@ -629,6 +634,7 @@ mod tests {
     fn htf_h4_filter_defaults_false_and_is_backward_compatible() {
         let defaults = BotConfig::default();
         assert!(!defaults.htf_h4_filter_enabled);
+        assert!(!defaults.htf_d1_filter_enabled);
 
         let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
         let object = value.as_object_mut().expect("config object");

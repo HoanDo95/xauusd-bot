@@ -544,6 +544,20 @@ export const ConfigPanel: React.FC<Props> = ({
                 Chặn tín hiệu ngược H4 (mặc định OFF)
               </span>
             </label>
+
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+              <input
+                type="checkbox"
+                checked={formData.htf_d1_filter_enabled ?? false}
+                onChange={(e) =>
+                  setFormData({ ...formData, htf_d1_filter_enabled: e.target.checked })
+                }
+                className="accent-fuchsia-500 w-4 h-4 rounded cursor-pointer"
+              />
+              <span className="font-semibold text-white">
+                Chặn tín hiệu ngược D1 (mặc định OFF)
+              </span>
+            </label>
           </div>
 
           <p className="text-[11px] text-neutral-500 leading-relaxed">

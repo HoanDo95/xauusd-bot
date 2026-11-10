@@ -3,7 +3,7 @@ use chrono::Utc;
 use gold_signal_bot::analyzer::GoldMarketAnalyzer;
 use gold_signal_bot::api::{create_router, persist_state, AppState};
 use gold_signal_bot::market_context::{
-    build_market_context, h4_allows_signal, shift_candles_prices, MarketContext,
+    build_market_context, htf_allows_signal, shift_candles_prices, MarketContext,
 };
 use gold_signal_bot::market_feed::{MarketDataFeed, MarketFeedSnapshot};
 use gold_signal_bot::models::{BotConfig, Timeframe};
@@ -391,15 +391,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
 
-                // 6.7b Bộ lọc H4 tùy chọn (mặc định OFF) — chặn ngược xu hướng H4.
-                if config.htf_h4_filter_enabled {
+                // 6.7b Bộ lọc H4/D1 tùy chọn (mặc định OFF).
+                if config.htf_h4_filter_enabled || config.htf_d1_filter_enabled {
                     let context = scanner_state.market_context.read().await;
                     if let Some(context) = context.as_ref() {
-                        let (allowed, reason) =
-                            h4_allows_signal(signal.signal_type.as_str(), context);
+                        let (allowed, reason) = htf_allows_signal(
+                            signal.signal_type.as_str(),
+                            context,
+                            config.htf_h4_filter_enabled,
+                            config.htf_d1_filter_enabled,
+                        );
                         if !allowed {
                             warn!(
-                                "🛑 [HTF H4 Filter] Bỏ qua {} {}: {}",
+                                "🛑 [HTF Filter] Bỏ qua {} {}: {}",
                                 signal.signal_type, signal.symbol, reason
                             );
                             continue;

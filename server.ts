@@ -110,6 +110,7 @@ interface BotConfig {
   max_entry_drift_points: number;
   max_candle_age_secs: number;
   htf_h4_filter_enabled: boolean;
+  htf_d1_filter_enabled: boolean;
 }
 
 interface DailyMacroReport {
@@ -241,6 +242,7 @@ const DEFAULT_CONFIG: BotConfig = {
   max_entry_drift_points: 2.5,
   max_candle_age_secs: 120,
   htf_h4_filter_enabled: false,
+  htf_d1_filter_enabled: false,
 };
 
 function normalizeConfig(input: Partial<BotConfig>): BotConfig {
@@ -357,6 +359,10 @@ function normalizeConfig(input: Partial<BotConfig>): BotConfig {
     htf_h4_filter_enabled: booleanOr(
       input.htf_h4_filter_enabled,
       base.htf_h4_filter_enabled
+    ),
+    htf_d1_filter_enabled: booleanOr(
+      input.htf_d1_filter_enabled,
+      base.htf_d1_filter_enabled
     ),
   };
 }
@@ -1547,6 +1553,7 @@ async function startServer() {
       trendBias: detectEmaTrendBias(candlesBuffer),
       killSwitchActive: kill.active,
       h4FilterEnabled: config.htf_h4_filter_enabled,
+      d1FilterEnabled: config.htf_d1_filter_enabled,
       tradingviewWebhook: '/api/webhook/tradingview',
     });
   });

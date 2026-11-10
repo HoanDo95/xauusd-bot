@@ -176,6 +176,7 @@ export interface BotConfig {
   max_candle_age_secs: number;
   /** Optional H4 trend filter — blocks counter-H4 signals only when true. Default OFF. */
   htf_h4_filter_enabled: boolean;
+  htf_d1_filter_enabled: boolean;
 }
 
 export interface DailyMacroReport {

@@ -1,5 +1,5 @@
 use crate::analyzer::GoldMarketAnalyzer;
-use crate::market_context::{h4_allows_signal, MarketContext};
+use crate::market_context::{htf_allows_signal, MarketContext};
 use crate::market_feed::MarketDataFeed;
 use crate::models::{
     BotConfig, Candle, DailyMacroReport, EntryType, NewCandleWebhook, Signal, SignalStatus,
@@ -160,6 +160,7 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
         "dailyQuotaReached": daily_quota_reached,
         "sessionFilterEnabled": config.session_filter_enabled,
         "h4FilterEnabled": config.htf_h4_filter_enabled,
+        "d1FilterEnabled": config.htf_d1_filter_enabled,
         "dataSource": active_data_source,
         "priceSource": price_source,
         "spotPrice": spot_price,
@@ -244,19 +245,24 @@ async fn get_market_context(State(state): State<AppState>) -> impl IntoResponse 
     }
 }
 
-/// Trả lý do chặn nếu bộ lọc H4 đang bật, context sẵn sàng và tín hiệu ngược H4.
+/// Trả lý do chặn nếu bộ lọc H4/D1 đang bật, context sẵn sàng và tín hiệu bị chặn.
 async fn htf_block_reason(
     state: &AppState,
     config: &BotConfig,
     signal_type: &str,
 ) -> Option<String> {
-    if !config.htf_h4_filter_enabled {
+    if !config.htf_h4_filter_enabled && !config.htf_d1_filter_enabled {
         return None;
     }
 
     let guard = state.market_context.read().await;
     let context = guard.as_ref()?;
-    let (allowed, reason) = h4_allows_signal(signal_type, context);
+    let (allowed, reason) = htf_allows_signal(
+        signal_type,
+        context,
+        config.htf_h4_filter_enabled,
+        config.htf_d1_filter_enabled,
+    );
     if allowed {
         None
     } else {

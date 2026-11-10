@@ -66,6 +66,7 @@ const DEFAULT_CONFIG: BotConfig = {
   max_entry_drift_points: 2.5,
   max_candle_age_secs: 120,
   htf_h4_filter_enabled: false,
+  htf_d1_filter_enabled: false,
 };
 
 export default function DashboardPage() {
