@@ -12,7 +12,7 @@ use tracing::{info, warn};
 const OPENCODE_GO_API_BASE: &str = "https://opencode.ai/inference/go/openai/v1";
 const DEFAULT_REVIEW_MODEL: &str = "gemini-4-argon";
 const OPENCODE_GO_USER_AGENT: &str = "xauusd-bot/1.0";
-const REVIEW_TIMEOUT_SECS: u64 = 15;
+const REVIEW_TIMEOUT_SECS: u64 = 20;
 
 /// Kết quả review của AI Chief Risk Officer.
 ///
