@@ -36,6 +36,9 @@ async fn resolve_spot_price(
 }
 
 /// PAXG basis = spot XAU/USD − (live PAXG − broker offset thủ công).
+///
+/// Chỉ chấp nhận basis hữu hạn và nằm trong biên hợp lý để một lần spot lỗi
+/// (giá 0/NaN/outlier) không thể kéo toàn bộ nến PAXG lệch hàng trăm USD.
 fn compute_spot_basis(
     snapshot: &MarketFeedSnapshot,
     spot_price: f64,
@@ -45,12 +48,20 @@ fn compute_spot_basis(
         .live_price
         .or_else(|| snapshot.candles.last().map(|candle| candle.close))?;
 
-    if !spot_price.is_finite() || spot_price <= 0.0 || !raw_live.is_finite() {
+    if !spot_price.is_finite()
+        || spot_price <= 0.0
+        || !(500.0..=10_000.0).contains(&spot_price)
+        || !raw_live.is_finite()
+    {
         return None;
     }
 
     let basis = spot_price - (raw_live - broker_price_offset);
-    basis.is_finite().then(|| basis.clamp(-100.0, 100.0))
+    if !basis.is_finite() || basis.abs() > (spot_price * 0.02).max(50.0) {
+        return None;
+    }
+
+    Some(basis.clamp(-100.0, 100.0))
 }
 
 /// Căn snapshot Binance PAXG về spot XAU/USD. Trả (spot, basis) nếu áp dụng thành công.
@@ -92,11 +103,19 @@ fn htf_price_source(spot_basis: Option<f64>) -> String {
     }
 }
 
+/// Lượng dịch giá cho HTF: ưu tiên spot basis (đã bao gồm broker offset khi
+/// auto-basis bật), nếu không có thì dùng broker offset thủ công để H4/D1/H1
+/// thẳng hàng với nến M15. Caller chỉ áp dụng khi giá trị hữu hạn và khác 0.
+pub fn htf_shift_amount(spot_basis: Option<f64>, broker_price_offset: f64) -> f64 {
+    spot_basis.unwrap_or(broker_price_offset)
+}
+
 /// Fetch H4/D1/H1 đã đóng cửa và dựng MarketContext. Trả None nếu thiếu H4/D1.
 /// Kèm theo nến H4/D1 (đã căn basis) để dashboard vẽ "view toàn cảnh".
 pub async fn fetch_market_context(
     market_feed: &MarketDataFeed,
     spot_basis: Option<f64>,
+    broker_price_offset: f64,
 ) -> Option<(MarketContext, Vec<Candle>, Vec<Candle>)> {
     let (mut h4, mut d1, mut h1) = tokio::join!(
         market_feed.fetch_htf_candles(Timeframe::H4, 300),
@@ -104,10 +123,11 @@ pub async fn fetch_market_context(
         market_feed.fetch_htf_candles(Timeframe::H1, 300),
     );
 
-    if let Some(basis) = spot_basis {
-        shift_candles_prices(&mut h4, basis);
-        shift_candles_prices(&mut d1, basis);
-        shift_candles_prices(&mut h1, basis);
+    let shift = htf_shift_amount(spot_basis, broker_price_offset);
+    if shift.is_finite() && shift != 0.0 {
+        shift_candles_prices(&mut h4, shift);
+        shift_candles_prices(&mut d1, shift);
+        shift_candles_prices(&mut h1, shift);
     }
 
     if h4.is_empty() || d1.is_empty() {
@@ -141,6 +161,7 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
 
         loop {
             interval.tick().await;
+            *state.last_scan_at.write().await = Some(Utc::now());
 
             // 6.1 Luôn refresh nến thật đã đóng cửa (kể cả khi bot tạm dừng).
             let config = state.config.read().await.clone();
@@ -159,14 +180,49 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                 apply_spot_basis(&mut snapshot, &config, &state.market_feed, &mut cached_spot)
                     .await;
             let (scan_spot_price, scan_spot_basis) = match applied_spot {
-                Some((spot, basis)) => (Some(spot), Some(basis)),
-                None => (None, None),
+                Some((spot, basis)) => {
+                    *state.spot_basis_at.write().await = Some(Utc::now());
+                    (Some(spot), Some(basis))
+                }
+                None => {
+                    // Spot lỗi nhưng vẫn có PAXG thật: dùng lại basis tốt gần nhất
+                    // (tối đa 15 phút) thay vì phân tích giá PAXG thô.
+                    if config.use_auto_spot_basis && snapshot.source == "BINANCE_PAXG" {
+                        let existing_basis = *state.spot_basis.read().await;
+                        let basis_at = *state.spot_basis_at.read().await;
+                        let basis_age_secs = basis_at.map(|at| (Utc::now() - at).num_seconds());
+                        let basis_is_fresh = basis_age_secs.map(|age| age <= 900).unwrap_or(false);
+                        match existing_basis.filter(|basis| basis.is_finite() && basis_is_fresh) {
+                            Some(basis) => {
+                                MarketDataFeed::shift_snapshot_prices(&mut snapshot, basis);
+                                let existing_spot = *state.spot_price.read().await;
+                                warn!(
+                                    "⚠️ [Scanner] Không lấy được spot mới — dùng lại basis {:+} (tuổi {}s).",
+                                    basis,
+                                    basis_age_secs.unwrap_or(0)
+                                );
+                                (existing_spot, Some(basis))
+                            }
+                            None => {
+                                *state.active_data_source.write().await =
+                                    "SPOT_BASIS_UNAVAILABLE".to_string();
+                                warn!(
+                                    "⚠️ [Scanner] Không có spot basis hợp lệ (<15 phút) — bỏ qua tracker & phân tích, không dùng PAXG thô."
+                                );
+                                continue;
+                            }
+                        }
+                    } else {
+                        (None, None)
+                    }
+                }
             };
             *state.spot_price.write().await = scan_spot_price;
             *state.spot_basis.write().await = scan_spot_basis;
 
             // Không bao giờ phân tích/tracker trên nến giả fallback.
             if snapshot.source == "FALLBACK_SEED" {
+                *state.active_data_source.write().await = "FALLBACK_SEED".to_string();
                 warn!(
                     "⚠️ [Scanner] Cả Binance và TwelveData đều lỗi — giữ nguyên nến cũ, bỏ qua tracker & phân tích."
                 );
@@ -370,6 +426,29 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     }
                 }
 
+                // 6.7f Cổng cuối: dedup/quota phải được kiểm tra nguyên tử với
+                // bước gửi Telegram + lưu tín hiệu. Giữ khóa tới hết vòng lặp.
+                let _gate = state.signal_gate.lock().await;
+                let signals_now = state.signals.read().await.clone();
+                if PersistentStore::is_duplicate_candle(&signals_now, &signal.dedup_key) {
+                    warn!(
+                        "🛑 [Scanner] Dedup sau phân tích — bỏ qua {} {}",
+                        signal.signal_type, signal.symbol
+                    );
+                    continue;
+                }
+                if PersistentStore::has_reached_daily_quota(
+                    &signals_now,
+                    config.max_signals_per_day,
+                    Utc::now(),
+                ) {
+                    warn!(
+                        "🛑 [Scanner] Quota ngày đã đạt sau phân tích — bỏ qua {} {}",
+                        signal.signal_type, signal.symbol
+                    );
+                    continue;
+                }
+
                 info!(
                     "🚨 [Sniper Scanner] Tín hiệu {} {} | Entry={} | SL={} | Confluence={}/100",
                     signal.signal_type,
@@ -401,9 +480,11 @@ pub fn spawn_htf_context(state: AppState) {
         info!("🧭 [HTF Context] Worker làm mới D1/H4/H1 mỗi 15 phút...");
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+            let config = state.config.read().await.clone();
             let spot_basis = *state.spot_basis.read().await;
             if let Some((context, h4, d1)) =
-                fetch_market_context(&state.market_feed, spot_basis).await
+                fetch_market_context(&state.market_feed, spot_basis, config.broker_price_offset)
+                    .await
             {
                 *state.market_context.write().await = Some(context);
                 *state.htf_h4_candles.write().await = h4;
@@ -516,12 +597,58 @@ mod tests {
 
     #[test]
     fn spot_basis_falls_back_to_last_close_and_clamps() {
-        let snapshot = snapshot(None, 4000.0);
-        let basis = compute_spot_basis(&snapshot, 4500.0, 0.0).expect("finite basis");
+        // spot 9000, PAXG 8850 -> basis 150 (2% = 180) hợp lệ, clamp về +100.
+        let snapshot = snapshot(None, 8850.0);
+        let basis = compute_spot_basis(&snapshot, 9000.0, 0.0).expect("finite basis");
         assert_eq!(basis, 100.0);
 
         assert_eq!(compute_spot_basis(&snapshot, 0.0, 0.0), None);
         assert_eq!(compute_spot_basis(&snapshot, f64::NAN, 0.0), None);
+    }
+
+    #[test]
+    fn spot_basis_accepts_plausible_difference() {
+        let snapshot = snapshot(Some(4095.0), 4095.0);
+        let basis = compute_spot_basis(&snapshot, 4100.0, 0.0).expect("plausible basis");
+        assert!((basis - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn spot_basis_rejects_implausible_difference() {
+        let snapshot = snapshot(Some(4000.0), 4000.0);
+        // 500 > max(4500*2%=90, 50) -> outlier.
+        assert_eq!(compute_spot_basis(&snapshot, 4500.0, 0.0), None);
+        // 100 > max(4100*2%=82, 50) -> outlier.
+        assert_eq!(compute_spot_basis(&snapshot, 4100.0, 0.0), None);
+    }
+
+    #[test]
+    fn spot_basis_rejects_bad_spot_price() {
+        let snapshot = snapshot(Some(4000.0), 4000.0);
+        for bad in [
+            0.0,
+            -1.0,
+            499.99,
+            10_000.01,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            assert_eq!(
+                compute_spot_basis(&snapshot, bad, 0.0),
+                None,
+                "spot {bad} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn htf_shift_uses_spot_basis_else_broker_offset() {
+        assert!((htf_shift_amount(Some(5.07), 2.0) - 5.07).abs() < 1e-9);
+        assert!((htf_shift_amount(None, 2.0) - 2.0).abs() < 1e-9);
+        assert_eq!(htf_shift_amount(None, 0.0), 0.0);
+        assert!(htf_shift_amount(None, f64::NAN).is_nan());
+        assert!(htf_shift_amount(Some(f64::INFINITY), 2.0).is_infinite());
     }
 
     #[test]

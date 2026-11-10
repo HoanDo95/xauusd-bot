@@ -1,5 +1,6 @@
 use super::AppState;
 use crate::models::Signal;
+use crate::signal_validation::validate_signal_levels;
 use crate::telegram::TelegramNotifier;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::Deserialize;
@@ -78,6 +79,26 @@ pub(super) async fn send_signal_telegram(
     };
 
     let config = state.config.read().await.clone();
+
+    // Endpoint này dùng để gửi tay: không bao giờ đẩy tín hiệu sai cấu trúc
+    // entry/SL/TP lên Telegram.
+    if let Err(reason) = validate_signal_levels(
+        signal.signal_type,
+        signal.entry_price,
+        signal.stop_loss,
+        signal.take_profit_1,
+        signal.take_profit_2,
+        config.min_risk_reward,
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "status": "error",
+                "message": format!("Tín hiệu không hợp lệ, không gửi Telegram: {}", reason)
+            })),
+        );
+    }
+
     let token = payload
         .get("token")
         .and_then(|value| value.as_str())

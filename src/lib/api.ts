@@ -61,6 +61,10 @@ export interface HealthResponse {
   volumeDeltaFilterEnabled?: boolean;
   /** Optional hard RSI gate state (default false). */
   rsiFilterEnabled?: boolean;
+  /** True only when the live feed is fresh and not a fallback seed. */
+  feedOk?: boolean;
+  /** Age of the last scanner tick in seconds (null before the first scan). */
+  lastScanAgeSecs?: number | null;
 }
 
 export interface AiReviewResponse {

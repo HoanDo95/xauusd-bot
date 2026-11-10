@@ -102,7 +102,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // 3b. Bối cảnh đa khung D1/H4/H1 (read-only) — căn basis spot như nến tín hiệu.
-    let initial_htf = worker::fetch_market_context(&market_feed, initial_spot_basis).await;
+    let initial_htf =
+        worker::fetch_market_context(&market_feed, initial_spot_basis, config.broker_price_offset)
+            .await;
     let (initial_market_context, initial_h4_candles, initial_d1_candles) = match initial_htf {
         Some((context, h4, d1)) => (Some(context), h4, d1),
         None => (None, Vec::new(), Vec::new()),
@@ -151,6 +153,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         market_context: Arc::new(RwLock::new(initial_market_context)),
         htf_h4_candles: Arc::new(RwLock::new(initial_h4_candles)),
         htf_d1_candles: Arc::new(RwLock::new(initial_d1_candles)),
+        signal_gate: Arc::new(tokio::sync::Mutex::new(())),
+        persist_lock: Arc::new(tokio::sync::Mutex::new(())),
+        last_scan_at: Arc::new(RwLock::new(None)),
+        spot_basis_at: Arc::new(RwLock::new(initial_spot_basis.map(|_| chrono::Utc::now()))),
     };
 
     // 6. Background Scanner 24/7 — quét mỗi 60 giây

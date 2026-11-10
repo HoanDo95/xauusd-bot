@@ -13,7 +13,7 @@ use axum::{
     Router,
 };
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing::warn;
 
 mod ai;
@@ -65,11 +65,26 @@ pub struct AppState {
     pub htf_h4_candles: Arc<RwLock<Vec<Candle>>>,
     /// Nến D1 đã đóng (đã căn spot basis) cho chart "view toàn cảnh".
     pub htf_d1_candles: Arc<RwLock<Vec<Candle>>>,
+    /// Cổng tuần tự hóa bước cuối: dedup/quota -> Telegram -> lưu tín hiệu.
+    /// Giữ khóa này xuyên suốt send/insert/persist để hai luồng không thể cùng
+    /// vượt qua dedup/quota tại một thời điểm.
+    pub signal_gate: Arc<Mutex<()>>,
+    /// Tuần tự hóa việc ghi `data/bot_state.json` để các save đồng thời không
+    /// giẫm lên cùng một file tạm.
+    pub persist_lock: Arc<Mutex<()>>,
+    /// Thời điểm tick quét gần nhất của scanner (dùng cho health trung thực).
+    pub last_scan_at: Arc<RwLock<Option<chrono::DateTime<chrono::Utc>>>>,
+    /// Thời điểm áp dụng spot basis hợp lệ gần nhất.
+    pub spot_basis_at: Arc<RwLock<Option<chrono::DateTime<chrono::Utc>>>>,
 }
 
 /// Ghi snapshot Config + Signals + DailyReport + session alert dedup xuống đĩa
 /// (không block async runtime).
 pub async fn persist_state(state: &AppState) -> Result<(), String> {
+    // Chỉ một save tại một thời điểm: tránh hai tác vụ cùng ghi file tạm
+    // `bot_state.json.tmp` rồi rename đè lên nhau.
+    let _persist_guard = state.persist_lock.lock().await;
+
     let snapshot = PersistentState {
         config: state.config.read().await.clone(),
         signals: state.signals.read().await.clone(),

@@ -4,12 +4,13 @@ use super::{
 };
 use crate::analyzer::GoldMarketAnalyzer;
 use crate::models::{
-    Candle, EntryType, NewCandleWebhook, Signal, SignalStatus, SignalType, Timeframe,
+    BotConfig, Candle, EntryType, NewCandleWebhook, Signal, SignalStatus, SignalType, Timeframe,
     TradingViewWebhookPayload,
 };
 use crate::news_filter::MacroBias;
 use crate::risk_manager::PositionSizer;
 use crate::rsi::rsi_snapshot;
+use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
 use crate::storage::PersistentStore;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use chrono::Utc;
@@ -37,16 +38,31 @@ pub(super) async fn receive_candle_webhook(
         );
     }
 
-    let timeframe = match payload.timeframe.to_uppercase().as_str() {
-        "H1" => Timeframe::H1,
-        "H4" => Timeframe::H4,
-        _ => Timeframe::M15,
+    let timeframe = match parse_webhook_timeframe(&payload.timeframe) {
+        Some(timeframe) => timeframe,
+        None => {
+            warn!(
+                "🛑 [Candle Webhook] Từ chối timeframe không hỗ trợ: {}",
+                payload.timeframe
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "status": "rejected_invalid_candle",
+                    "reason": format!(
+                        "timeframe '{}' không được hỗ trợ (chỉ nhận M15/H1/H4).",
+                        payload.timeframe
+                    )
+                })),
+            );
+        }
     };
 
     let new_candle = Candle {
+        // Missing timestamp = the candle that just closed, not the forming one.
         timestamp: payload
             .timestamp
-            .unwrap_or_else(|| Utc::now().timestamp_millis()),
+            .unwrap_or_else(|| Utc::now().timestamp_millis() - timeframe_millis(timeframe)),
         open: payload.open,
         high: payload.high,
         low: payload.low,
@@ -55,6 +71,19 @@ pub(super) async fn receive_candle_webhook(
         taker_buy_volume: 0.0,
         timeframe,
     };
+
+    if let Err(reason) =
+        validate_webhook_candle(&new_candle, &config, Utc::now().timestamp_millis())
+    {
+        warn!("🛑 [Candle Webhook] Từ chối nến không hợp lệ: {}", reason);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "status": "rejected_invalid_candle",
+                "reason": reason
+            })),
+        );
+    }
 
     push_candle(&state, new_candle.clone()).await;
     evaluate_outcomes(&state).await;
@@ -204,6 +233,34 @@ pub(super) async fn receive_candle_webhook(
             );
         }
 
+        // 4e. Cổng cuối: dedup/quota phải nguyên tử với Telegram + lưu tín hiệu.
+        let _gate = state.signal_gate.lock().await;
+        let signals_now = state.signals.read().await.clone();
+        if PersistentStore::is_duplicate_candle(&signals_now, &signal.dedup_key) {
+            warn!(
+                "🛑 [Candle Webhook] Dedup sau phân tích — bỏ qua {}",
+                signal.dedup_key
+            );
+            return (
+                StatusCode::OK,
+                Json(json!({ "status": "blocked_duplicate" })),
+            );
+        }
+        if PersistentStore::has_reached_daily_quota(
+            &signals_now,
+            config.max_signals_per_day,
+            Utc::now(),
+        ) {
+            warn!(
+                "🛑 [Candle Webhook] Quota ngày đã đạt sau phân tích — bỏ qua {}",
+                signal.dedup_key
+            );
+            return (
+                StatusCode::OK,
+                Json(json!({ "status": "blocked_by_quota" })),
+            );
+        }
+
         info!(
             "🎯 [Candle Webhook] Thuật toán phát hiện tín hiệu: {}",
             signal.id
@@ -281,16 +338,57 @@ pub(super) async fn receive_tradingview_webhook(
 
     // Nếu payload là cây nến (action == "CANDLE") thì chỉ ghi dữ liệu.
     if action_upper == "CANDLE" {
+        let timeframe = match payload.timeframe.as_deref() {
+            Some(raw) => match parse_webhook_timeframe(raw) {
+                Some(timeframe) => timeframe,
+                None => {
+                    warn!(
+                        "🛑 [TradingView Webhook] Từ chối timeframe không hỗ trợ: {}",
+                        raw
+                    );
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "status": "rejected_invalid_candle",
+                            "reason": format!(
+                                "timeframe '{}' không được hỗ trợ (chỉ nhận M15/H1/H4).",
+                                raw
+                            )
+                        })),
+                    );
+                }
+            },
+            None => config.timeframe,
+        };
+
         let candle = Candle {
-            timestamp: payload.timestamp.unwrap_or_else(|| now.timestamp_millis()),
+            // Missing timestamp = the candle that just closed, not the forming one.
+            timestamp: payload
+                .timestamp
+                .unwrap_or_else(|| now.timestamp_millis() - timeframe_millis(timeframe)),
             open: payload.open.unwrap_or(payload.price),
             high: payload.high.unwrap_or(payload.price + 1.0),
             low: payload.low.unwrap_or(payload.price - 1.0),
             close: payload.close.unwrap_or(payload.price),
             volume: payload.volume.unwrap_or(1500.0),
             taker_buy_volume: 0.0,
-            timeframe: Timeframe::M15,
+            timeframe,
         };
+
+        if let Err(reason) = validate_webhook_candle(&candle, &config, now.timestamp_millis()) {
+            warn!(
+                "🛑 [TradingView Webhook] Từ chối nến không hợp lệ: {}",
+                reason
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "status": "rejected_invalid_candle",
+                    "reason": reason
+                })),
+            );
+        }
+
         push_candle(&state, candle.clone()).await;
         evaluate_outcomes(&state).await;
 
@@ -317,6 +415,24 @@ pub(super) async fn receive_tradingview_webhook(
             )
         }
     };
+
+    // Giá XAU/USD phải nằm trong biên hợp lý trước khi dựng SL/TP.
+    if !valid_gold_price(payload.price) {
+        warn!(
+            "🛑 [TradingView Webhook] Từ chối giá không hợp lệ: {}",
+            payload.price
+        );
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "status": "rejected_invalid_price",
+                "reason": format!(
+                    "Giá {} không hợp lệ cho XAU/USD (yêu cầu 500..10000).",
+                    payload.price
+                )
+            })),
+        );
+    }
 
     // Bước 1: News Kill Switch
     let (is_news_safe, active_event) = {
@@ -431,12 +547,14 @@ pub(super) async fn receive_tradingview_webhook(
     // Bước 6: Xây dựng tín hiệu từ TradingView Alert
     let entry_price = payload.price;
     let sl_buffer = config.gold_sl_buffer_points.max(4.0);
+    // TP2 phải luôn nằm ngoài TP1, kể cả khi min_risk_reward = 5R.
+    let tp2_r = tp2_r_multiple(config.min_risk_reward);
 
     let (stop_loss, reward_tp1, reward_tp2, tp1, tp2) = if is_buy {
         let sl = round2(entry_price - sl_buffer);
         let r_points = round2(entry_price - sl);
         let r_tp1 = round2(r_points * config.min_risk_reward);
-        let r_tp2 = round2(r_points * 3.0);
+        let r_tp2 = round2(r_points * tp2_r);
         (
             sl,
             r_tp1,
@@ -448,7 +566,7 @@ pub(super) async fn receive_tradingview_webhook(
         let sl = round2(entry_price + sl_buffer);
         let r_points = round2(sl - entry_price);
         let r_tp1 = round2(r_points * config.min_risk_reward);
-        let r_tp2 = round2(r_points * 3.0);
+        let r_tp2 = round2(r_points * tp2_r);
         (
             sl,
             r_tp1,
@@ -531,7 +649,44 @@ pub(super) async fn receive_tradingview_webhook(
         rsi_divergence: None,
     };
 
-    // Bước 6a: RSI M15 context — luôn gắn, kể cả khi filter tắt.
+    // Bước 6a: Chặn tín hiệu sai cấu trúc hoặc vượt ngân sách rủi ro trước khi
+    // gắn filter, gửi Telegram hoặc lưu đĩa.
+    if let Err(reason) = validate_signal_levels(
+        signal.signal_type,
+        signal.entry_price,
+        signal.stop_loss,
+        signal.take_profit_1,
+        signal.take_profit_2,
+        config.min_risk_reward,
+    ) {
+        warn!(
+            "🛑 [TradingView Webhook] Từ chối tín hiệu không hợp lệ: {}",
+            reason
+        );
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "status": "rejected_invalid_signal",
+                "reason": reason
+            })),
+        );
+    }
+
+    if let Err(reason) = validate_risk_budget(&config, &pos_calc) {
+        warn!(
+            "🛑 [TradingView Webhook] Từ chối tín hiệu vượt ngân sách rủi ro: {}",
+            reason
+        );
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "status": "rejected_invalid_signal",
+                "reason": reason
+            })),
+        );
+    }
+
+    // Bước 6b: RSI M15 context — luôn gắn, kể cả khi filter tắt.
     let candles_snapshot = state.candles.read().await.clone();
     let rsi = rsi_snapshot(
         &candles_snapshot,
@@ -543,7 +698,7 @@ pub(super) async fn receive_tradingview_webhook(
     );
     attach_rsi_snapshot(&mut signal, &rsi);
 
-    // Bước 6b: Volume Delta/CVD tùy chọn (mặc định OFF) — chỉ tín hiệu thật.
+    // Bước 6c: Volume Delta/CVD tùy chọn (mặc định OFF) — chỉ tín hiệu thật.
     if let Some(reason) = apply_volume_delta_filter(&config, &mut signal, &candles_snapshot) {
         warn!(
             "🛑 [TradingView Webhook] Volume Delta chặn {}: {}",
@@ -559,7 +714,7 @@ pub(super) async fn receive_tradingview_webhook(
         );
     }
 
-    // Bước 6c: RSI filter tùy chọn (mặc định OFF) — chỉ tín hiệu thật.
+    // Bước 6d: RSI filter tùy chọn (mặc định OFF) — chỉ tín hiệu thật.
     if let Some(reason) = rsi_block_reason(&config, &signal, &rsi) {
         warn!(
             "🛑 [TradingView Webhook] RSI filter chặn {}: {}",
@@ -575,7 +730,7 @@ pub(super) async fn receive_tradingview_webhook(
         );
     }
 
-    // Bước 6d: AI Risk Officer tùy chọn (chỉ veto/standby, không sửa SL/TP).
+    // Bước 6e: AI Risk Officer tùy chọn (chỉ veto/standby, không sửa SL/TP).
     if let Some(reason) = ai_review_block_reason(&state, &config, &mut signal).await {
         warn!(
             "🤖 [TradingView Webhook] AI Risk Officer chặn {}: {}",
@@ -588,6 +743,34 @@ pub(super) async fn receive_tradingview_webhook(
                 "action_taken": "DROPPED",
                 "reason": reason
             })),
+        );
+    }
+
+    // Bước 6f: Cổng cuối: dedup/quota phải nguyên tử với Telegram + lưu tín hiệu.
+    let _gate = state.signal_gate.lock().await;
+    let signals_now = state.signals.read().await.clone();
+    if PersistentStore::is_duplicate_candle(&signals_now, &signal.dedup_key) {
+        warn!(
+            "🛑 [TradingView Webhook] Dedup sau phân tích — bỏ qua {}",
+            signal.dedup_key
+        );
+        return (
+            StatusCode::OK,
+            Json(json!({ "status": "blocked_duplicate" })),
+        );
+    }
+    if PersistentStore::has_reached_daily_quota(
+        &signals_now,
+        config.max_signals_per_day,
+        Utc::now(),
+    ) {
+        warn!(
+            "🛑 [TradingView Webhook] Quota ngày đã đạt sau phân tích — bỏ qua {}",
+            signal.dedup_key
+        );
+        return (
+            StatusCode::OK,
+            Json(json!({ "status": "blocked_by_quota" })),
         );
     }
 
@@ -613,10 +796,298 @@ pub(super) async fn receive_tradingview_webhook(
     )
 }
 
+/// Giá vàng hợp lệ cho webhook: hữu hạn và nằm trong biên vận hành XAU/USD.
+fn valid_gold_price(price: f64) -> bool {
+    price.is_finite() && (500.0..=10_000.0).contains(&price)
+}
+
+/// Parse timeframe webhook (không phân biệt hoa/thường); chỉ nhận M15/H1/H4.
+/// Chấp nhận thêm alias TradingView `{{interval}}`: 15 / 60 / 240.
+fn parse_webhook_timeframe(value: &str) -> Option<Timeframe> {
+    match value.trim().to_uppercase().as_str() {
+        "M15" | "15M" | "15" => Some(Timeframe::M15),
+        "H1" | "1H" | "60" => Some(Timeframe::H1),
+        "H4" | "4H" | "240" => Some(Timeframe::H4),
+        _ => None,
+    }
+}
+
+fn timeframe_millis(timeframe: Timeframe) -> i64 {
+    match timeframe {
+        Timeframe::M15 => 15 * 60 * 1000,
+        Timeframe::H1 => 60 * 60 * 1000,
+        Timeframe::H4 => 4 * 60 * 60 * 1000,
+    }
+}
+
+/// Kiểm tra nến webhook trước khi đưa vào buffer phân tích:
+/// OHLC hợp lệ, cấu trúc high/low đúng, volume không âm, nến đã đóng và còn mới,
+/// và timeframe phải khớp cấu hình bot.
+fn validate_webhook_candle(candle: &Candle, config: &BotConfig, now_ms: i64) -> Result<(), String> {
+    let prices = [candle.open, candle.high, candle.low, candle.close];
+    if prices.iter().any(|price| !price.is_finite()) {
+        return Err("OHLC phải là số hữu hạn.".to_string());
+    }
+    if let Some(price) = prices
+        .iter()
+        .find(|price| !(500.0..=10_000.0).contains(*price))
+    {
+        return Err(format!("OHLC {} nằm ngoài biên XAU/USD 500..10000.", price));
+    }
+    if candle.high < candle.open.max(candle.close).max(candle.low) {
+        return Err("high phải >= max(open, close, low).".to_string());
+    }
+    if candle.low > candle.open.min(candle.close).min(candle.high) {
+        return Err("low phải <= min(open, close, high).".to_string());
+    }
+    if candle.high < candle.low {
+        return Err("high phải >= low.".to_string());
+    }
+    if !candle.volume.is_finite() || candle.volume < 0.0 {
+        return Err("volume phải hữu hạn và >= 0.".to_string());
+    }
+    if candle.timestamp <= 0 {
+        return Err("timestamp phải > 0.".to_string());
+    }
+
+    let expected_timeframe = config.timeframe.to_string();
+    if !candle
+        .timeframe
+        .to_string()
+        .eq_ignore_ascii_case(&expected_timeframe)
+    {
+        return Err(format!(
+            "timeframe {} không khớp cấu hình {}.",
+            candle.timeframe, expected_timeframe
+        ));
+    }
+
+    let close_time = candle
+        .timestamp
+        .saturating_add(timeframe_millis(candle.timeframe));
+    if close_time > now_ms.saturating_add(1000) {
+        return Err("nến chưa đóng cửa (close_time nằm trong tương lai).".to_string());
+    }
+
+    let age_ms = now_ms - close_time;
+    let max_age_ms = config.max_candle_age_secs.saturating_mul(1000);
+    if age_ms > max_age_ms {
+        return Err(format!(
+            "nến quá cũ: {}s > {}s.",
+            age_ms / 1000,
+            config.max_candle_age_secs
+        ));
+    }
+
+    Ok(())
+}
+
+/// Chỉ cho phép nối nến mới hơn cây cuối cùng; nến trùng/ngược thời gian bị bỏ.
+fn should_append_candle(last_timestamp: Option<i64>, new_timestamp: i64) -> bool {
+    match last_timestamp {
+        Some(last) => new_timestamp > last,
+        None => true,
+    }
+}
+
+/// Bội số R cho TP2: tối thiểu 3R nhưng luôn vượt TP1 ít nhất 0.5R,
+/// kể cả khi `min_risk_reward` được đẩy tới 5R.
+fn tp2_r_multiple(min_risk_reward: f64) -> f64 {
+    (min_risk_reward + 0.5).max(3.0)
+}
+
 async fn push_candle(state: &AppState, candle: Candle) {
     let mut candles = state.candles.write().await;
+    let last_timestamp = candles.last().map(|last| last.timestamp);
+    if !should_append_candle(last_timestamp, candle.timestamp) {
+        warn!(
+            "⚠️ [Candle Webhook] Bỏ qua nến trùng/ngược thời gian: {} <= {:?}.",
+            candle.timestamp, last_timestamp
+        );
+        return;
+    }
     candles.push(candle);
     if candles.len() > 500 {
         candles.remove(0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_gold_price_accepts_realistic_xauusd_range() {
+        assert!(valid_gold_price(500.0));
+        assert!(valid_gold_price(2400.0));
+        assert!(valid_gold_price(10_000.0));
+    }
+
+    #[test]
+    fn valid_gold_price_rejects_outliers_and_non_finite_values() {
+        for bad in [
+            0.0,
+            -1.0,
+            499.99,
+            10_000.01,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            assert!(!valid_gold_price(bad), "{bad} must be rejected");
+        }
+    }
+
+    fn candle_for(now_ms: i64, timeframe: Timeframe) -> Candle {
+        Candle {
+            timestamp: now_ms - timeframe_millis(timeframe),
+            open: 2000.0,
+            high: 2005.0,
+            low: 1995.0,
+            close: 2002.0,
+            volume: 100.0,
+            taker_buy_volume: 0.0,
+            timeframe,
+        }
+    }
+
+    #[test]
+    fn validate_webhook_candle_accepts_closed_fresh_m15() {
+        let now_ms = 1_700_000_000_000;
+        let candle = candle_for(now_ms, Timeframe::M15);
+        assert!(validate_webhook_candle(&candle, &BotConfig::default(), now_ms).is_ok());
+    }
+
+    #[test]
+    fn parse_webhook_timeframe_accepts_case_and_tradingview_aliases() {
+        for raw in ["M15", "m15", "15", "15m"] {
+            assert_eq!(parse_webhook_timeframe(raw), Some(Timeframe::M15), "{raw}");
+        }
+        for raw in ["H1", "h1", "60", "1h"] {
+            assert_eq!(parse_webhook_timeframe(raw), Some(Timeframe::H1), "{raw}");
+        }
+        for raw in ["H4", "h4", "240", "4h"] {
+            assert_eq!(parse_webhook_timeframe(raw), Some(Timeframe::H4), "{raw}");
+        }
+        assert_eq!(parse_webhook_timeframe("W1"), None);
+        assert_eq!(parse_webhook_timeframe(""), None);
+    }
+
+    #[test]
+    fn validate_webhook_candle_rejects_high_below_low() {
+        let now_ms = 1_700_000_000_000;
+        let mut candle = candle_for(now_ms, Timeframe::M15);
+        candle.high = 1990.0;
+        candle.low = 2000.0;
+        candle.open = 1995.0;
+        candle.close = 1996.0;
+
+        let error = validate_webhook_candle(&candle, &BotConfig::default(), now_ms)
+            .expect_err("high < low must fail");
+        assert!(error.contains("high"), "{error}");
+    }
+
+    #[test]
+    fn validate_webhook_candle_rejects_non_finite_ohlc() {
+        let now_ms = 1_700_000_000_000;
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut candle = candle_for(now_ms, Timeframe::M15);
+            candle.open = bad;
+            assert!(
+                validate_webhook_candle(&candle, &BotConfig::default(), now_ms).is_err(),
+                "open {bad} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_webhook_candle_rejects_stale_candle() {
+        let now_ms = 1_700_000_000_000;
+        let mut candle = candle_for(now_ms, Timeframe::M15);
+        // Đóng cửa cách đây 5 phút > max_candle_age_secs mặc định 120s.
+        candle.timestamp = now_ms - timeframe_millis(Timeframe::M15) - 5 * 60 * 1000;
+
+        let error = validate_webhook_candle(&candle, &BotConfig::default(), now_ms)
+            .expect_err("stale candle must fail");
+        assert!(error.contains("cũ"), "{error}");
+    }
+
+    #[test]
+    fn validate_webhook_candle_rejects_future_or_unclosed_candle() {
+        let now_ms = 1_700_000_000_000;
+        let mut candle = candle_for(now_ms, Timeframe::M15);
+        // Nến mở 5 phút trước, còn 10 phút nữa mới đóng.
+        candle.timestamp = now_ms - 5 * 60 * 1000;
+
+        let error = validate_webhook_candle(&candle, &BotConfig::default(), now_ms)
+            .expect_err("unclosed candle must fail");
+        assert!(error.contains("chưa đóng"), "{error}");
+    }
+
+    #[test]
+    fn validate_webhook_candle_rejects_timeframe_mismatch() {
+        let now_ms = 1_700_000_000_000;
+        let candle = candle_for(now_ms, Timeframe::H1);
+
+        let error = validate_webhook_candle(&candle, &BotConfig::default(), now_ms)
+            .expect_err("H1 candle must fail for M15 config");
+        assert!(error.contains("timeframe"), "{error}");
+    }
+
+    #[test]
+    fn validate_webhook_candle_rejects_negative_volume() {
+        let now_ms = 1_700_000_000_000;
+        let mut candle = candle_for(now_ms, Timeframe::M15);
+        candle.volume = -1.0;
+
+        let error = validate_webhook_candle(&candle, &BotConfig::default(), now_ms)
+            .expect_err("negative volume must fail");
+        assert!(error.contains("volume"), "{error}");
+    }
+
+    #[test]
+    fn validate_webhook_candle_rejects_zero_timestamp() {
+        let now_ms = 1_700_000_000_000;
+        let mut candle = candle_for(now_ms, Timeframe::M15);
+        candle.timestamp = 0;
+
+        let error = validate_webhook_candle(&candle, &BotConfig::default(), now_ms)
+            .expect_err("zero timestamp must fail");
+        assert!(error.contains("timestamp"), "{error}");
+    }
+
+    #[test]
+    fn push_candle_guard_rejects_duplicates_and_out_of_order() {
+        assert!(should_append_candle(None, 1_700_000_000_000));
+        assert!(should_append_candle(
+            Some(1_700_000_000_000),
+            1_700_000_900_000
+        ));
+        assert!(!should_append_candle(
+            Some(1_700_000_000_000),
+            1_700_000_000_000
+        ));
+        assert!(!should_append_candle(
+            Some(1_700_000_000_000),
+            1_699_999_100_000
+        ));
+    }
+
+    #[test]
+    fn tp2_multiple_is_at_least_three_r() {
+        assert!((tp2_r_multiple(1.5) - 3.0).abs() < 1e-9);
+        assert!((tp2_r_multiple(2.0) - 3.0).abs() < 1e-9);
+        assert!((tp2_r_multiple(3.0) - 3.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn tp2_multiple_stays_beyond_tp1_at_five_r() {
+        let entry = 2400.0;
+        let risk = 10.0;
+        let tp1 = entry + risk * 5.0;
+        let tp2 = entry + risk * tp2_r_multiple(5.0);
+
+        assert!((tp2_r_multiple(5.0) - 5.5).abs() < 1e-9);
+        assert!(tp2 > tp1 + 0.01);
     }
 }

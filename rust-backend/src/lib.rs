@@ -9,6 +9,7 @@ pub mod rsi;
 pub mod scheduler;
 pub mod session_alerts;
 pub mod signal_review;
+pub mod signal_validation;
 pub mod storage;
 pub mod telegram;
 pub mod tracker;

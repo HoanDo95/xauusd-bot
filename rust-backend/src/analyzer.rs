@@ -3,8 +3,9 @@ use crate::models::{
 };
 use crate::news_filter::MacroBias;
 use crate::risk_manager::PositionSizer;
+use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
 use chrono::Utc;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Bộ máy Phân Tích Kỹ Thuật Tự Động cho Vàng (XAU/USD)
 pub struct GoldMarketAnalyzer;
@@ -339,13 +340,15 @@ impl GoldMarketAnalyzer {
                         ((risk_points * config.min_risk_reward) * 100.0).round() / 100.0;
                     let take_profit_1 = ((entry_price + reward_tp1) * 100.0).round() / 100.0;
 
-                    // TP2 tính theo 1:3 hoặc kháng cự tiếp theo
-                    let next_resistance = resistances.iter().find(|r| r.price > take_profit_1);
-                    let take_profit_2 = if let Some(res) = next_resistance {
-                        ((res.price - 1.0) * 100.0).round() / 100.0
-                    } else {
-                        ((entry_price + (risk_points * 3.0)) * 100.0).round() / 100.0
-                    };
+                    // TP2: kháng cự gần nhất nằm ngoài TP1, nếu không có thì fallback >= 3R.
+                    let take_profit_2 = select_tp2(
+                        true,
+                        entry_price,
+                        take_profit_1,
+                        risk_points,
+                        &resistances,
+                        config.min_risk_reward,
+                    );
 
                     let reward_tp2 = round2((take_profit_2 - entry_price).abs());
                     let risk_reward_ratio = round2(reward_tp1 / risk_points);
@@ -367,6 +370,15 @@ impl GoldMarketAnalyzer {
                             config.account_leverage,
                         );
 
+                        // Chặn tín hiệu nếu MIN_LOT đẩy rủi ro vượt ngân sách cấu hình.
+                        if let Err(reason) = validate_risk_budget(config, &pos_sizing) {
+                            warn!(
+                                "🛑 [Analyzer] Bỏ qua tín hiệu BUY do vượt ngân sách rủi ro: {}",
+                                reason
+                            );
+                            return None;
+                        }
+
                         let wick_ratio = if current_candle.body_size() > 0.0 {
                             current_candle.lower_wick() / current_candle.body_size()
                         } else {
@@ -381,6 +393,18 @@ impl GoldMarketAnalyzer {
                             "{}_{}_{}",
                             config.symbol, config.timeframe, current_candle.timestamp
                         );
+
+                        if let Err(reason) = validate_signal_levels(
+                            SignalType::Buy,
+                            entry_price,
+                            stop_loss,
+                            take_profit_1,
+                            take_profit_2,
+                            config.min_risk_reward,
+                        ) {
+                            warn!("🛑 [Analyzer] Bỏ qua tín hiệu BUY không hợp lệ: {}", reason);
+                            return None;
+                        }
 
                         return Some(Signal {
                             id: format!("SIG-{}-{}", Utc::now().timestamp_millis(), "BUY"),
@@ -480,13 +504,15 @@ impl GoldMarketAnalyzer {
                         ((risk_points * config.min_risk_reward) * 100.0).round() / 100.0;
                     let take_profit_1 = ((entry_price - reward_tp1) * 100.0).round() / 100.0;
 
-                    // TP2 tính theo 1:3 hoặc hỗ trợ tiếp theo
-                    let next_support = supports.iter().find(|s| s.price < take_profit_1);
-                    let take_profit_2 = if let Some(sup) = next_support {
-                        ((sup.price + 1.0) * 100.0).round() / 100.0
-                    } else {
-                        ((entry_price - (risk_points * 3.0)) * 100.0).round() / 100.0
-                    };
+                    // TP2: hỗ trợ gần nhất nằm ngoài TP1, nếu không có thì fallback >= 3R.
+                    let take_profit_2 = select_tp2(
+                        false,
+                        entry_price,
+                        take_profit_1,
+                        risk_points,
+                        &supports,
+                        config.min_risk_reward,
+                    );
 
                     let reward_tp2 = round2((entry_price - take_profit_2).abs());
                     let risk_reward_ratio = round2(reward_tp1 / risk_points);
@@ -508,6 +534,15 @@ impl GoldMarketAnalyzer {
                             config.account_leverage,
                         );
 
+                        // Chặn tín hiệu nếu MIN_LOT đẩy rủi ro vượt ngân sách cấu hình.
+                        if let Err(reason) = validate_risk_budget(config, &pos_sizing) {
+                            warn!(
+                                "🛑 [Analyzer] Bỏ qua tín hiệu SELL do vượt ngân sách rủi ro: {}",
+                                reason
+                            );
+                            return None;
+                        }
+
                         let wick_ratio = if current_candle.body_size() > 0.0 {
                             current_candle.upper_wick() / current_candle.body_size()
                         } else {
@@ -522,6 +557,21 @@ impl GoldMarketAnalyzer {
                             "{}_{}_{}",
                             config.symbol, config.timeframe, current_candle.timestamp
                         );
+
+                        if let Err(reason) = validate_signal_levels(
+                            SignalType::Sell,
+                            entry_price,
+                            stop_loss,
+                            take_profit_1,
+                            take_profit_2,
+                            config.min_risk_reward,
+                        ) {
+                            warn!(
+                                "🛑 [Analyzer] Bỏ qua tín hiệu SELL không hợp lệ: {}",
+                                reason
+                            );
+                            return None;
+                        }
 
                         return Some(Signal {
                             id: format!("SIG-{}-{}", Utc::now().timestamp_millis(), "SELL"),
@@ -604,38 +654,106 @@ fn select_entry(
     let live = live_price.unwrap_or(ref_close);
     let entry_mode = config.entry_mode.trim().to_uppercase();
 
+    // Entry không được nằm sai phía Stop Loss (BUY phải trên SL, SELL phải dưới SL).
+    let through_sl = |entry: f64, label: &str| -> bool {
+        let invalid = if is_buy {
+            entry <= stop_loss
+        } else {
+            entry >= stop_loss
+        };
+        if invalid {
+            info!(
+                "🛑 [Analyzer] Entry {} {:.2} đã xuyên SL {:.2}, hủy tín hiệu.",
+                label, entry, stop_loss
+            );
+        }
+        invalid
+    };
+
     match entry_mode.as_str() {
-        "LIMIT_RETEST" => Some((retest_limit_price, EntryType::Limit, false)),
+        "LIMIT_RETEST" => {
+            if through_sl(retest_limit_price, "LIMIT_RETEST") {
+                return None;
+            }
+            Some((retest_limit_price, EntryType::Limit, false))
+        }
         "BREAKOUT" => {
-            let entry = if is_buy {
+            let entry = round2(if is_buy {
                 current_candle.high + 0.5
             } else {
                 current_candle.low - 0.5
-            };
-            Some((round2(entry), EntryType::Breakout, false))
+            });
+            if through_sl(entry, "BREAKOUT") {
+                return None;
+            }
+            Some((entry, EntryType::Breakout, false))
         }
         // MARKET (và fallback an toàn cho mode lạ).
         _ => {
             if (live - ref_close).abs() <= config.max_entry_drift_points {
-                Some((round2(live), EntryType::Market, true))
-            } else {
-                let already_through_sl = if is_buy {
-                    live <= stop_loss
-                } else {
-                    live >= stop_loss
-                };
-                if already_through_sl {
-                    info!(
-                        "🛑 [Analyzer] Giá live {:.2} đã xuyên SL {:.2}, hủy tín hiệu.",
-                        live, stop_loss
-                    );
-                    None
-                } else {
-                    // Drift quá lớn: không đuổi giá, chờ giá quay về close của nến Pinbar.
-                    Some((round2(ref_close), EntryType::Limit, false))
+                if through_sl(live, "MARKET") {
+                    return None;
                 }
+                let entry = round2(live);
+                if through_sl(entry, "MARKET") {
+                    return None;
+                }
+                Some((entry, EntryType::Market, true))
+            } else {
+                if through_sl(live, "MARKET") {
+                    return None;
+                }
+                // Drift quá lớn: không đuổi giá, chờ giá quay về close của nến Pinbar.
+                let entry = round2(ref_close);
+                if through_sl(entry, "MARKET_FALLBACK") {
+                    return None;
+                }
+                Some((entry, EntryType::Limit, false))
             }
         }
+    }
+}
+
+/// Chọn TP2 an toàn: mức cản gần nhất nằm ngoài TP1 + $0.01, nếu không có
+/// thì fallback tối thiểu 3R và luôn xa hơn TP1 ít nhất $0.5.
+fn select_tp2(
+    is_buy: bool,
+    entry_price: f64,
+    take_profit_1: f64,
+    risk_points: f64,
+    zones: &[SupportResistanceZone],
+    min_risk_reward: f64,
+) -> f64 {
+    if is_buy {
+        let candidate = zones
+            .iter()
+            .map(|zone| round2(zone.price - 1.0))
+            .filter(|price| *price > take_profit_1 + 0.01)
+            .min_by(f64::total_cmp);
+
+        if let Some(price) = candidate {
+            return price;
+        }
+
+        let fallback_distance = (3.0 * risk_points)
+            .max((take_profit_1 - entry_price).abs() + 0.5)
+            .max(min_risk_reward * risk_points + 0.5);
+        round2(entry_price + fallback_distance)
+    } else {
+        let candidate = zones
+            .iter()
+            .map(|zone| round2(zone.price + 1.0))
+            .filter(|price| *price < take_profit_1 - 0.01)
+            .max_by(f64::total_cmp);
+
+        if let Some(price) = candidate {
+            return price;
+        }
+
+        let fallback_distance = (3.0 * risk_points)
+            .max((entry_price - take_profit_1).abs() + 0.5)
+            .max(min_risk_reward * risk_points + 0.5);
+        round2(entry_price - fallback_distance)
     }
 }
 
@@ -939,5 +1057,83 @@ mod tests {
         let signal = expect_buy_signal(10.0);
         assert_eq!(signal.entry_type, crate::models::EntryType::Market);
         assert_eq!(signal.live_market_price, None);
+    }
+
+    fn zone(price: f64) -> SupportResistanceZone {
+        SupportResistanceZone {
+            level_type: ZoneType::Resistance,
+            price,
+            min_price: price - 0.5,
+            max_price: price + 0.5,
+            touch_count: 1,
+            timeframe: Timeframe::M15,
+            strength_score: 0.25,
+        }
+    }
+
+    #[test]
+    fn select_tp2_buy_skips_resistance_too_close_to_tp1() {
+        let zones = vec![zone(2420.5), zone(2430.0), zone(2425.0)];
+
+        let tp2 = select_tp2(true, 2400.0, 2420.0, 10.0, &zones, 2.0);
+
+        // 2420.5 - 1.0 = 2419.5 is not beyond TP1 + 0.01 and must be skipped.
+        // The nearest valid resistance is 2425.0 -> TP2 = 2424.0.
+        assert!((tp2 - 2424.0).abs() < 1e-9);
+        assert!(tp2 > 2420.0 + 0.01);
+    }
+
+    #[test]
+    fn select_tp2_sell_skips_support_too_close_to_tp1() {
+        let zones = vec![zone(2379.5), zone(2370.0), zone(2375.0)];
+
+        let tp2 = select_tp2(false, 2400.0, 2380.0, 10.0, &zones, 2.0);
+
+        // 2379.5 + 1.0 = 2380.5 is not beyond TP1 - 0.01 and must be skipped.
+        // The nearest valid support is 2375.0 -> TP2 = 2376.0.
+        assert!((tp2 - 2376.0).abs() < 1e-9);
+        assert!(tp2 < 2380.0 - 0.01);
+    }
+
+    #[test]
+    fn select_tp2_falls_back_to_three_r_without_zones() {
+        assert!((select_tp2(true, 2400.0, 2420.0, 10.0, &[], 2.0) - 2430.0).abs() < 1e-9);
+        assert!((select_tp2(false, 2400.0, 2380.0, 10.0, &[], 2.0) - 2370.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn generated_buy_signal_keeps_tp2_beyond_tp1() {
+        let signal = expect_buy_signal(10.0);
+
+        assert!(signal.take_profit_2 > signal.take_profit_1 + 0.01);
+        assert!(signal.reward_points_tp2 > signal.reward_points_tp1 + 0.01);
+    }
+
+    #[test]
+    fn entry_market_cancels_when_live_through_sl_within_max_drift() {
+        // SL = 2669.5 - 4.0 = 2665.5; live 2665.0 is through SL but only 10 points
+        // away from the candle close, exactly at the configured drift limit.
+        let config = BotConfig {
+            max_entry_drift_points: 10.0,
+            ..buy_config(4.0)
+        };
+
+        let signal = analyze_buy_with_live(2665.0, fresh_now(), config);
+        assert!(signal.is_none());
+    }
+
+    #[test]
+    fn small_account_wide_sl_is_rejected_by_risk_budget() {
+        // $100 balance at 1% => $1 max risk. A 25.5-point SL forces MIN_LOT 0.01,
+        // whose actual risk is $25.50 — far above the budget.
+        let config = BotConfig {
+            account_balance: 100.0,
+            risk_percentage: 1.0,
+            ..buy_config(20.0)
+        };
+        let mut candles = zigzag_candles(60);
+        candles.push(bullish_pinbar(BASE_TS + 60 * STEP_MS));
+
+        assert!(GoldMarketAnalyzer::analyze_market(&candles, &config).is_none());
     }
 }

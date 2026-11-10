@@ -1,5 +1,5 @@
 use crate::models::{BotConfig, DailyMacroReport, Signal};
-use chrono::{DateTime, Duration, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, Timelike, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -148,12 +148,18 @@ impl PersistentStore {
     }
 
     /// Bộ lọc khung giờ vàng 13:00-23:00 GMT+7 (tương đương 06:00-16:00 UTC).
+    /// Thị trường vàng đóng cửa cuối tuần nên thứ Bảy/Chủ Nhật luôn trả false.
     pub fn is_within_golden_session(now: DateTime<Utc>, session_filter_enabled: bool) -> bool {
         if !session_filter_enabled {
             return true;
         }
-        let vietnam_hour = (now.hour() as i64 + 7).rem_euclid(24);
-        (13..=23).contains(&vietnam_hour)
+
+        let vietnam_now = now + Duration::hours(7);
+        if matches!(vietnam_now.weekday(), Weekday::Sat | Weekday::Sun) {
+            return false;
+        }
+
+        (13..=23).contains(&(vietnam_now.hour() as i64))
     }
 }
 
@@ -330,6 +336,30 @@ mod tests {
         // Tắt filter -> luôn cho phép.
         assert!(PersistentStore::is_within_golden_session(
             at(2026, 11, 9, 3, 0),
+            false
+        ));
+    }
+
+    #[test]
+    fn test_golden_session_filter_excludes_weekends() {
+        // Thứ Bảy 07/11/2026 12:00 UTC = 19:00 giờ Việt Nam.
+        assert!(!PersistentStore::is_within_golden_session(
+            at(2026, 11, 7, 12, 0),
+            true
+        ));
+        // Chủ Nhật 08/11/2026 06:00 UTC = 13:00 giờ Việt Nam.
+        assert!(!PersistentStore::is_within_golden_session(
+            at(2026, 11, 8, 6, 0),
+            true
+        ));
+        // Thứ Hai 09/11/2026 06:00 UTC = 13:00 giờ Việt Nam.
+        assert!(PersistentStore::is_within_golden_session(
+            at(2026, 11, 9, 6, 0),
+            true
+        ));
+        // Tắt session filter -> cho phép cả cuối tuần.
+        assert!(PersistentStore::is_within_golden_session(
+            at(2026, 11, 7, 12, 0),
             false
         ));
     }
