@@ -67,6 +67,9 @@ const DEFAULT_CONFIG: BotConfig = {
   max_candle_age_secs: 120,
   htf_h4_filter_enabled: false,
   htf_d1_filter_enabled: false,
+  ai_signal_review_enabled: false,
+  ai_signal_review_min_confidence: 0.75,
+  ai_signal_review_fail_open: true,
 };
 
 export default function DashboardPage() {

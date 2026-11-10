@@ -62,6 +62,20 @@ impl TelegramNotifier {
         let price_action = Self::escape_html(&signal.price_action_notes);
         let volume_analysis = Self::escape_html(&signal.volume_analysis_notes);
         let rationale = Self::escape_html(&signal.full_rationale);
+        let ai_review_line = signal
+            .ai_verdict
+            .as_deref()
+            .map(|verdict| {
+                let confidence = signal.ai_confidence.unwrap_or(0.0).clamp(0.0, 1.0) * 100.0;
+                let reason = signal.ai_reason.as_deref().unwrap_or("");
+                format!(
+                    "🤖 <b>AI Risk Officer:</b> {} · confidence {:.0}%\n• {}\n",
+                    Self::escape_html(verdict),
+                    confidence,
+                    Self::escape_html(reason)
+                )
+            })
+            .unwrap_or_default();
 
         format!(
             "🚨 <b>GOLD SIGNAL ALERT | {}</b> 🚨\n\
@@ -83,6 +97,7 @@ impl TelegramNotifier {
             • <b>Price Action:</b> {}\n\
             • <b>Volume Absorption:</b> {}\n\
             • <b>Đánh giá:</b> {}\n\
+            {}\
             ━━━━━━━━━━━━━━━━━━━━━━\n\
             ⚠️ <i>Quản lý rủi ro tối đa 1-2% tài khoản. Chúc bạn giao dịch kỷ luật!</i>\n\
             ⚡ <i>Engine: Rust Gold Signal Bot v1.0 (Tokio/Axum)</i>",
@@ -109,7 +124,8 @@ impl TelegramNotifier {
             signal.recommended_lot_size,
             price_action,
             volume_analysis,
-            rationale
+            rationale,
+            ai_review_line
         )
     }
 
@@ -453,6 +469,9 @@ mod tests {
             retest_limit_price: Some(2680.00),
             data_source: "TWELVEDATA".to_string(),
             is_entry_filled: true,
+            ai_verdict: None,
+            ai_confidence: None,
+            ai_reason: None,
         }
     }
 
@@ -492,6 +511,29 @@ mod tests {
         assert!(message.contains("&amp; test"));
         assert!(message.contains("SRC&lt;&amp;&gt;"));
         assert!(!message.contains("SRC<&>"));
+    }
+
+    #[test]
+    fn format_signal_message_appends_escaped_ai_review() {
+        let mut signal = sample_signal();
+        signal.ai_verdict = Some("STANDBY<script>".to_string());
+        signal.ai_confidence = Some(0.87);
+        signal.ai_reason = Some("risk <high> & red news".to_string());
+
+        let message = TelegramNotifier::format_signal_message(&signal);
+
+        assert!(message.contains("AI Risk Officer:"));
+        assert!(message.contains("STANDBY&lt;script&gt;"));
+        assert!(message.contains("confidence 87%"));
+        assert!(message.contains("risk &lt;high&gt; &amp; red news"));
+        assert!(!message.contains("STANDBY<script>"));
+    }
+
+    #[test]
+    fn format_signal_message_omits_ai_review_when_absent() {
+        let signal = sample_signal();
+        let message = TelegramNotifier::format_signal_message(&signal);
+        assert!(!message.contains("AI Risk Officer"));
     }
 
     #[test]

@@ -8,6 +8,7 @@ use crate::models::{
 use crate::news_filter::{MacroBias, NewsFilterService};
 use crate::risk_manager::{PositionSizeResult, PositionSizer};
 use crate::scheduler::DailyScheduler;
+use crate::signal_review::{review_blocks_signal, review_signal};
 use crate::storage::{PersistentState, PersistentStore};
 use crate::telegram::TelegramNotifier;
 use crate::tracker::{compute_stats, evaluate_active_signals};
@@ -121,6 +122,8 @@ pub fn create_router(state: AppState) -> Router {
         )
         // Endpoint giả lập setup (is_simulated = true, không tiêu hao quota thật)
         .route("/api/simulate-setup", post(simulate_setup))
+        // Review thử tín hiệu bằng AI Risk Officer (không gửi Telegram, không tiêu hao quota)
+        .route("/api/ai/review-signal", post(ai_review_signal))
         .with_state(state)
 }
 
@@ -161,6 +164,7 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
         "sessionFilterEnabled": config.session_filter_enabled,
         "h4FilterEnabled": config.htf_h4_filter_enabled,
         "d1FilterEnabled": config.htf_d1_filter_enabled,
+        "aiReviewEnabled": config.ai_signal_review_enabled,
         "dataSource": active_data_source,
         "priceSource": price_source,
         "spotPrice": spot_price,
@@ -267,6 +271,116 @@ async fn htf_block_reason(
         None
     } else {
         Some(reason)
+    }
+}
+
+/// Chạy AI Risk Officer cho tín hiệu thật và trả lý do nếu bị chặn.
+/// Tín hiệu giả lập bỏ qua hoàn toàn. AI không bao giờ sửa SL/TP.
+async fn ai_review_block_reason(
+    state: &AppState,
+    config: &BotConfig,
+    signal: &mut Signal,
+) -> Option<String> {
+    if !config.ai_signal_review_enabled || signal.is_simulated {
+        return None;
+    }
+
+    let context = state.market_context.read().await.clone();
+    let events = state.news_filter.read().await.calendar_events.clone();
+    match review_signal(signal, context.as_ref(), config, &events).await {
+        Some(review) => {
+            signal.ai_verdict = Some(review.action.clone());
+            signal.ai_confidence = Some(review.confidence_score);
+            signal.ai_reason = Some(review.reason.clone());
+            let (blocked, reason) =
+                review_blocks_signal(signal, &review, config.ai_signal_review_min_confidence);
+            blocked.then_some(reason)
+        }
+        None => {
+            if config.ai_signal_review_fail_open {
+                warn!(
+                    "⚠️ [AI Risk Officer] Không có review cho {} {} — fail-open, cho tín hiệu qua.",
+                    signal.signal_type, signal.symbol
+                );
+                None
+            } else {
+                Some(format!(
+                    "AI risk review unavailable cho {} {} — fail-closed (ai_signal_review_fail_open=false).",
+                    signal.signal_type, signal.symbol
+                ))
+            }
+        }
+    }
+}
+
+/// POST /api/ai/review-signal — review thủ công từ dashboard.
+/// Không gửi Telegram và không tiêu hao quota.
+async fn ai_review_signal(
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let config = state.config.read().await.clone();
+    if !config.ai_signal_review_enabled {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "status": "disabled",
+                "message": "AI signal review đang TẮT (ai_signal_review_enabled=false)."
+            })),
+        );
+    }
+
+    let signal_value = payload
+        .get("signal")
+        .cloned()
+        .unwrap_or_else(|| payload.clone());
+    let signal: Signal = match serde_json::from_value(signal_value) {
+        Ok(signal) => signal,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "status": "error",
+                    "message": format!("Signal JSON không hợp lệ: {}", err)
+                })),
+            )
+        }
+    };
+
+    let context = match payload.get("context") {
+        Some(value) if !value.is_null() => {
+            match serde_json::from_value::<MarketContext>(value.clone()) {
+                Ok(context) => Some(context),
+                Err(err) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "status": "error",
+                            "message": format!("Market context JSON không hợp lệ: {}", err)
+                        })),
+                    )
+                }
+            }
+        }
+        _ => state.market_context.read().await.clone(),
+    };
+    let events = state.news_filter.read().await.calendar_events.clone();
+
+    match review_signal(&signal, context.as_ref(), &config, &events).await {
+        Some(review) => (
+            StatusCode::OK,
+            Json(json!({
+                "status": "success",
+                "review": review
+            })),
+        ),
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "status": "unavailable",
+                "message": "AI risk review unavailable (thiếu OPENCODE_GO_API_KEY, timeout hoặc phản hồi không hợp lệ)."
+            })),
+        ),
     }
 }
 
@@ -399,6 +513,21 @@ async fn receive_candle_webhook(
                 StatusCode::OK,
                 Json(json!({
                     "status": "blocked_by_htf",
+                    "reason": reason
+                })),
+            );
+        }
+
+        if let Some(reason) = ai_review_block_reason(&state, &config, &mut signal).await {
+            warn!(
+                "🤖 [Candle Webhook] AI Risk Officer chặn {}: {}",
+                signal.id, reason
+            );
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "blocked_by_ai_review",
+                    "action_taken": "DROPPED",
                     "reason": reason
                 })),
             );
@@ -720,7 +849,26 @@ async fn receive_tradingview_webhook(
         retest_limit_price: None,
         data_source: config.data_source.clone(),
         is_entry_filled: true,
+        ai_verdict: None,
+        ai_confidence: None,
+        ai_reason: None,
     };
+
+    // Bước 6b: AI Risk Officer tùy chọn (chỉ veto/standby, không sửa SL/TP).
+    if let Some(reason) = ai_review_block_reason(&state, &config, &mut signal).await {
+        warn!(
+            "🤖 [TradingView Webhook] AI Risk Officer chặn {}: {}",
+            signal.id, reason
+        );
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "status": "blocked_by_ai_review",
+                "action_taken": "DROPPED",
+                "reason": reason
+            })),
+        );
+    }
 
     // Bước 7: Bắn cảnh báo tức thì tới Telegram
     let telegram = state.telegram.read().await.clone();

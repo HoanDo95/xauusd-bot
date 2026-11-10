@@ -36,6 +36,12 @@ export const SignalModal: React.FC<Props> = ({
     typeof signal.confluence_score === 'number'
       ? `\n🎯 Điểm hội tụ kỹ thuật (Confluence): ${signal.confluence_score}/100`
       : '';
+  const aiConfidencePct = Math.round(
+    Math.min(1, Math.max(0, signal.ai_confidence ?? 0)) * 100
+  );
+  const aiTelegramLine = signal.ai_verdict
+    ? `\n🤖 AI Risk Officer: ${signal.ai_verdict} · confidence ${aiConfidencePct}%\n• ${signal.ai_reason ?? ''}`
+    : '';
 
   const baseTelegramMessage = `${simulationPrefix}🚨 GOLD SIGNAL ALERT | ${signal.symbol} 🚨
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -51,7 +57,7 @@ export const SignalModal: React.FC<Props> = ({
 🔍 Phân tích Kỹ thuật & Volume:
 • Price Action: ${signal.price_action_notes}
 • Volume Absorption: ${signal.volume_analysis_notes}
-• Đánh giá: ${signal.full_rationale}
+• Đánh giá: ${signal.full_rationale}${aiTelegramLine}
 ━━━━━━━━━━━━━━━━━━━━━━
 ⚠️ Quản lý rủi ro tối đa 1-2% tài khoản. Chúc bạn giao dịch kỷ luật!
 ⚡ Engine: Gold Sniper Bot v1.2 (Tokio/Axum + EMA50 Free Trend)`;
@@ -175,6 +181,37 @@ export const SignalModal: React.FC<Props> = ({
                 <span>
                   Source: <strong className="text-neutral-200">{signal.data_source}</strong>
                 </span>
+              )}
+            </div>
+          )}
+
+          {/* AI Chief Risk Officer (veto-only, advisory fields) */}
+          {signal.ai_verdict && (
+            <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-3.5 flex flex-col gap-2 text-xs">
+              <div className="flex flex-wrap items-center gap-2 font-mono">
+                <span className="text-indigo-300 font-bold">🤖 AI Chief Risk Officer</span>
+                <span
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                    signal.ai_verdict === 'STANDBY'
+                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                      : signal.ai_verdict === 'BUY'
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                        : signal.ai_verdict === 'SELL'
+                          ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                          : 'bg-neutral-800 text-neutral-300 border border-neutral-700'
+                  }`}
+                >
+                  {signal.ai_verdict}
+                </span>
+                <span className="text-neutral-400">
+                  confidence <strong className="text-indigo-200">{aiConfidencePct}%</strong>
+                </span>
+                <span className="text-[10px] text-neutral-500">veto-only · không đặt SL/TP live</span>
+              </div>
+              {signal.ai_reason && (
+                <p className="text-neutral-300 leading-relaxed">
+                  <span className="text-indigo-300 font-mono">•</span> {signal.ai_reason}
+                </p>
               )}
             </div>
           )}

@@ -1,4 +1,5 @@
 import type {
+  AiSignalReview,
   BotConfig,
   Candle,
   DailyMacroReport,
@@ -65,6 +66,14 @@ export interface HealthResponse {
   killSwitchActive?: boolean;
   /** Optional H4 trend filter state (default false). */
   h4FilterEnabled?: boolean;
+  /** Optional AI Chief Risk Officer veto gate (default false). */
+  aiReviewEnabled?: boolean;
+}
+
+export interface AiReviewResponse {
+  status: 'success' | 'disabled' | 'unavailable' | 'error';
+  review?: AiSignalReview;
+  message?: string;
 }
 
 export interface MacroBiasResponse {
@@ -215,6 +224,20 @@ export function sendSignalTelegram(
   return request<TelegramTestResponse & { messageId?: number }>('/api/telegram/send-signal', {
     method: 'POST',
     body: JSON.stringify({ signal, token, chatId }),
+  });
+}
+
+/**
+ * POST /api/ai/review-signal — manual AI Chief Risk Officer review.
+ * Veto-only and side-effect free: never sends Telegram or consumes the daily quota.
+ */
+export function reviewSignal(
+  signal: Signal,
+  context?: MarketContext | null
+): Promise<AiReviewResponse> {
+  return request<AiReviewResponse>('/api/ai/review-signal', {
+    method: 'POST',
+    body: JSON.stringify(context ? { signal, context } : { signal }),
   });
 }
 

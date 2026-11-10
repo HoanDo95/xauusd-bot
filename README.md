@@ -49,6 +49,7 @@ A production-oriented XAU/USD signal engine with **100% free market data**, a ha
 | US high-impact calendar | ForexFactory public JSON | none |
 | Trend | EMA50/200 computed locally | none |
 | Daily macro commentary (optional) | OpenCode Go (default), Gemini or OpenRouter | optional |
+| AI signal risk review (optional, veto-only) | OpenCode Go, default `gemini-4-argon` | optional |
 | Alerts | Telegram Bot API | `@BotFather` token |
 
 ### PAXG → XAU/USD spot basis calibration
@@ -108,6 +109,35 @@ calls an AI API.
 - The daily report bias is **advisory only**. The cron never writes it into
   `config.macro_bias`, so `AUTO` keeps following EMA50/200 dynamically; an
   explicit `BULLISH`/`BEARISH`/`NEUTRAL` choice is preserved.
+
+### Optional AI Chief Risk Officer (veto-only)
+
+`ai_signal_review_enabled` is **OFF by default**, so signal generation and
+Telegram delivery are unchanged unless you turn it on in **Sniper & Risk
+Config**. When enabled, the Rust engine asks OpenCode Go (default model
+`gemini-4-argon`, override with `AI_SIGNAL_REVIEW_MODEL`) to review each **real**
+signal before it is stored or sent to Telegram:
+
+- The AI may return `BUY`, `SELL` or `STANDBY` plus an advisory `entry_zone`,
+  `dynamic_sl`, `tp`, `macro_trend_h1_h4` and `reason`.
+- It is **veto-only**: a `STANDBY` verdict, an opposite direction, or confidence
+  below `ai_signal_review_min_confidence` (default `0.75`, range `0.5–1.0`)
+  blocks the signal. The AI can never change the live SL/TP or lot size.
+- The review prompt includes D1/H4/H1 bias, EMA50/200, channel position, ATR,
+  S/R, current price/spot basis, candidate side/entry/SL/TP/RR/lot, volume,
+  Vietnam session time and upcoming High-Impact USD events.
+- **Fail-open by default**: if `OPENCODE_GO_API_KEY` is missing, the request
+  errors/times out, or the JSON is malformed, the signal proceeds. Set
+  `ai_signal_review_fail_open=false` in the dashboard for fail-closed behaviour.
+- One review call per real signal (the daily Sniper quota still caps real
+  signals at 1/day by default). Simulated setups never call the AI and never
+  consume quota.
+- Blocked signals are not stored or sent, and `ai_verdict`, `ai_confidence` and
+  `ai_reason` are attached to accepted signals and shown in Telegram and the
+  dashboard modal.
+- Manual test endpoint: `POST /api/ai/review-signal` with
+  `{"signal": {...}, "context": {...}}` (or a raw signal). It returns
+  `{"status":"success","review":{...}}`, sends no Telegram and consumes no quota.
 
 ### Entry execution (dashboard config)
 
@@ -214,6 +244,7 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
 | `POST` | `/api/calculate-lot` | Lot size calculator; returns snake_case + camelCase fields |
 | `GET` | `/api/news-calendar` | ForexFactory events + kill switch |
 | `POST` | `/api/simulate-setup` | Simulated signal (never consumes live quota) |
+| `POST` | `/api/ai/review-signal` | Manual AI Risk Officer review (no Telegram, no quota) |
 | `POST` | `/api/telegram/test` | Telegram connection test |
 | `POST` | `/api/telegram/send-signal` | Send one existing signal to Telegram |
 | `POST` | `/api/webhook/tradingview` | TradingView alert (optional passphrase) |

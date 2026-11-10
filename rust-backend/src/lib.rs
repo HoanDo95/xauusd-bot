@@ -7,6 +7,7 @@ pub mod news_filter;
 pub mod risk_manager;
 pub mod scheduler;
 pub mod session_alerts;
+pub mod signal_review;
 pub mod storage;
 pub mod telegram;
 pub mod tracker;

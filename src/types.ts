@@ -94,6 +94,25 @@ export interface Signal {
   data_source?: string;
   /** Whether a limit/breakout entry has been filled. */
   is_entry_filled?: boolean;
+  /** AI Chief Risk Officer verdict: "BUY" | "SELL" | "STANDBY". Absent when review is off. */
+  ai_verdict?: string | null;
+  /** AI confidence 0..1 (advisory only; AI never sets live SL/TP). */
+  ai_confidence?: number | null;
+  /** Short AI risk explanation (advisory only). */
+  ai_reason?: string | null;
+}
+
+/** AI Chief Risk Officer review — veto-only, never live SL/TP. */
+export interface AiSignalReview {
+  action: 'BUY' | 'SELL' | 'STANDBY' | string;
+  confidence_score: number;
+  entry_zone?: string | null;
+  dynamic_sl?: number | null;
+  tp?: number | null;
+  macro_trend_h1_h4?: string | null;
+  reason: string;
+  provider: string;
+  model: string;
 }
 
 export interface PositionSizeCalculation {
@@ -177,6 +196,12 @@ export interface BotConfig {
   /** Optional H4 trend filter — blocks counter-H4 signals only when true. Default OFF. */
   htf_h4_filter_enabled: boolean;
   htf_d1_filter_enabled: boolean;
+  /** Optional AI Chief Risk Officer veto gate. Default OFF — no behavior change when false. */
+  ai_signal_review_enabled?: boolean;
+  /** Minimum AI confidence (0.5–1.0) required to let a signal through. Default 0.75. */
+  ai_signal_review_min_confidence?: number;
+  /** When AI errors/times out: true = pass (fail-open, default), false = block. */
+  ai_signal_review_fail_open?: boolean;
 }
 
 export interface DailyMacroReport {

@@ -317,6 +317,9 @@ mod tests {
             retest_limit_price: None,
             data_source: "BINANCE_PAXG".to_string(),
             is_entry_filled: true,
+            ai_verdict: None,
+            ai_confidence: None,
+            ai_reason: None,
         }
     }
 

@@ -230,6 +230,8 @@ OPENCODE_GO_BASE_URL="https://opencode.ai/inference/go/openai/v1"
 OPENCODE_GO_MODEL="gemini-4-argon"
 # Model alternatives: "deepseek-v4.1-flash" (cheap/reasoning),
 # "glm-5.3-flash" (fast/cheap).
+# Optional AI Chief Risk Officer model (veto-only real-signal review):
+AI_SIGNAL_REVIEW_MODEL="gemini-4-argon"
 GEMINI_API_KEY=""
 GEMINI_MODEL="gemini-2.5-flash"
 OPENROUTER_API_KEY=""
@@ -257,6 +259,26 @@ docker compose logs -f api   # logs provider/model, never the key
   **never** written to `config.macro_bias`, so `AUTO` stays dynamic and an
   explicit `BULLISH`/`BEARISH`/`NEUTRAL` setting is preserved.
 
+### Optional AI Chief Risk Officer (veto-only)
+
+The AI Risk Officer is **disabled by default** and is separate from the daily
+macro report. Enable it in **Sniper & Risk Config** (`ai_signal_review_enabled`),
+not in env. When enabled, each real signal is reviewed by OpenCode Go before
+Telegram/storage:
+
+- Model: `AI_SIGNAL_REVIEW_MODEL` (default `gemini-4-argon`); base URL:
+  `OPENCODE_GO_BASE_URL`; key: the existing `OPENCODE_GO_API_KEY`.
+- The AI may only approve, contradict or return `STANDBY`. It cannot set live
+  SL/TP; `dynamic_sl`/`tp` are advisory only.
+- Dashboard controls: `ai_signal_review_min_confidence` (`0.5–1.0`, default
+  `0.75`) and `ai_signal_review_fail_open` (default `true`). On AI error or
+  timeout, fail-open lets the deterministic signal proceed; set it to `false`
+  for fail-closed.
+- One review per real signal (daily Sniper quota still caps real signals at
+  1/day by default). Simulated setups skip AI and quota.
+- `POST /api/ai/review-signal` validates a signal manually without sending
+  Telegram or consuming quota. `GET /api/health` exposes `aiReviewEnabled`.
+
 ## 15. Runtime config vs environment
 
 Entry and session behaviour is **dashboard config**, persisted in
@@ -265,6 +287,8 @@ Entry and session behaviour is **dashboard config**, persisted in
 - `entry_mode` (`MARKET` / `LIMIT_RETEST` / `BREAKOUT`), `broker_price_offset`,
   `max_entry_drift_points`, `max_candle_age_secs`.
 - `session_alerts_enabled`, `session_alert_lead_minutes`, `session_filter_enabled`.
+- `ai_signal_review_enabled`, `ai_signal_review_min_confidence`,
+  `ai_signal_review_fail_open` (AI key/model stay in `rust-backend/.env`).
 
 Change them in **Sniper & Risk Config** and save; no container restart is needed.
 Environment variables are only for secrets/runtime wiring (Telegram, webhook

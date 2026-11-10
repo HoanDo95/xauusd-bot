@@ -208,6 +208,16 @@ pub struct Signal {
     /// Lệnh Limit/Breakout đã được khớp giá hay chưa.
     #[serde(default = "default_entry_filled")]
     pub is_entry_filled: bool,
+    /// Kết luận của AI Chief Risk Officer: "BUY" | "SELL" | "STANDBY".
+    /// None = AI review tắt/không chạy. AI chỉ được veto, không đặt SL/TP live.
+    #[serde(default)]
+    pub ai_verdict: Option<String>,
+    /// Độ tin cậy AI 0.0..=1.0 (advisory).
+    #[serde(default)]
+    pub ai_confidence: Option<f64>,
+    /// Lý do ngắn gọn từ AI Risk Officer (advisory).
+    #[serde(default)]
+    pub ai_reason: Option<String>,
 }
 
 fn default_entry_filled() -> bool {
@@ -296,6 +306,16 @@ pub struct BotConfig {
     /// Mặc định TẮT.
     #[serde(default)]
     pub htf_d1_filter_enabled: bool,
+    /// Bật AI Chief Risk Officer review trước khi gửi/lưu tín hiệu thật.
+    /// Mặc định TẮT — không thay đổi hành vi tín hiệu hiện tại.
+    #[serde(default)]
+    pub ai_signal_review_enabled: bool,
+    /// Ngưỡng confidence tối thiểu để cho qua (0.5..=1.0, mặc định 0.75).
+    #[serde(default = "default_ai_signal_review_min_confidence")]
+    pub ai_signal_review_min_confidence: f64,
+    /// Khi AI lỗi/timeout: true = cho tín hiệu qua (fail-open), false = chặn.
+    #[serde(default = "default_true")]
+    pub ai_signal_review_fail_open: bool,
 }
 
 fn default_max_signals_per_day() -> usize {
@@ -334,6 +354,10 @@ fn default_session_alert_lead_minutes() -> i64 {
     60
 }
 
+fn default_ai_signal_review_min_confidence() -> f64 {
+    0.75
+}
+
 impl Default for BotConfig {
     fn default() -> Self {
         Self {
@@ -369,6 +393,9 @@ impl Default for BotConfig {
             session_alert_lead_minutes: default_session_alert_lead_minutes(),
             htf_h4_filter_enabled: false,
             htf_d1_filter_enabled: false,
+            ai_signal_review_enabled: false,
+            ai_signal_review_min_confidence: default_ai_signal_review_min_confidence(),
+            ai_signal_review_fail_open: true,
         }
     }
 }
@@ -428,6 +455,8 @@ impl BotConfig {
         self.max_entry_drift_points = finite_or(self.max_entry_drift_points, 2.5).clamp(0.5, 10.0);
         self.max_candle_age_secs = self.max_candle_age_secs.clamp(30, 900);
         self.session_alert_lead_minutes = self.session_alert_lead_minutes.clamp(15, 120);
+        self.ai_signal_review_min_confidence =
+            finite_or(self.ai_signal_review_min_confidence, 0.75).clamp(0.5, 1.0);
 
         self.telegram_bot_token = self.telegram_bot_token.trim().to_string();
         self.telegram_chat_id = self.telegram_chat_id.trim().to_string();
@@ -649,6 +678,60 @@ mod tests {
         }
         .sanitized();
         assert!(enabled.htf_h4_filter_enabled);
+    }
+
+    #[test]
+    fn ai_signal_review_defaults_off_and_is_backward_compatible() {
+        let defaults = BotConfig::default();
+        assert!(!defaults.ai_signal_review_enabled);
+        assert_eq!(defaults.ai_signal_review_min_confidence, 0.75);
+        assert!(defaults.ai_signal_review_fail_open);
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        object.remove("ai_signal_review_enabled");
+        object.remove("ai_signal_review_min_confidence");
+        object.remove("ai_signal_review_fail_open");
+
+        let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(!config.ai_signal_review_enabled);
+        assert_eq!(config.ai_signal_review_min_confidence, 0.75);
+        assert!(config.ai_signal_review_fail_open);
+    }
+
+    #[test]
+    fn sanitize_clamps_ai_signal_review_confidence() {
+        let too_low = BotConfig {
+            ai_signal_review_min_confidence: 0.1,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(too_low.ai_signal_review_min_confidence, 0.5);
+
+        let too_high = BotConfig {
+            ai_signal_review_min_confidence: 99.0,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(too_high.ai_signal_review_min_confidence, 1.0);
+
+        let non_finite = BotConfig {
+            ai_signal_review_min_confidence: f64::NAN,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(non_finite.ai_signal_review_min_confidence, 0.75);
+
+        let valid = BotConfig {
+            ai_signal_review_enabled: true,
+            ai_signal_review_min_confidence: 0.82,
+            ai_signal_review_fail_open: false,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert!(valid.ai_signal_review_enabled);
+        assert_eq!(valid.ai_signal_review_min_confidence, 0.82);
+        assert!(!valid.ai_signal_review_fail_open);
     }
 
     #[test]

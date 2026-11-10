@@ -111,6 +111,12 @@ interface BotConfig {
   max_candle_age_secs: number;
   htf_h4_filter_enabled: boolean;
   htf_d1_filter_enabled: boolean;
+  /** Optional AI Chief Risk Officer veto gate. Default false — no behavior change. */
+  ai_signal_review_enabled: boolean;
+  /** Minimum AI confidence (0.5–1.0) to allow a real signal. Default 0.75. */
+  ai_signal_review_min_confidence: number;
+  /** AI error/timeout policy: true = pass (fail-open), false = block. Default true. */
+  ai_signal_review_fail_open: boolean;
 }
 
 interface DailyMacroReport {
@@ -243,6 +249,9 @@ const DEFAULT_CONFIG: BotConfig = {
   max_candle_age_secs: 120,
   htf_h4_filter_enabled: false,
   htf_d1_filter_enabled: false,
+  ai_signal_review_enabled: false,
+  ai_signal_review_min_confidence: 0.75,
+  ai_signal_review_fail_open: true,
 };
 
 function normalizeConfig(input: Partial<BotConfig>): BotConfig {
@@ -363,6 +372,22 @@ function normalizeConfig(input: Partial<BotConfig>): BotConfig {
     htf_d1_filter_enabled: booleanOr(
       input.htf_d1_filter_enabled,
       base.htf_d1_filter_enabled
+    ),
+    ai_signal_review_enabled: booleanOr(
+      input.ai_signal_review_enabled,
+      base.ai_signal_review_enabled
+    ),
+    ai_signal_review_min_confidence: clamp(
+      numeric(
+        input.ai_signal_review_min_confidence,
+        base.ai_signal_review_min_confidence
+      ),
+      0.5,
+      1.0
+    ),
+    ai_signal_review_fail_open: booleanOr(
+      input.ai_signal_review_fail_open,
+      base.ai_signal_review_fail_open
     ),
   };
 }
@@ -1554,6 +1579,7 @@ async function startServer() {
       killSwitchActive: kill.active,
       h4FilterEnabled: config.htf_h4_filter_enabled,
       d1FilterEnabled: config.htf_d1_filter_enabled,
+      aiReviewEnabled: config.ai_signal_review_enabled,
       tradingviewWebhook: '/api/webhook/tradingview',
     });
   });

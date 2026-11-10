@@ -9,6 +9,7 @@ use gold_signal_bot::market_feed::{MarketDataFeed, MarketFeedSnapshot};
 use gold_signal_bot::models::{BotConfig, Timeframe};
 use gold_signal_bot::news_filter::{ImpactLevel, NewsFilterConfig, NewsFilterService};
 use gold_signal_bot::scheduler::DailyScheduler;
+use gold_signal_bot::signal_review::{review_blocks_signal, review_signal};
 use gold_signal_bot::storage::PersistentStore;
 use gold_signal_bot::telegram::TelegramNotifier;
 use std::net::SocketAddr;
@@ -407,6 +408,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 signal.signal_type, signal.symbol, reason
                             );
                             continue;
+                        }
+                    }
+                }
+
+                // 6.7c AI Chief Risk Officer tùy chọn (mặc định OFF).
+                // AI chỉ được veto/standby; không bao giờ sửa SL/TP live.
+                if config.ai_signal_review_enabled {
+                    let context = scanner_state.market_context.read().await.clone();
+                    let events = scanner_state
+                        .news_filter
+                        .read()
+                        .await
+                        .calendar_events
+                        .clone();
+
+                    match review_signal(&signal, context.as_ref(), &config, &events).await {
+                        Some(review) => {
+                            signal.ai_verdict = Some(review.action.clone());
+                            signal.ai_confidence = Some(review.confidence_score);
+                            signal.ai_reason = Some(review.reason.clone());
+
+                            let (blocked, reason) = review_blocks_signal(
+                                &signal,
+                                &review,
+                                config.ai_signal_review_min_confidence,
+                            );
+                            if blocked {
+                                warn!(
+                                    "🤖 [AI Risk Officer] Bỏ qua {} {}: {}",
+                                    signal.signal_type, signal.symbol, reason
+                                );
+                                continue;
+                            }
+                            info!(
+                                "✅ [AI Risk Officer] Cho qua {} {} — {}",
+                                signal.signal_type, signal.symbol, reason
+                            );
+                        }
+                        None => {
+                            if config.ai_signal_review_fail_open {
+                                warn!(
+                                    "⚠️ [AI Risk Officer] Không có review cho {} {} — fail-open, cho tín hiệu qua.",
+                                    signal.signal_type, signal.symbol
+                                );
+                            } else {
+                                warn!(
+                                    "🛑 [AI Risk Officer] Không có review cho {} {} — fail-closed, bỏ qua tín hiệu.",
+                                    signal.signal_type, signal.symbol
+                                );
+                                continue;
+                            }
                         }
                     }
                 }

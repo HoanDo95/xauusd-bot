@@ -429,6 +429,9 @@ impl GoldMarketAnalyzer {
                             retest_limit_price: Some(retest_limit_price),
                             data_source: config.data_source.clone(),
                             is_entry_filled,
+                            ai_verdict: None,
+                            ai_confidence: None,
+                            ai_reason: None,
                         });
                     }
                 }
@@ -561,6 +564,9 @@ impl GoldMarketAnalyzer {
                             retest_limit_price: Some(retest_limit_price),
                             data_source: config.data_source.clone(),
                             is_entry_filled,
+                            ai_verdict: None,
+                            ai_confidence: None,
+                            ai_reason: None,
                         });
                     }
                 }
