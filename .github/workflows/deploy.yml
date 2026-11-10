@@ -43,6 +43,8 @@ jobs:
             --exclude 'backups' \
             --exclude 'node_modules' \
             --exclude 'dist' \
+            --exclude 'out' \
+            --exclude '.next' \
             --exclude 'target' \
             --exclude '.git' \
             "$GITHUB_WORKSPACE/" "$DEPLOY_DIR/"

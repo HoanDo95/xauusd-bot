@@ -16,7 +16,7 @@ ci.yml ──► build-push.yml ──► GHCR images ──► deploy.yml
                               ┌─────────────────────────┴─────────────────────────┐
                               ▼                                                   ▼
                      xauusd-api (Rust Axum)                              xauusd-web (Nginx)
-                     - scanner 24/7                                       - serves Vite dist/
+                     - scanner 24/7                                       - serves Next.js out/
                      - Telegram alerts                                    - proxies /api → api:8090
                      - data/bot_state.json
 ```

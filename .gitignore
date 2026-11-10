@@ -1,7 +1,9 @@
 node_modules/
 build/
 dist/
+out/
 coverage/
+*.tsbuildinfo
 data/
 backups/
 .DS_Store

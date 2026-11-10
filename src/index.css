@@ -1,6 +1,0 @@
-/*
- * Vite entry stylesheet. The Next.js App Router uses `src/app/globals.css`
- * directly from `src/app/layout.tsx`; keeping this import means both runtimes
- * share exactly the same design tokens and base styles.
- */
-@import "./app/globals.css";

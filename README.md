@@ -218,6 +218,32 @@ ci.yml (self-hosted)  →  build-push.yml (GHCR)  →  deploy.yml (self-hosted)
 - `docker-compose.build.yml` — local build overlay.
 - `docker-compose.observability.yml` — optional Dozzle log UI.
 
+### Source layout (standardized)
+
+```text
+rust-backend/src/
+  main.rs                 # thin bootstrap only
+  worker.rs               # 60s scanner, 15m HTF, 07:00 cron, session alerts
+  api/
+    mod.rs                # AppState + router + shared filter helpers
+    health.rs  signals.rs  market.rs  config.rs
+    webhooks.rs  ai.rs  news.rs  telegram.rs  simulation.rs
+  analyzer.rs  models.rs  storage.rs  market_feed.rs
+  news_filter.rs  scheduler.rs  telegram.rs  risk_manager.rs
+  market_context.rs  rsi.rs  volume_delta.rs  signal_review.rs
+  tracker.rs  session_alerts.rs
+
+src/app/
+  layout.tsx  page.tsx  globals.css   # single Next.js App Router runtime
+src/components/                       # dashboard client components
+src/lib/api.ts                        # typed API client
+server.ts                             # legacy Express fallback only
+```
+
+The dashboard is **Next.js App Router only**; the old Vite entrypoints were
+removed. Production builds a static `out/` bundle (`npm run build:static`) and
+nginx serves it while proxying `/api` to the Rust engine.
+
 See **[DEPLOYMENT.md](DEPLOYMENT.md)** for the full server/runner/GHCR runbook.
 
 ## Run locally (no API keys)
@@ -236,7 +262,7 @@ Verify:
 
 ```bash
 cd rust-backend && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
-cd .. && npm run lint && npm run build
+cd .. && npm run lint && npm run build && npm run build:static
 ```
 
 ## Docker (local)

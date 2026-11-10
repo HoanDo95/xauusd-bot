@@ -1,5 +1,7 @@
 node_modules
 dist
+out
+.next
 rust-backend/target
 rust-backend/data
 backups
@@ -10,4 +12,3 @@ backups
 README.md
 server.ts
 metadata.json
-next.config.mjs

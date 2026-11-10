@@ -13,3 +13,4 @@ pub mod storage;
 pub mod telegram;
 pub mod tracker;
 pub mod volume_delta;
+pub mod worker;

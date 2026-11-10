@@ -1,14 +1,26 @@
+import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 import './globals.css';
 
-// Next.js App Router metadata (free-standing object avoids a hard dependency on
-// the `next` package while the Vite dev server remains the default runner).
-export const metadata = {
-  title: 'Gold Signal Bot — 1 Signal/Day Sniper Mode',
-  description:
-    'XAU/USD Sniper engine with free live Binance PAXG data, ForexFactory news kill switch, EMA50 trend bias, dynamic S/R, Telegram alerts and a hard 1-signal-per-day quota.',
+const title = 'Gold Signal Bot — 1 Signal/Day Sniper Mode';
+const description =
+  'XAU/USD Sniper engine with free live Binance PAXG data, ForexFactory news kill switch, EMA50 trend bias, dynamic S/R, Telegram alerts and a hard 1-signal-per-day quota.';
+
+export const metadata: Metadata = {
+  title,
+  description,
   applicationName: 'Gold Signal Bot',
   keywords: ['XAU/USD', 'Gold', 'Sniper', 'Trading', 'Telegram', 'Binance PAXG'],
+  openGraph: {
+    title,
+    description,
+    type: 'website',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title,
+    description,
+  },
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

@@ -1,6 +1,5 @@
 import 'dotenv/config';
 import express, { Request, Response } from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 
@@ -2234,18 +2233,30 @@ async function startServer() {
     });
   });
 
-  /* Vite integration for local development / production SPA */
-  if (process.env.NODE_ENV === 'production') {
-    app.use(express.static(path.resolve(process.cwd(), 'dist')));
+  /* Static dashboard bundle for the legacy Express fallback server.
+   * Prefer the Next.js static export (`out/`), then the historical static
+   * output (`dist/`). Run `npm run build:static` first. */
+  const staticCandidates = [
+    path.resolve(process.cwd(), 'out'),
+    path.resolve(process.cwd(), 'dist'),
+  ];
+  const staticDir = staticCandidates.find((dir) => fs.existsSync(path.join(dir, 'index.html')));
+
+  if (staticDir) {
+    app.use(express.static(staticDir));
     app.get('*', (_req: Request, res: Response) => {
-      res.sendFile(path.resolve(process.cwd(), 'dist', 'index.html'));
+      res.sendFile(path.join(staticDir, 'index.html'));
     });
+    console.log(`[Gold Signal Bot Server] Serving dashboard from ${staticDir}`);
   } else {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
+    app.get('*', (_req: Request, res: Response) => {
+      res
+        .status(503)
+        .type('text/plain')
+        .send(
+          'Dashboard bundle not found. Run `npm run build:static` to create the Next.js static export in out/, then restart this server.'
+        );
     });
-    app.use(vite.middlewares);
   }
 
   app.listen(PORT, '0.0.0.0', () => {
