@@ -265,6 +265,7 @@ async fn receive_candle_webhook(
         low: payload.low,
         close: payload.close,
         volume: payload.volume,
+        taker_buy_volume: 0.0,
         timeframe,
     };
 
@@ -432,6 +433,7 @@ async fn receive_tradingview_webhook(
             low: payload.low.unwrap_or(payload.price - 1.0),
             close: payload.close.unwrap_or(payload.price),
             volume: payload.volume.unwrap_or(1500.0),
+            taker_buy_volume: 0.0,
             timeframe: Timeframe::M15,
         };
         push_candle(&state, candle.clone()).await;
@@ -940,6 +942,7 @@ async fn simulate_setup(
                 low: round2(low),
                 close: round2(close),
                 volume: round2(volume_ma * (config.volume_surge_multiplier + 0.35)),
+                taker_buy_volume: 0.0,
                 timeframe: config.timeframe,
             }
         }
@@ -961,6 +964,7 @@ async fn simulate_setup(
                 low: round2(low),
                 close: round2(close),
                 volume: round2(volume_ma * (config.volume_surge_multiplier + 0.4)),
+                taker_buy_volume: 0.0,
                 timeframe: config.timeframe,
             }
         }
@@ -979,6 +983,7 @@ async fn simulate_setup(
                 low,
                 close,
                 volume: round2(volume_ma * (0.9 + phase * 0.5)),
+                taker_buy_volume: 0.0,
                 timeframe: config.timeframe,
             }
         }

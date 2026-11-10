@@ -328,6 +328,7 @@ mod tests {
             low,
             close,
             volume: 1000.0,
+            taker_buy_volume: 0.0,
             timeframe: Timeframe::M15,
         }
     }

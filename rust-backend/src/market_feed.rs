@@ -432,6 +432,14 @@ impl MarketDataFeed {
                 continue;
             }
 
+            // Binance kline field 9 = taker buy base asset volume.
+            let taker_buy_volume = items
+                .get(9)
+                .and_then(value_to_f64)
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .map(round2)
+                .unwrap_or(0.0);
+
             // Cây nến đang chạy: close_time nằm trong tương lai -> chỉ lấy close làm live price.
             if close_time > now_ms {
                 live_price = Some(close);
@@ -445,6 +453,7 @@ impl MarketDataFeed {
                 low,
                 close,
                 volume,
+                taker_buy_volume,
                 timeframe,
             });
         }
@@ -517,6 +526,7 @@ impl MarketDataFeed {
                 low,
                 close,
                 volume,
+                taker_buy_volume: 0.0,
                 timeframe,
             });
         }
@@ -563,6 +573,7 @@ impl MarketDataFeed {
                 low: round2(low),
                 close: round2(close),
                 volume: round2(volume),
+                taker_buy_volume: 0.0,
                 timeframe,
             });
 
@@ -655,7 +666,7 @@ mod tests {
                 1_700_001_799_999_i64,
                 "0",
                 10,
-                "0",
+                "75.55",
                 "0",
                 "0"
             ]
@@ -671,6 +682,7 @@ mod tests {
         assert_eq!(candles[0].timestamp, 1_700_000_000_000);
         assert!((candles[1].close - 2012.75).abs() < 1e-9);
         assert!((candles[1].volume - 150.10).abs() < 1e-9);
+        assert!((candles[1].taker_buy_volume - 75.55).abs() < 1e-9);
         assert_eq!(candles[1].timeframe, Timeframe::M15);
 
         // now rơi vào cây nến thứ 2 -> cây chưa đóng cửa bị loại bỏ.
@@ -681,6 +693,24 @@ mod tests {
         );
         assert_eq!(closed_only.len(), 1);
         assert_eq!(closed_only[0].timestamp, 1_700_000_000_000);
+    }
+
+    #[test]
+    fn test_parse_binance_klines_defaults_missing_taker_buy_volume() {
+        let payload = json!([[
+            1_700_000_000_000_i64,
+            "2000.10",
+            "2010.50",
+            "1995.00",
+            "2005.25",
+            "123.45",
+            1_700_000_899_999_i64
+        ]]);
+
+        let candles =
+            MarketDataFeed::parse_binance_klines_with_now(&payload, Timeframe::M15, i64::MAX);
+        assert_eq!(candles.len(), 1);
+        assert_eq!(candles[0].taker_buy_volume, 0.0);
     }
 
     #[test]
@@ -837,6 +867,7 @@ mod tests {
                 low: 1995.0,
                 close: 2002.34,
                 volume: 100.0,
+                taker_buy_volume: 0.0,
                 timeframe: Timeframe::M15,
             }],
             source: "TWELVEDATA".to_string(),
@@ -894,6 +925,7 @@ mod tests {
                 low: 1995.0,
                 close: 2002.34,
                 volume: 100.0,
+                taker_buy_volume: 0.0,
                 timeframe: Timeframe::M15,
             }],
             source: "BINANCE_PAXG".to_string(),
@@ -920,6 +952,7 @@ mod tests {
                 low: 1999.0,
                 close: 2000.5,
                 volume: 100.0,
+                taker_buy_volume: 0.0,
                 timeframe: Timeframe::M15,
             }],
             source: "BINANCE_PAXG".to_string(),

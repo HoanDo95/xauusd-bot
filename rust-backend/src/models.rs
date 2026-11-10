@@ -34,6 +34,11 @@ pub struct Candle {
     pub low: f64,
     pub close: f64,
     pub volume: f64,
+    /// Binance kline field 9: taker buy base asset volume. TwelveData/fallback
+    /// candles do not expose this field, so it defaults to 0.0 for compatibility
+    /// with older cached state and third-party feeds.
+    #[serde(default)]
+    pub taker_buy_volume: f64,
     pub timeframe: Timeframe,
 }
 
@@ -473,6 +478,36 @@ mod tests {
             EntryType::Breakout
         );
         assert_eq!(EntryType::default(), EntryType::Market);
+    }
+
+    #[test]
+    fn candle_taker_buy_volume_defaults_for_legacy_json() {
+        let legacy = serde_json::json!({
+            "timestamp": 1_700_000_000_000_i64,
+            "open": 2000.0,
+            "high": 2005.0,
+            "low": 1995.0,
+            "close": 2001.0,
+            "volume": 100.0,
+            "timeframe": "M15"
+        });
+
+        let candle: Candle =
+            serde_json::from_value(legacy).expect("legacy candle without taker volume");
+        assert_eq!(candle.taker_buy_volume, 0.0);
+
+        let with_taker = serde_json::json!({
+            "timestamp": 1_700_000_000_000_i64,
+            "open": 2000.0,
+            "high": 2005.0,
+            "low": 1995.0,
+            "close": 2001.0,
+            "volume": 100.0,
+            "taker_buy_volume": 42.5,
+            "timeframe": "M15"
+        });
+        let candle: Candle = serde_json::from_value(with_taker).expect("candle with taker volume");
+        assert_eq!(candle.taker_buy_volume, 42.5);
     }
 
     #[test]

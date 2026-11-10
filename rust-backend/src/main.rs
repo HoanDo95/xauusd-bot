@@ -461,6 +461,7 @@ mod tests {
                 low: last_close,
                 close: last_close,
                 volume: 100.0,
+                taker_buy_volume: 0.0,
                 timeframe: Timeframe::M15,
             }],
             source: "BINANCE_PAXG".to_string(),
