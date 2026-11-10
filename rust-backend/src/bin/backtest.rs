@@ -116,6 +116,18 @@ enum Variant {
     Scale50Tp1Be15,
     ConfirmationSoft,
     TpStructure,
+    TpStructureSoft,
+    TpStructureH4,
+    HtfH4,
+    HtfH1Channel,
+    HtfCombined,
+    HtfCombinedTpStructure,
+    SwingSl,
+    SwingSlHtf,
+    Partial25At20,
+    TrailAfter20,
+    Partial25Trail,
+    HtfCombinedPartial25Trail,
 }
 
 impl Variant {
@@ -133,6 +145,18 @@ impl Variant {
             "scale_50_tp1_be_15" => Some(Self::Scale50Tp1Be15),
             "confirmation_soft" => Some(Self::ConfirmationSoft),
             "tp_structure" => Some(Self::TpStructure),
+            "tp_structure_soft" => Some(Self::TpStructureSoft),
+            "tp_structure_h4" => Some(Self::TpStructureH4),
+            "htf_h4" => Some(Self::HtfH4),
+            "htf_h1_channel" => Some(Self::HtfH1Channel),
+            "htf_combined" => Some(Self::HtfCombined),
+            "htf_combined_tp_structure" => Some(Self::HtfCombinedTpStructure),
+            "swing_sl" => Some(Self::SwingSl),
+            "swing_sl_htf" => Some(Self::SwingSlHtf),
+            "partial_25_at_20" => Some(Self::Partial25At20),
+            "trail_after_20" => Some(Self::TrailAfter20),
+            "partial_25_trail" => Some(Self::Partial25Trail),
+            "htf_combined_partial_25_trail" => Some(Self::HtfCombinedPartial25Trail),
             _ => None,
         }
     }
@@ -151,6 +175,18 @@ impl Variant {
             Self::Scale50Tp1Be15 => "scale_50_tp1_be_15",
             Self::ConfirmationSoft => "confirmation_soft",
             Self::TpStructure => "tp_structure",
+            Self::TpStructureSoft => "tp_structure_soft",
+            Self::TpStructureH4 => "tp_structure_h4",
+            Self::HtfH4 => "htf_h4",
+            Self::HtfH1Channel => "htf_h1_channel",
+            Self::HtfCombined => "htf_combined",
+            Self::HtfCombinedTpStructure => "htf_combined_tp_structure",
+            Self::SwingSl => "swing_sl",
+            Self::SwingSlHtf => "swing_sl_htf",
+            Self::Partial25At20 => "partial_25_at_20",
+            Self::TrailAfter20 => "trail_after_20",
+            Self::Partial25Trail => "partial_25_trail",
+            Self::HtfCombinedPartial25Trail => "htf_combined_partial_25_trail",
         }
     }
 }
@@ -202,7 +238,11 @@ fn print_usage() {
            --out <PATH>            JSON report path\n\
            --variants <LIST>       Comma-separated: baseline,tp_band,partial_be,confirm_session,\n\
                                    time_out_02am,time_out_02am_all,be_15,be_20,\n\
-                                   scale_50_tp1,scale_50_tp1_be_15,confirmation_soft,tp_structure\n\
+                                   scale_50_tp1,scale_50_tp1_be_15,confirmation_soft,tp_structure,\n\
+                                   tp_structure_soft,tp_structure_h4,htf_h4,htf_h1_channel,\n\
+                                   htf_combined,htf_combined_tp_structure,swing_sl,swing_sl_htf,\n\
+                                   partial_25_at_20,trail_after_20,partial_25_trail,\n\
+                                   htf_combined_partial_25_trail\n\
            --early-be <POINTS>     Early break-even distance for partial_be (default: 0 = off)\n\
            --cost-usd <USD>        Round-turn spread+slippage cost in USD/oz, subtracted\n\
                                    as cost_usd / risk from every trade R (default: 0)\n\
@@ -705,6 +745,407 @@ fn last_closed_index(candles: &[Candle], timeframe: Timeframe, as_of_ms: i64) ->
     count.checked_sub(1)
 }
 
+// ---------------------------------------------------------------------------
+// Phase 1B: D1/H4/H1 context
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HtfFrame {
+    D1,
+    H4,
+    H1,
+}
+
+impl HtfFrame {
+    fn millis(self) -> i64 {
+        match self {
+            Self::D1 => 24 * 60 * 60 * 1000,
+            Self::H4 => 4 * 60 * 60 * 1000,
+            Self::H1 => 60 * 60 * 1000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HtfCandle {
+    timestamp: i64,
+    high: f64,
+    low: f64,
+    close: f64,
+}
+
+trait OhlcBar {
+    fn high(&self) -> f64;
+    fn low(&self) -> f64;
+    fn close(&self) -> f64;
+}
+
+impl OhlcBar for Candle {
+    fn high(&self) -> f64 {
+        self.high
+    }
+
+    fn low(&self) -> f64 {
+        self.low
+    }
+
+    fn close(&self) -> f64 {
+        self.close
+    }
+}
+
+impl OhlcBar for HtfCandle {
+    fn high(&self) -> f64 {
+        self.high
+    }
+
+    fn low(&self) -> f64 {
+        self.low
+    }
+
+    fn close(&self) -> f64 {
+        self.close
+    }
+}
+
+/// Aggregate M15 candles into UTC-aligned D1/H4/H1 buckets.
+///
+/// D1 buckets start at 00:00 UTC, H4 at 00/04/08/12/16/20 UTC, and H1 at the
+/// top of each UTC hour. Input must be sorted by timestamp.
+fn aggregate_htf(candles: &[Candle], bucket_ms: i64) -> Vec<HtfCandle> {
+    if bucket_ms <= 0 {
+        return Vec::new();
+    }
+
+    let mut aggregated = Vec::new();
+    let mut iter = candles.iter().peekable();
+
+    while let Some(first) = iter.next() {
+        let bucket = first.timestamp.div_euclid(bucket_ms) * bucket_ms;
+        let mut high = first.high;
+        let mut low = first.low;
+        let mut close = first.close;
+
+        while let Some(next) = iter.peek() {
+            if next.timestamp.div_euclid(bucket_ms) * bucket_ms != bucket {
+                break;
+            }
+            let next = iter.next().expect("peeked candle");
+            high = high.max(next.high);
+            low = low.min(next.low);
+            close = next.close;
+        }
+
+        aggregated.push(HtfCandle {
+            timestamp: bucket,
+            high,
+            low,
+            close,
+        });
+    }
+
+    aggregated
+}
+
+fn ema_series(values: &[f64], period: usize) -> Vec<Option<f64>> {
+    let mut series = vec![None; values.len()];
+    if period == 0 || values.len() < period {
+        return series;
+    }
+
+    let seed = values[..period].iter().sum::<f64>() / period as f64;
+    series[period - 1] = Some(seed);
+    let alpha = 2.0 / (period as f64 + 1.0);
+    let mut previous = seed;
+
+    for (index, value) in values.iter().enumerate().skip(period) {
+        previous = value * alpha + previous * (1.0 - alpha);
+        series[index] = Some(previous);
+    }
+
+    series
+}
+
+/// Simple ATR14: arithmetic mean of the last 14 true ranges.
+fn atr14_at<T: OhlcBar>(candles: &[T], index: usize) -> Option<f64> {
+    if index < 14 || index >= candles.len() {
+        return None;
+    }
+
+    let start = index + 1 - 14;
+    let mut true_range_sum = 0.0;
+    for pair in candles[start - 1..=index].windows(2) {
+        let previous_close = pair[0].close();
+        let candle = &pair[1];
+        let true_range = (candle.high() - candle.low())
+            .max((candle.high() - previous_close).abs())
+            .max((candle.low() - previous_close).abs());
+        true_range_sum += true_range;
+    }
+
+    Some(true_range_sum / 14.0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bias {
+    Bullish,
+    Bearish,
+    Neutral,
+}
+
+struct HtfSeries {
+    frame: HtfFrame,
+    candles: Vec<HtfCandle>,
+    ema50: Vec<Option<f64>>,
+    ema200: Vec<Option<f64>>,
+    atr14: Vec<Option<f64>>,
+}
+
+impl HtfSeries {
+    fn build(m15: &[Candle], frame: HtfFrame) -> Self {
+        Self::from_aggregated(frame, aggregate_htf(m15, frame.millis()))
+    }
+
+    fn from_aggregated(frame: HtfFrame, candles: Vec<HtfCandle>) -> Self {
+        let closes: Vec<f64> = candles.iter().map(|candle| candle.close).collect();
+        let ema50 = ema_series(&closes, 50);
+        let ema200 = ema_series(&closes, 200);
+        let atr14 = (0..candles.len())
+            .map(|index| atr14_at(&candles, index))
+            .collect();
+
+        Self {
+            frame,
+            candles,
+            ema50,
+            ema200,
+            atr14,
+        }
+    }
+
+    /// Last candle fully closed at or before `as_of_ms`.
+    fn last_closed_index(&self, as_of_ms: i64) -> Option<usize> {
+        let count = self
+            .candles
+            .partition_point(|candle| candle.timestamp + self.frame.millis() <= as_of_ms);
+        count.checked_sub(1)
+    }
+
+    fn bias(&self, index: usize) -> Bias {
+        let (Some(close), Some(ema50), Some(ema200)) = (
+            self.candles.get(index).map(|candle| candle.close),
+            self.ema50.get(index).copied().flatten(),
+            self.ema200.get(index).copied().flatten(),
+        ) else {
+            return Bias::Neutral;
+        };
+
+        if close > ema50 && ema50 > ema200 {
+            Bias::Bullish
+        } else if close < ema50 && ema50 < ema200 {
+            Bias::Bearish
+        } else {
+            Bias::Neutral
+        }
+    }
+
+    fn channel_position(&self, index: usize, period: usize) -> Option<f64> {
+        if period == 0 || index + 1 < period || index >= self.candles.len() {
+            return None;
+        }
+
+        let start = index + 1 - period;
+        let window = &self.candles[start..=index];
+        let high = window
+            .iter()
+            .map(|candle| candle.high)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let low = window
+            .iter()
+            .map(|candle| candle.low)
+            .fold(f64::INFINITY, f64::min);
+        let range = high - low;
+        if range <= 1e-9 {
+            return Some(0.5);
+        }
+
+        let close = self.candles[index].close;
+        Some(((close - low) / range).clamp(0.0, 1.0))
+    }
+
+    fn atr14(&self, index: usize) -> Option<f64> {
+        self.atr14.get(index).copied().flatten()
+    }
+
+    /// Pivot highs/lows (2 candles each side) in the last `lookback` candles.
+    fn swing_prices(&self, index: usize, lookback: usize) -> (Vec<f64>, Vec<f64>) {
+        let mut swing_highs = Vec::new();
+        let mut swing_lows = Vec::new();
+        if lookback < 5 || index + 1 < lookback {
+            return (swing_highs, swing_lows);
+        }
+
+        let start = index + 1 - lookback;
+        let window = &self.candles[start..=index];
+        for pivot in 2..window.len().saturating_sub(2) {
+            let current = &window[pivot];
+            let is_swing_high = current.high > window[pivot - 1].high
+                && current.high > window[pivot - 2].high
+                && current.high >= window[pivot + 1].high
+                && current.high >= window[pivot + 2].high;
+            let is_swing_low = current.low < window[pivot - 1].low
+                && current.low < window[pivot - 2].low
+                && current.low <= window[pivot + 1].low
+                && current.low <= window[pivot + 2].low;
+
+            if is_swing_high {
+                swing_highs.push(current.high);
+            }
+            if is_swing_low {
+                swing_lows.push(current.low);
+            }
+        }
+
+        (swing_highs, swing_lows)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HtfSnapshot {
+    d1_bias: Bias,
+    h4_bias: Bias,
+    h1_channel: Option<f64>,
+    near_h4_support: bool,
+    near_h4_resistance: bool,
+}
+
+struct HtfContext {
+    d1: HtfSeries,
+    h4: HtfSeries,
+    h1: HtfSeries,
+}
+
+impl HtfContext {
+    fn new(m15: &[Candle]) -> Self {
+        Self {
+            d1: HtfSeries::build(m15, HtfFrame::D1),
+            h4: HtfSeries::build(m15, HtfFrame::H4),
+            h1: HtfSeries::build(m15, HtfFrame::H1),
+        }
+    }
+
+    /// Context as of the M15 signal close. `price` is the signal candle close.
+    fn snapshot(&self, signal_close_ms: i64, price: f64) -> HtfSnapshot {
+        let d1_bias = self
+            .d1
+            .last_closed_index(signal_close_ms)
+            .map(|index| self.d1.bias(index))
+            .unwrap_or(Bias::Neutral);
+
+        let h4_index = self.h4.last_closed_index(signal_close_ms);
+        let h4_bias = h4_index
+            .map(|index| self.h4.bias(index))
+            .unwrap_or(Bias::Neutral);
+
+        let h1_channel = self
+            .h1
+            .last_closed_index(signal_close_ms)
+            .and_then(|index| self.h1.channel_position(index, 20));
+
+        let (near_h4_support, near_h4_resistance) = match h4_index {
+            Some(index) => match self.h4.atr14(index) {
+                Some(atr) if atr > 1e-9 => {
+                    let tolerance = 0.5 * atr;
+                    let (swing_highs, swing_lows) = self.h4.swing_prices(index, 50);
+                    let near_support = swing_lows
+                        .iter()
+                        .any(|level| (price - level).abs() <= tolerance);
+                    let near_resistance = swing_highs
+                        .iter()
+                        .any(|level| (price - level).abs() <= tolerance);
+                    (near_support, near_resistance)
+                }
+                _ => (false, false),
+            },
+            None => (false, false),
+        };
+
+        HtfSnapshot {
+            d1_bias,
+            h4_bias,
+            h1_channel,
+            near_h4_support,
+            near_h4_resistance,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HtfFilter {
+    H4,
+    H1Channel,
+    Combined,
+}
+
+fn htf_filter_allows(
+    filter: HtfFilter,
+    raw: &RawSignal,
+    snapshot: &HtfSnapshot,
+) -> std::result::Result<(), &'static str> {
+    let is_buy = raw.is_buy();
+
+    match filter {
+        HtfFilter::H4 => {
+            if is_buy && snapshot.h4_bias == Bias::Bearish {
+                Err("htf_h4_bearish")
+            } else if !is_buy && snapshot.h4_bias == Bias::Bullish {
+                Err("htf_h4_bullish")
+            } else {
+                Ok(())
+            }
+        }
+        HtfFilter::H1Channel => {
+            let Some(position) = snapshot.h1_channel else {
+                return Err("htf_h1_channel_missing");
+            };
+            if is_buy && position > 0.30 {
+                Err("htf_h1_channel_not_low")
+            } else if !is_buy && position < 0.70 {
+                Err("htf_h1_channel_not_high")
+            } else {
+                Ok(())
+            }
+        }
+        HtfFilter::Combined => {
+            if is_buy && snapshot.h4_bias == Bias::Bearish {
+                return Err("htf_h4_bearish");
+            }
+            if !is_buy && snapshot.h4_bias == Bias::Bullish {
+                return Err("htf_h4_bullish");
+            }
+
+            let Some(position) = snapshot.h1_channel else {
+                return Err("htf_h1_channel_missing");
+            };
+            if is_buy && position > 0.30 {
+                return Err("htf_h1_channel_not_low");
+            }
+            if !is_buy && position < 0.70 {
+                return Err("htf_h1_channel_not_high");
+            }
+
+            if is_buy && snapshot.d1_bias == Bias::Bearish && !snapshot.near_h4_support {
+                return Err("htf_d1_countertrend_no_zone");
+            }
+            if !is_buy && snapshot.d1_bias == Bias::Bullish && !snapshot.near_h4_resistance {
+                return Err("htf_d1_countertrend_no_zone");
+            }
+
+            Ok(())
+        }
+    }
+}
+
 fn is_at_or_after_vn_02(timestamp_ms: i64) -> bool {
     let Some(datetime) = DateTime::<Utc>::from_timestamp_millis(timestamp_ms) else {
         return false;
@@ -847,16 +1288,186 @@ fn tp_structure_levels(
     }
 }
 
-fn structure_levels_for_signal(
+/// Phase 1B soft TP structure: H1 TP1 with 2R fallback, H4 TP2 with 3R fallback.
+///
+/// Unlike `tp_structure`, a TP1 candidate closer than 20 USD falls back to 2R
+/// instead of rejecting, and only the 2R <= 40 risk cap can reject a trade.
+fn tp_structure_soft_levels(
+    entry: f64,
+    stop_loss: f64,
+    is_buy: bool,
+    h1_levels: &[f64],
+    h4_levels: &[f64],
+) -> std::result::Result<Levels, &'static str> {
+    let risk = (entry - stop_loss).abs();
+    if risk <= 1e-9 {
+        return Err("zero_risk");
+    }
+    if 2.0 * risk > 40.0 {
+        return Err("risk_gt_20");
+    }
+
+    let h1_level = if is_buy {
+        nearest_above(h1_levels, entry)
+    } else {
+        nearest_below(h1_levels, entry)
+    };
+    let mut tp1_distance = match h1_level {
+        Some(level) => {
+            let distance = (level - entry).abs();
+            if distance < 20.0 {
+                2.0 * risk
+            } else {
+                distance.min(40.0)
+            }
+        }
+        None => 2.0 * risk,
+    };
+    // TP2 must be at least TP1 + 5 while both distances are capped at 40.
+    // A TP1 beyond 35 therefore cannot produce an ordered TP2; clamp it to
+    // 35 instead of rejecting, preserving the "reject only on 2R > 40" rule.
+    if tp1_distance > 35.0 {
+        tp1_distance = 35.0;
+    }
+    tp1_distance = round2(tp1_distance);
+
+    let take_profit_1 = round2(if is_buy {
+        entry + tp1_distance
+    } else {
+        entry - tp1_distance
+    });
+
+    let h4_level = if is_buy {
+        nearest_above(h4_levels, take_profit_1)
+    } else {
+        nearest_below(h4_levels, take_profit_1)
+    };
+    let min_tp2_distance = round2(tp1_distance + 5.0);
+    let mut tp2_distance = match h4_level {
+        Some(level) => round2((level - entry).abs()),
+        None => round2(3.0 * risk),
+    };
+    tp2_distance = tp2_distance.min(40.0);
+    if tp2_distance + 1e-9 < min_tp2_distance {
+        tp2_distance = min_tp2_distance;
+    }
+    if tp2_distance > 40.0 {
+        tp2_distance = 40.0;
+    }
+
+    let take_profit_2 = round2(if is_buy {
+        entry + tp2_distance
+    } else {
+        entry - tp2_distance
+    });
+
+    let levels = Levels {
+        entry,
+        stop_loss,
+        take_profit_1,
+        take_profit_2,
+    };
+
+    if levels.is_ordered(is_buy) {
+        Ok(levels)
+    } else {
+        Err("invalid_levels")
+    }
+}
+
+/// Phase 1B H4-only TP structure: nearest H4 level beyond entry for TP1, the
+/// next H4 level for TP2, with the same soft 2R/3R fallbacks as
+/// `tp_structure_soft_levels`.
+fn tp_structure_h4_levels(
+    entry: f64,
+    stop_loss: f64,
+    is_buy: bool,
+    h4_levels: &[f64],
+) -> std::result::Result<Levels, &'static str> {
+    let risk = (entry - stop_loss).abs();
+    if risk <= 1e-9 {
+        return Err("zero_risk");
+    }
+    if 2.0 * risk > 40.0 {
+        return Err("risk_gt_20");
+    }
+
+    let h4_level = if is_buy {
+        nearest_above(h4_levels, entry)
+    } else {
+        nearest_below(h4_levels, entry)
+    };
+    let mut tp1_distance = match h4_level {
+        Some(level) => {
+            let distance = (level - entry).abs();
+            if distance < 20.0 {
+                2.0 * risk
+            } else {
+                distance.min(40.0)
+            }
+        }
+        None => 2.0 * risk,
+    };
+    // See tp_structure_soft_levels: TP1 + 5 must fit under the 40 cap.
+    if tp1_distance > 35.0 {
+        tp1_distance = 35.0;
+    }
+    tp1_distance = round2(tp1_distance);
+
+    let take_profit_1 = round2(if is_buy {
+        entry + tp1_distance
+    } else {
+        entry - tp1_distance
+    });
+
+    let next_h4_level = if is_buy {
+        nearest_above(h4_levels, take_profit_1)
+    } else {
+        nearest_below(h4_levels, take_profit_1)
+    };
+    let min_tp2_distance = round2(tp1_distance + 5.0);
+    let mut tp2_distance = match next_h4_level {
+        Some(level) => round2((level - entry).abs()),
+        None => round2(3.0 * risk),
+    };
+    tp2_distance = tp2_distance.min(40.0);
+    if tp2_distance + 1e-9 < min_tp2_distance {
+        tp2_distance = min_tp2_distance;
+    }
+    if tp2_distance > 40.0 {
+        tp2_distance = 40.0;
+    }
+
+    let take_profit_2 = round2(if is_buy {
+        entry + tp2_distance
+    } else {
+        entry - tp2_distance
+    });
+
+    let levels = Levels {
+        entry,
+        stop_loss,
+        take_profit_1,
+        take_profit_2,
+    };
+
+    if levels.is_ordered(is_buy) {
+        Ok(levels)
+    } else {
+        Err("invalid_levels")
+    }
+}
+
+/// H1/H4 zones on the signal side, using only candles fully closed at the
+/// signal candle close.
+fn structure_side_levels(
     raw: &RawSignal,
     candles: &[Candle],
     h1: &[Candle],
     h4: &[Candle],
     step_ms: i64,
-) -> std::result::Result<Levels, &'static str> {
-    let Some(signal_candle) = candles.get(raw.index) else {
-        return Err("missing_signal_candle");
-    };
+) -> std::result::Result<(Vec<f64>, Vec<f64>), &'static str> {
+    let signal_candle = candles.get(raw.index).ok_or("missing_signal_candle")?;
     let signal_close_ms = signal_candle.timestamp + step_ms;
 
     let mut h1_levels = Vec::new();
@@ -877,6 +1488,17 @@ fn structure_levels_for_signal(
         h4_levels.extend(zones.iter().map(|zone| zone.price));
     }
 
+    Ok((h1_levels, h4_levels))
+}
+
+fn structure_levels_for_signal(
+    raw: &RawSignal,
+    candles: &[Candle],
+    h1: &[Candle],
+    h4: &[Candle],
+    step_ms: i64,
+) -> std::result::Result<Levels, &'static str> {
+    let (h1_levels, h4_levels) = structure_side_levels(raw, candles, h1, h4, step_ms)?;
     tp_structure_levels(
         raw.entry_price,
         raw.stop_loss,
@@ -884,6 +1506,113 @@ fn structure_levels_for_signal(
         &h1_levels,
         &h4_levels,
     )
+}
+
+fn soft_structure_levels_for_signal(
+    raw: &RawSignal,
+    candles: &[Candle],
+    h1: &[Candle],
+    h4: &[Candle],
+    step_ms: i64,
+) -> std::result::Result<Levels, &'static str> {
+    let (h1_levels, h4_levels) = structure_side_levels(raw, candles, h1, h4, step_ms)?;
+    tp_structure_soft_levels(
+        raw.entry_price,
+        raw.stop_loss,
+        raw.is_buy(),
+        &h1_levels,
+        &h4_levels,
+    )
+}
+
+fn h4_structure_levels_for_signal(
+    raw: &RawSignal,
+    candles: &[Candle],
+    h4: &[Candle],
+    step_ms: i64,
+) -> std::result::Result<Levels, &'static str> {
+    let signal_candle = candles.get(raw.index).ok_or("missing_signal_candle")?;
+    let signal_close_ms = signal_candle.timestamp + step_ms;
+
+    let mut h4_levels = Vec::new();
+    if let Some(index) = last_closed_index(h4, Timeframe::H4, signal_close_ms) {
+        let start = (index + 1).saturating_sub(100);
+        let (supports, resistances) =
+            GoldMarketAnalyzer::detect_dynamic_sr_zones(&h4[start..=index], 50, 10.0);
+        let zones = if raw.is_buy() { resistances } else { supports };
+        h4_levels.extend(zones.iter().map(|zone| zone.price));
+    }
+
+    tp_structure_h4_levels(raw.entry_price, raw.stop_loss, raw.is_buy(), &h4_levels)
+}
+
+/// Adaptive swing stop for Phase 1B.
+///
+/// Uses the 20 closed M15 candles ending at the signal candle. The stop is the
+/// swing extreme +/- 2.5 USD, widened to 0.8 x ATR14 when it is on the wrong
+/// side of entry or tighter than 0.5 x ATR14. Risk above 20 USD (2R > 40) is
+/// rejected; the analyzer TP1/TP2 are kept and R is recomputed from the new SL.
+fn swing_sl_levels(
+    candles: &[Candle],
+    raw: &RawSignal,
+) -> std::result::Result<Levels, &'static str> {
+    if raw.index < 19 || raw.index >= candles.len() {
+        return Err("swing_lookback_missing");
+    }
+
+    let window = &candles[raw.index + 1 - 20..=raw.index];
+    let is_buy = raw.is_buy();
+    let entry = raw.entry_price;
+
+    let mut stop_loss = if is_buy {
+        let swing_low = window
+            .iter()
+            .map(|candle| candle.low)
+            .fold(f64::INFINITY, f64::min);
+        round2(swing_low - 2.5)
+    } else {
+        let swing_high = window
+            .iter()
+            .map(|candle| candle.high)
+            .fold(f64::NEG_INFINITY, f64::max);
+        round2(swing_high + 2.5)
+    };
+
+    let atr14 = atr14_at(candles, raw.index).ok_or("swing_atr_missing")?;
+    let mut risk = (entry - stop_loss).abs();
+    let wrong_side = if is_buy {
+        stop_loss >= entry
+    } else {
+        stop_loss <= entry
+    };
+    if wrong_side || risk < 0.5 * atr14 {
+        stop_loss = round2(if is_buy {
+            entry - 0.8 * atr14
+        } else {
+            entry + 0.8 * atr14
+        });
+        risk = (entry - stop_loss).abs();
+    }
+
+    if risk > 30.0 {
+        return Err("swing_risk_gt_30");
+    }
+    if 2.0 * risk > 40.0 {
+        return Err("risk_gt_20");
+    }
+
+    let levels = Levels {
+        entry,
+        stop_loss,
+        take_profit_1: raw.take_profit_1,
+        take_profit_2: raw.take_profit_2,
+    };
+
+    if levels.is_ordered(is_buy) {
+        Ok(levels)
+    } else {
+        Err("invalid_levels")
+    }
 }
 
 fn backtest_config() -> BotConfig {
@@ -974,6 +1703,8 @@ enum Outcome {
     Be,
     #[serde(rename = "TIME_EXIT")]
     TimeExit,
+    #[serde(rename = "TRAIL")]
+    Trail,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1915,6 +2646,208 @@ fn simulate_managed(
     ))
 }
 
+/// Phase 1B partial/trailing management flags.
+#[derive(Debug, Clone, Copy, Default)]
+struct PartialTrailManagement {
+    /// Close 25% at +20 USD if reached before TP1.
+    partial_25_at_20: bool,
+    /// Once MFE >= 20 USD, trail the stop 10 USD behind the high/low water
+    /// mark in 1 USD steps, never worse than the initial stop.
+    trail_after_20: bool,
+}
+
+fn blended_r(partial_taken: bool, partial_r: f64, remainder_r: f64) -> f64 {
+    if partial_taken {
+        0.25 * partial_r + 0.75 * remainder_r
+    } else {
+        remainder_r
+    }
+}
+
+/// Baseline management plus optional 25%-at-+20 and trailing-stop rules.
+///
+/// The partial is booked before TP1 only when the +20 trigger is closer to
+/// entry than TP1. The trailing stop is computed from completed candles and
+/// becomes binding on the next M15 candle, so no same-candle optimistic fill
+/// is possible. After TP1, a stop-out settles at TP1 unless the trail has
+/// ratcheted beyond TP1, preserving baseline "TP1 banked" behavior without
+/// introducing a hard TP1 stop.
+fn simulate_partial_trail(
+    candles: &[Candle],
+    entry_index: usize,
+    raw: &RawSignal,
+    levels: Levels,
+    management: PartialTrailManagement,
+) -> Option<SimulatedTrade> {
+    if !levels.is_ordered(raw.is_buy()) || entry_index + 1 >= candles.len() {
+        return None;
+    }
+
+    let is_buy = raw.is_buy();
+    let initial_stop = levels.stop_loss;
+    let take_profit_1 = levels.take_profit_1;
+    let take_profit_2 = levels.take_profit_2;
+    let tp1_r = levels.r_multiple(is_buy, take_profit_1);
+    let tp2_r = levels.r_multiple(is_buy, take_profit_2);
+    let partial_r = 20.0 / levels.risk();
+    let trigger = if is_buy {
+        levels.entry + 20.0
+    } else {
+        levels.entry - 20.0
+    };
+    let trigger_before_tp1 = if is_buy {
+        trigger < take_profit_1
+    } else {
+        trigger > take_profit_1
+    };
+
+    let mut tp1_hit = false;
+    let mut partial_taken = false;
+    let mut mfe = 0.0f64;
+    let mut trail_stop = initial_stop;
+
+    for index in (entry_index + 1)..candles.len() {
+        let candle = &candles[index];
+
+        let current_stop = if is_buy {
+            initial_stop.max(trail_stop)
+        } else {
+            initial_stop.min(trail_stop)
+        };
+
+        // Conservative intra-candle priority: stop before targets.
+        if hit_stop(candle, is_buy, current_stop) {
+            let trail_improves_stop = if is_buy {
+                current_stop > initial_stop + 1e-9
+            } else {
+                current_stop < initial_stop - 1e-9
+            };
+            let trail_beyond_tp1 = if is_buy {
+                current_stop > take_profit_1 + 1e-9
+            } else {
+                current_stop < take_profit_1 - 1e-9
+            };
+
+            let (outcome, exit_price, remainder_r) = if tp1_hit {
+                if trail_improves_stop && trail_beyond_tp1 {
+                    (
+                        Outcome::Trail,
+                        current_stop,
+                        levels.r_multiple(is_buy, current_stop),
+                    )
+                } else {
+                    (Outcome::Tp1, take_profit_1, tp1_r)
+                }
+            } else if trail_improves_stop {
+                (
+                    Outcome::Trail,
+                    current_stop,
+                    levels.r_multiple(is_buy, current_stop),
+                )
+            } else {
+                (Outcome::Sl, initial_stop, -1.0)
+            };
+
+            return Some(build_trade(
+                candles,
+                raw,
+                entry_index,
+                index,
+                levels,
+                TradeResult {
+                    outcome,
+                    exit_price,
+                    r_multiple: blended_r(partial_taken, partial_r, remainder_r),
+                },
+            ));
+        }
+
+        // The +20 partial is closer than TP1 when it is booked before TP1.
+        if management.partial_25_at_20
+            && !partial_taken
+            && !tp1_hit
+            && trigger_before_tp1
+            && hit_target(candle, is_buy, trigger)
+        {
+            partial_taken = true;
+        }
+
+        if hit_target(candle, is_buy, take_profit_2) {
+            return Some(build_trade(
+                candles,
+                raw,
+                entry_index,
+                index,
+                levels,
+                TradeResult {
+                    outcome: Outcome::Tp2,
+                    exit_price: take_profit_2,
+                    r_multiple: blended_r(partial_taken, partial_r, tp2_r),
+                },
+            ));
+        }
+
+        if !tp1_hit && hit_target(candle, is_buy, take_profit_1) {
+            tp1_hit = true;
+        }
+
+        let favorable = if is_buy {
+            candle.high - levels.entry
+        } else {
+            levels.entry - candle.low
+        };
+        mfe = mfe.max(favorable.max(0.0));
+
+        if management.trail_after_20 && mfe >= 20.0 {
+            let quantized_stop = if is_buy {
+                (levels.entry + mfe).floor() - 10.0
+            } else {
+                (levels.entry - mfe).ceil() + 10.0
+            };
+            trail_stop = if is_buy {
+                quantized_stop.max(initial_stop)
+            } else {
+                quantized_stop.min(initial_stop)
+            };
+        }
+    }
+
+    let exit_index = candles.len() - 1;
+    let last_close = candles
+        .last()
+        .map(|candle| candle.close)
+        .unwrap_or(levels.entry);
+    let close_r = levels.r_multiple(is_buy, last_close);
+
+    if tp1_hit {
+        return Some(build_trade(
+            candles,
+            raw,
+            entry_index,
+            exit_index,
+            levels,
+            TradeResult {
+                outcome: Outcome::Tp1,
+                exit_price: take_profit_1,
+                r_multiple: blended_r(partial_taken, partial_r, tp1_r),
+            },
+        ));
+    }
+
+    Some(build_trade(
+        candles,
+        raw,
+        entry_index,
+        exit_index,
+        levels,
+        TradeResult {
+            outcome: Outcome::TimeExit,
+            exit_price: last_close,
+            r_multiple: blended_r(partial_taken, partial_r, close_r),
+        },
+    ))
+}
+
 /// Attach MFE/MAE and cost-adjusted fields to a simulated trade.
 ///
 /// MFE/MAE are measured in USD from entry across all candles from the first
@@ -1982,6 +2915,7 @@ struct MfeBucket {
     ended_sl: usize,
     ended_be: usize,
     ended_time_exit: usize,
+    ended_trail: usize,
     reversed: usize,
 }
 
@@ -1994,6 +2928,7 @@ struct Metrics {
     tp2: usize,
     be: usize,
     time_exits: usize,
+    trail: usize,
     win_rate_pct: f64,
     /// Gross R metrics (before costs).
     avg_r: f64,
@@ -2026,6 +2961,7 @@ impl Metrics {
             tp2: 0,
             be: 0,
             time_exits: 0,
+            trail: 0,
             win_rate_pct: 0.0,
             avg_r: 0.0,
             gross_r: 0.0,
@@ -2109,6 +3045,10 @@ fn mfe_buckets(trades: &[&SimulatedTrade]) -> Vec<MfeBucket> {
                 .iter()
                 .filter(|trade| trade.outcome == Outcome::TimeExit)
                 .count();
+            let ended_trail = reached_trades
+                .iter()
+                .filter(|trade| trade.outcome == Outcome::Trail)
+                .count();
 
             MfeBucket {
                 threshold_usd: *threshold,
@@ -2123,6 +3063,7 @@ fn mfe_buckets(trades: &[&SimulatedTrade]) -> Vec<MfeBucket> {
                 ended_sl,
                 ended_be,
                 ended_time_exit,
+                ended_trail,
                 reversed: ended_sl + ended_be + ended_time_exit,
             }
         })
@@ -2144,7 +3085,11 @@ fn compute_metrics<'a>(trades: impl IntoIterator<Item = &'a SimulatedTrade>) -> 
         .iter()
         .filter(|trade| trade.outcome == Outcome::Tp2)
         .count();
-    let wins = tp1 + tp2;
+    let trail = trades
+        .iter()
+        .filter(|trade| trade.outcome == Outcome::Trail)
+        .count();
+    let wins = tp1 + tp2 + trail;
     let losses = trades
         .iter()
         .filter(|trade| trade.outcome == Outcome::Sl)
@@ -2185,6 +3130,7 @@ fn compute_metrics<'a>(trades: impl IntoIterator<Item = &'a SimulatedTrade>) -> 
         tp2,
         be,
         time_exits,
+        trail,
         win_rate_pct: round_to(wins as f64 / total as f64 * 100.0, 2),
         avg_r: round_to(avg_r, 4),
         gross_r: round_to(gross_r, 4),
@@ -2263,10 +3209,105 @@ struct BacktestContext<'a> {
     candles: &'a [Candle],
     h1: &'a [Candle],
     h4: &'a [Candle],
+    htf: &'a HtfContext,
     split_timestamp: i64,
     early_be: f64,
     cost_usd: f64,
     step_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LevelSource {
+    Analyzer,
+    TpBand,
+    ConfirmSession,
+    ConfirmationSoft,
+    TpStructure,
+    TpStructureSoft,
+    TpStructureH4,
+    SwingSl,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SimKind {
+    Standard,
+    UsClose,
+    PartialBe,
+    Be15,
+    Be20,
+    Scale50,
+    Scale50Be15,
+    TimeOutChoppy,
+    TimeOutAll,
+    Partial25,
+    Trail20,
+    Partial25Trail,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VariantPlan {
+    levels: LevelSource,
+    simulation: SimKind,
+    htf: Option<HtfFilter>,
+}
+
+fn variant_plan(variant: Variant) -> VariantPlan {
+    let (levels, simulation, htf) = match variant {
+        Variant::Baseline => (LevelSource::Analyzer, SimKind::Standard, None),
+        Variant::TpBand => (LevelSource::TpBand, SimKind::Standard, None),
+        Variant::PartialBe => (LevelSource::Analyzer, SimKind::PartialBe, None),
+        Variant::ConfirmSession => (LevelSource::ConfirmSession, SimKind::UsClose, None),
+        Variant::TimeOut02Am => (LevelSource::Analyzer, SimKind::TimeOutChoppy, None),
+        Variant::TimeOut02AmAll => (LevelSource::Analyzer, SimKind::TimeOutAll, None),
+        Variant::Be15 => (LevelSource::Analyzer, SimKind::Be15, None),
+        Variant::Be20 => (LevelSource::Analyzer, SimKind::Be20, None),
+        Variant::Scale50Tp1 => (LevelSource::Analyzer, SimKind::Scale50, None),
+        Variant::Scale50Tp1Be15 => (LevelSource::Analyzer, SimKind::Scale50Be15, None),
+        Variant::ConfirmationSoft => (LevelSource::ConfirmationSoft, SimKind::Standard, None),
+        Variant::TpStructure => (LevelSource::TpStructure, SimKind::Standard, None),
+        Variant::TpStructureSoft => (LevelSource::TpStructureSoft, SimKind::Standard, None),
+        Variant::TpStructureH4 => (LevelSource::TpStructureH4, SimKind::Standard, None),
+        Variant::HtfH4 => (
+            LevelSource::Analyzer,
+            SimKind::Standard,
+            Some(HtfFilter::H4),
+        ),
+        Variant::HtfH1Channel => (
+            LevelSource::Analyzer,
+            SimKind::Standard,
+            Some(HtfFilter::H1Channel),
+        ),
+        Variant::HtfCombined => (
+            LevelSource::Analyzer,
+            SimKind::Standard,
+            Some(HtfFilter::Combined),
+        ),
+        Variant::HtfCombinedTpStructure => (
+            LevelSource::TpStructureSoft,
+            SimKind::Standard,
+            Some(HtfFilter::Combined),
+        ),
+        Variant::SwingSl => (LevelSource::SwingSl, SimKind::Standard, None),
+        Variant::SwingSlHtf => (
+            LevelSource::SwingSl,
+            SimKind::Standard,
+            Some(HtfFilter::Combined),
+        ),
+        Variant::Partial25At20 => (LevelSource::Analyzer, SimKind::Partial25, None),
+        Variant::TrailAfter20 => (LevelSource::Analyzer, SimKind::Trail20, None),
+        Variant::Partial25Trail => (LevelSource::Analyzer, SimKind::Partial25Trail, None),
+        Variant::HtfCombinedPartial25Trail => (
+            LevelSource::Analyzer,
+            SimKind::Partial25Trail,
+            Some(HtfFilter::Combined),
+        ),
+    };
+
+    VariantPlan {
+        levels,
+        simulation,
+        htf,
+    }
 }
 
 fn year_key(timestamp_ms: i64) -> String {
@@ -2281,20 +3322,32 @@ fn run_variant(
     context: &BacktestContext<'_>,
 ) -> VariantReport {
     let candles = context.candles;
+    let plan = variant_plan(variant);
     let mut trades = Vec::new();
     let mut reject_reasons: BTreeMap<String, usize> = BTreeMap::new();
 
     for raw in signals {
         let is_buy = raw.is_buy();
-        let levels = match variant {
-            Variant::Baseline
-            | Variant::PartialBe
-            | Variant::TimeOut02Am
-            | Variant::TimeOut02AmAll
-            | Variant::Be15
-            | Variant::Be20
-            | Variant::Scale50Tp1
-            | Variant::Scale50Tp1Be15 => {
+
+        if let Some(filter) = plan.htf {
+            let Some(signal_candle) = candles.get(raw.index) else {
+                *reject_reasons
+                    .entry("missing_signal_candle".to_string())
+                    .or_default() += 1;
+                continue;
+            };
+            let snapshot = context.htf.snapshot(
+                signal_candle.timestamp + context.step_ms,
+                signal_candle.close,
+            );
+            if let Err(reason) = htf_filter_allows(filter, raw, &snapshot) {
+                *reject_reasons.entry(reason.to_string()).or_default() += 1;
+                continue;
+            }
+        }
+
+        let levels = match plan.levels {
+            LevelSource::Analyzer => {
                 let levels = raw.levels();
                 if !levels.is_ordered(is_buy) {
                     *reject_reasons
@@ -2304,28 +3357,28 @@ fn run_variant(
                 }
                 levels
             }
-            Variant::TpBand => match tp_band_levels(raw.entry_price, raw.stop_loss, is_buy) {
+            LevelSource::TpBand => match tp_band_levels(raw.entry_price, raw.stop_loss, is_buy) {
                 Ok(levels) => levels,
                 Err(reason) => {
                     *reject_reasons.entry(reason.to_string()).or_default() += 1;
                     continue;
                 }
             },
-            Variant::ConfirmSession => match confirm_levels(raw, candles, context.step_ms) {
+            LevelSource::ConfirmSession => match confirm_levels(raw, candles, context.step_ms) {
                 Ok(levels) => levels,
                 Err(reason) => {
                     *reject_reasons.entry(reason.to_string()).or_default() += 1;
                     continue;
                 }
             },
-            Variant::ConfirmationSoft => match soft_confirm_levels(raw, candles) {
+            LevelSource::ConfirmationSoft => match soft_confirm_levels(raw, candles) {
                 Ok(levels) => levels,
                 Err(reason) => {
                     *reject_reasons.entry(reason.to_string()).or_default() += 1;
                     continue;
                 }
             },
-            Variant::TpStructure => match structure_levels_for_signal(
+            LevelSource::TpStructure => match structure_levels_for_signal(
                 raw,
                 candles,
                 context.h1,
@@ -2338,10 +3391,39 @@ fn run_variant(
                     continue;
                 }
             },
+            LevelSource::TpStructureSoft => match soft_structure_levels_for_signal(
+                raw,
+                candles,
+                context.h1,
+                context.h4,
+                context.step_ms,
+            ) {
+                Ok(levels) => levels,
+                Err(reason) => {
+                    *reject_reasons.entry(reason.to_string()).or_default() += 1;
+                    continue;
+                }
+            },
+            LevelSource::TpStructureH4 => {
+                match h4_structure_levels_for_signal(raw, candles, context.h4, context.step_ms) {
+                    Ok(levels) => levels,
+                    Err(reason) => {
+                        *reject_reasons.entry(reason.to_string()).or_default() += 1;
+                        continue;
+                    }
+                }
+            }
+            LevelSource::SwingSl => match swing_sl_levels(candles, raw) {
+                Ok(levels) => levels,
+                Err(reason) => {
+                    *reject_reasons.entry(reason.to_string()).or_default() += 1;
+                    continue;
+                }
+            },
         };
 
-        let entry_index = match variant {
-            Variant::ConfirmSession | Variant::ConfirmationSoft => raw.index + 1,
+        let entry_index = match plan.levels {
+            LevelSource::ConfirmSession | LevelSource::ConfirmationSoft => raw.index + 1,
             _ => raw.index,
         };
 
@@ -2352,48 +3434,75 @@ fn run_variant(
             continue;
         }
 
-        let trade = match variant {
-            Variant::Baseline
-            | Variant::TpBand
-            | Variant::ConfirmationSoft
-            | Variant::TpStructure => {
+        let trade = match plan.simulation {
+            SimKind::Standard => {
                 simulate_standard(candles, entry_index, raw, levels, false, context.step_ms)
             }
-            Variant::PartialBe => {
-                simulate_partial_be(candles, entry_index, raw, levels, context.early_be)
-            }
-            Variant::ConfirmSession => {
+            SimKind::UsClose => {
                 simulate_standard(candles, entry_index, raw, levels, true, context.step_ms)
             }
-            Variant::TimeOut02Am => simulate_managed(
+            SimKind::PartialBe => {
+                simulate_partial_be(candles, entry_index, raw, levels, context.early_be)
+            }
+            SimKind::Be15 => {
+                simulate_managed(candles, entry_index, raw, levels, Management::be(15.0))
+            }
+            SimKind::Be20 => {
+                simulate_managed(candles, entry_index, raw, levels, Management::be(20.0))
+            }
+            SimKind::Scale50 => {
+                simulate_managed(candles, entry_index, raw, levels, Management::scale(None))
+            }
+            SimKind::Scale50Be15 => simulate_managed(
+                candles,
+                entry_index,
+                raw,
+                levels,
+                Management::scale(Some(15.0)),
+            ),
+            SimKind::TimeOutChoppy => simulate_managed(
                 candles,
                 entry_index,
                 raw,
                 levels,
                 Management::time_exit(TimeExitRule::Vn02Choppy),
             ),
-            Variant::TimeOut02AmAll => simulate_managed(
+            SimKind::TimeOutAll => simulate_managed(
                 candles,
                 entry_index,
                 raw,
                 levels,
                 Management::time_exit(TimeExitRule::Vn02All),
             ),
-            Variant::Be15 => {
-                simulate_managed(candles, entry_index, raw, levels, Management::be(15.0))
-            }
-            Variant::Be20 => {
-                simulate_managed(candles, entry_index, raw, levels, Management::be(20.0))
-            }
-            Variant::Scale50Tp1 => {
-                simulate_managed(candles, entry_index, raw, levels, Management::scale(None))
-            }
-            Variant::Scale50Tp1Be15 => simulate_managed(
+            SimKind::Partial25 => simulate_partial_trail(
                 candles,
                 entry_index,
                 raw,
                 levels,
-                Management::scale(Some(15.0)),
+                PartialTrailManagement {
+                    partial_25_at_20: true,
+                    trail_after_20: false,
+                },
+            ),
+            SimKind::Trail20 => simulate_partial_trail(
+                candles,
+                entry_index,
+                raw,
+                levels,
+                PartialTrailManagement {
+                    partial_25_at_20: false,
+                    trail_after_20: true,
+                },
+            ),
+            SimKind::Partial25Trail => simulate_partial_trail(
+                candles,
+                entry_index,
+                raw,
+                levels,
+                PartialTrailManagement {
+                    partial_25_at_20: true,
+                    trail_after_20: true,
+                },
             ),
         };
 
@@ -2464,13 +3573,14 @@ fn format_profit_factor(value: Option<f64>) -> String {
 
 fn print_row(name: &str, split: &str, metrics: &Metrics) {
     println!(
-        "{name:<18} {split:<4} {:>6} {:>4} {:>4} {:>4} {:>3} {:>4} {:>5.1} {:>6.3} {:>8.2} {:>5} {:>6.2} {:>6.3} {:>8.2} {:>5} {:>6.2} {:>6.1} {:>5.1} {:>5.1}",
+        "{name:<18} {split:<4} {:>6} {:>4} {:>4} {:>4} {:>3} {:>4} {:>5} {:>5.1} {:>6.3} {:>8.2} {:>5} {:>6.2} {:>6.3} {:>8.2} {:>5} {:>6.2} {:>6.1} {:>5.1} {:>5.1}",
         metrics.trades,
         metrics.tp1,
         metrics.tp2,
         metrics.losses,
         metrics.be,
         metrics.time_exits,
+        metrics.trail,
         metrics.win_rate_pct,
         metrics.avg_r,
         metrics.gross_r,
@@ -2490,7 +3600,7 @@ fn print_table(report: &Report) {
     println!();
     println!("Gross metrics are before costs; net metrics subtract cost_usd / risk per trade.");
     println!(
-        "{:<18} {:<4} {:>6} {:>4} {:>4} {:>4} {:>3} {:>4} {:>5} {:>6} {:>8} {:>5} {:>6} {:>6} {:>8} {:>5} {:>6} {:>6} {:>5} {:>5}",
+        "{:<18} {:<4} {:>6} {:>4} {:>4} {:>4} {:>3} {:>4} {:>5} {:>5} {:>6} {:>8} {:>5} {:>6} {:>6} {:>8} {:>5} {:>6} {:>6} {:>5} {:>5}",
         "variant",
         "split",
         "trades",
@@ -2499,6 +3609,7 @@ fn print_table(report: &Report) {
         "SL",
         "BE",
         "TIME",
+        "TRAIL",
         "win%",
         "avgR",
         "grossR",
@@ -2526,15 +3637,15 @@ fn print_mfe_table(report: &Report) {
         "MFE sweep (ALL trades): % of trades reaching each favorable excursion and how they ended."
     );
     println!(
-        "{:<18} {:>5} {:>7} {:>8} {:>7} {:>7} {:>6} {:>8} {:>8}",
-        "variant", "+USD", "reached", "%trades", "TP1/2", "SL", "BE", "TIME", "reversed"
+        "{:<18} {:>5} {:>7} {:>8} {:>7} {:>7} {:>6} {:>8} {:>8} {:>8}",
+        "variant", "+USD", "reached", "%trades", "TP1/2", "SL", "BE", "TIME", "TRAIL", "reversed"
     );
 
     for variant in &report.variants {
         for bucket in &variant.overall.mfe_buckets {
             let ended_tp = bucket.ended_tp1 + bucket.ended_tp2;
             println!(
-                "{:<18} {:>5.0} {:>7} {:>7.1}% {:>7} {:>7} {:>6} {:>8} {:>8}",
+                "{:<18} {:>5.0} {:>7} {:>7.1}% {:>7} {:>7} {:>6} {:>8} {:>8} {:>8}",
                 variant.name,
                 bucket.threshold_usd,
                 bucket.reached,
@@ -2543,6 +3654,7 @@ fn print_mfe_table(report: &Report) {
                 bucket.ended_sl,
                 bucket.ended_be,
                 bucket.ended_time_exit,
+                bucket.ended_trail,
                 bucket.reversed,
             );
         }
@@ -2553,7 +3665,7 @@ fn print_yearly_table(report: &Report) {
     println!();
     println!("Yearly net-of-cost performance (entry year in UTC+7):");
     println!(
-        "{:<18} {:>4} {:>6} {:>4} {:>4} {:>4} {:>3} {:>4} {:>5} {:>8} {:>8} {:>5} {:>6} {:>6}",
+        "{:<18} {:>4} {:>6} {:>4} {:>4} {:>4} {:>3} {:>4} {:>5} {:>5} {:>8} {:>8} {:>5} {:>6} {:>6}",
         "variant",
         "year",
         "trades",
@@ -2562,6 +3674,7 @@ fn print_yearly_table(report: &Report) {
         "SL",
         "BE",
         "TIME",
+        "TRAIL",
         "win%",
         "netR$",
         "avgNet",
@@ -2573,7 +3686,7 @@ fn print_yearly_table(report: &Report) {
     for variant in &report.variants {
         for (year, metrics) in &variant.yearly {
             println!(
-                "{:<18} {:>4} {:>6} {:>4} {:>4} {:>4} {:>3} {:>4} {:>5.1} {:>8.2} {:>8.3} {:>5} {:>6.2} {:>6.1}",
+                "{:<18} {:>4} {:>6} {:>4} {:>4} {:>4} {:>3} {:>4} {:>5} {:>5.1} {:>8.2} {:>8.3} {:>5} {:>6.2} {:>6.1}",
                 variant.name,
                 year,
                 metrics.trades,
@@ -2582,6 +3695,7 @@ fn print_yearly_table(report: &Report) {
                 metrics.losses,
                 metrics.be,
                 metrics.time_exits,
+                metrics.trail,
                 metrics.win_rate_pct,
                 metrics.net_r_after_costs,
                 metrics.avg_net_r,
@@ -2788,6 +3902,7 @@ async fn run() -> Result<()> {
     let (gaps, missing_candles) = count_gaps(&candles, step_ms);
     let h1_candles = aggregate_candles(&candles, timeframe_millis(Timeframe::H1), Timeframe::H1);
     let h4_candles = aggregate_candles(&candles, timeframe_millis(Timeframe::H4), Timeframe::H4);
+    let htf_context = HtfContext::new(&candles);
 
     println!(
         "Data: {} candles, {} .. {}, {} gap(s), ~{} missing candle(s), source={}",
@@ -2802,6 +3917,12 @@ async fn run() -> Result<()> {
         "Higher timeframes: {} H1 candles, {} H4 candles (UTC bucket starts)",
         h1_candles.len(),
         h4_candles.len()
+    );
+    println!(
+        "Phase 1B context: {} D1, {} H4, {} H1 candles (EMA50/EMA200/ATR14 precomputed)",
+        htf_context.d1.candles.len(),
+        htf_context.h4.candles.len(),
+        htf_context.h1.candles.len()
     );
 
     let signals = generate_signals(&candles, &config);
@@ -2819,6 +3940,7 @@ async fn run() -> Result<()> {
         candles: &candles,
         h1: &h1_candles,
         h4: &h4_candles,
+        htf: &htf_context,
         split_timestamp,
         early_be: args.early_be,
         cost_usd: args.cost_usd,
@@ -2851,6 +3973,17 @@ async fn run() -> Result<()> {
         "confirmation_soft: next M15 close must be inside the signal candle [low, high]; entry at that close, original SL/TP, no US-close time exit and no pre-US-open blackout.".to_string(),
         "tp_structure: H1/H4 are aggregated from M15 once at UTC hour/4-hour boundaries. Only candles fully closed at signal close are used; H1 zones use last 100 H1 bars, lookback 50, tolerance 5.0; H4 zones use tolerance 10.0.".to_string(),
         "tp_structure guardrails: TP1 is the nearest H1 level beyond entry, TP2 the nearest H4 level beyond TP1. Reject if 2 x risk > 40 or TP1 distance < 20; cap TP1/TP2 distance at 40. No H1 level falls back to the 2R/3R TP band; missing H4 beyond TP1 falls back to a banded 3R TP2 (>= TP1 + 5, capped 40).".to_string(),
+        "Phase 1B context: D1/H4/H1 are aggregated once from M15 at UTC date/4-hour/hour boundaries. A signal only sees candles fully closed at the M15 signal close (timestamp + timeframe <= signal close).".to_string(),
+        "Phase 1B bias: EMA50/EMA200 are incremental (SMA seed over the first 50/200 closes); BULLISH = close > EMA50 > EMA200, BEARISH = close < EMA50 < EMA200, else NEUTRAL. H1/H4 Donchian(20) position = (close - low) / (high - low), clamped 0..1, flat channel = 0.5.".to_string(),
+        "Phase 1B H4 proximity: pivot highs/lows (2 candles each side) in the last 50 closed H4 candles; near support/resistance when price is within 0.5 x ATR14(H4) of a swing low/high.".to_string(),
+        "htf_h4 blocks BUY only when H4 bias is BEARISH and SELL only when H4 bias is BULLISH; NEUTRAL allows both. htf_h1_channel allows BUY only at Donchian position <= 0.30 and SELL only at >= 0.70; a missing channel rejects with htf_h1_channel_missing.".to_string(),
+        "htf_combined = H4 not opposing + H1 channel extreme. If D1 bias opposes, a BUY is allowed only near H4 support and a SELL only near H4 resistance; otherwise htf_d1_countertrend_no_zone. htf_combined_tp_structure adds tp_structure_soft levels to htf_combined.".to_string(),
+        "swing_sl: 20 closed M15 candles ending at the signal candle; BUY SL = min(low) - 2.5, SELL SL = max(high) + 2.5 (round 2). If the stop is on the wrong side of entry or risk < 0.5 x ATR14(M15), widen to 0.8 x ATR14 from entry. Reject risk > 30 (swing_risk_gt_30) and 2 x risk > 40 (risk_gt_20); analyzer TP1/TP2 are kept and R is recomputed from the new SL.".to_string(),
+        "tp_structure_soft: TP1 = nearest H1 level beyond entry; if closer than 20 USD (or absent) fall back to 2R. TP2 = nearest H4 level beyond TP1, else 3R; cap 40 and force >= TP1 + 5. Because TP2 must also fit under 40, TP1 is clamped to 35 when a candidate would otherwise exceed 35. Reject only zero risk or 2R > 40; fallback and rejection counts are reported.".to_string(),
+        "tp_structure_h4: TP1 = nearest H4 level beyond entry with the same <20 -> 2R fallback; TP2 = next H4 level beyond TP1, else 3R, capped 40 and >= TP1 + 5. TP1 is similarly clamped to 35 so TP2 fits under 40. Reject only zero risk or 2R > 40.".to_string(),
+        "partial_25_at_20: 25% is booked at +20 USD only when +20 is reached before TP1; the remaining 75% keeps the original SL/TP. If +20 is never reached the variant behaves like baseline. Cost is still charged once against full-trade R.".to_string(),
+        "trail_after_20: once MFE >= 20 USD the stop is trailed 10 USD behind the high-water/low-water mark, quantized to 1 USD steps (floor high / ceil low), and never worse than the initial stop. Trail updates on closed candles and binds from the next M15 candle; after TP1 a stop-out settles at TP1 unless the trail has ratcheted beyond it. TRAIL is reported when the trailing stop is the binding exit.".to_string(),
+        "partial_25_trail combines both rules; htf_combined_partial_25_trail adds the htf_combined filter. TRAIL outcomes are counted as wins because trailing only activates after +20 USD and never exits worse than the initial stop.".to_string(),
         "Cost model: each trade subtracts cost_usd / risk from gross R; gross and net metrics are reported separately.".to_string(),
         "R fields: gross_r/avg_r/PF/maxDD are pre-cost; net_r/avg_net_r/PF_after_costs/maxDD_after_costs are after cost. net_r_after_costs is kept as an explicit alias of net_r.".to_string(),
         "MFE/MAE are measured in USD from entry through the exit candle; MFE before TP1 includes the first TP1-touch candle and after-TP1 starts on the next candle.".to_string(),
@@ -3638,5 +4771,422 @@ mod tests {
         assert!(cache_covers(&candles, 1_000, 10_000, 100));
         assert!(!cache_covers(&candles, 1_000, 20_000, 100));
         assert!(!cache_covers(&candles, 0, 10_000, 100));
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 1B: multi-timeframe context
+    // -----------------------------------------------------------------------
+
+    const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+
+    fn htf_candle(timestamp: i64, close: f64) -> HtfCandle {
+        HtfCandle {
+            timestamp,
+            high: close + 1.0,
+            low: close - 1.0,
+            close,
+        }
+    }
+
+    #[test]
+    fn aggregate_htf_builds_d1_h4_h1_buckets_from_m15() {
+        let start = utc_ms(2024, 1, 10, 0, 0);
+        let candles: Vec<Candle> = (0..8)
+            .map(|i| {
+                let open = 100.0 + i as f64;
+                candle(
+                    start + i * STEP_MS,
+                    open,
+                    open + 2.0,
+                    open - 1.0,
+                    open + 1.0,
+                )
+            })
+            .collect();
+
+        let day = aggregate_htf(&candles, HtfFrame::D1.millis());
+        assert_eq!(day.len(), 1);
+        assert_eq!(day[0].timestamp, start);
+        assert!((day[0].high - 109.0).abs() < 1e-9);
+        assert!((day[0].low - 99.0).abs() < 1e-9);
+        assert!((day[0].close - 108.0).abs() < 1e-9);
+
+        let h4 = aggregate_htf(&candles, HtfFrame::H4.millis());
+        assert_eq!(h4.len(), 1);
+        assert_eq!(h4[0].timestamp, start);
+
+        let h1 = aggregate_htf(&candles, HtfFrame::H1.millis());
+        assert_eq!(h1.len(), 2);
+        assert_eq!(h1[1].timestamp, start + 60 * 60 * 1000);
+        assert!((h1[1].close - 108.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn htf_bias_uses_incremental_ema50_ema200() {
+        let bullish: Vec<HtfCandle> = (0..260)
+            .map(|i| htf_candle(i * DAY_MS, 100.0 + i as f64))
+            .collect();
+        let series = HtfSeries::from_aggregated(HtfFrame::D1, bullish);
+        assert_eq!(series.bias(259), Bias::Bullish);
+        assert_eq!(series.bias(100), Bias::Neutral);
+
+        let bearish: Vec<HtfCandle> = (0..260)
+            .map(|i| htf_candle(i * DAY_MS, 500.0 - i as f64))
+            .collect();
+        let series = HtfSeries::from_aggregated(HtfFrame::D1, bearish);
+        assert_eq!(series.bias(259), Bias::Bearish);
+    }
+
+    #[test]
+    fn htf_last_closed_index_excludes_in_progress_candle() {
+        let start = utc_ms(2024, 1, 10, 0, 0);
+        let candles = vec![
+            htf_candle(start, 100.0),
+            htf_candle(start + DAY_MS, 101.0),
+            htf_candle(start + 2 * DAY_MS, 102.0),
+        ];
+        let series = HtfSeries::from_aggregated(HtfFrame::D1, candles);
+        assert_eq!(series.last_closed_index(start + DAY_MS + 1), Some(0));
+        assert_eq!(series.last_closed_index(start + 2 * DAY_MS), Some(1));
+        assert_eq!(series.last_closed_index(start + 3 * DAY_MS), Some(2));
+    }
+
+    #[test]
+    fn htf_channel_position_clamps_inside_donchian_range() {
+        let start = utc_ms(2024, 1, 10, 0, 0);
+        let mut candles: Vec<HtfCandle> = (0..20)
+            .map(|i| htf_candle(start + i * 3_600_000, 100.0))
+            .collect();
+        candles[19].close = 110.0;
+        candles[0].low = 90.0;
+        candles[19].high = 110.0;
+        let series = HtfSeries::from_aggregated(HtfFrame::H1, candles);
+        assert_eq!(series.channel_position(19, 20), Some(1.0));
+
+        let mut candles: Vec<HtfCandle> = (0..20)
+            .map(|i| htf_candle(start + i * 3_600_000, 100.0))
+            .collect();
+        candles[19].close = 90.0;
+        candles[0].low = 90.0;
+        let series = HtfSeries::from_aggregated(HtfFrame::H1, candles);
+        assert_eq!(series.channel_position(19, 20), Some(0.0));
+    }
+
+    fn htf_snapshot(
+        d1_bias: Bias,
+        h4_bias: Bias,
+        h1_channel: Option<f64>,
+        near_h4_support: bool,
+        near_h4_resistance: bool,
+    ) -> HtfSnapshot {
+        HtfSnapshot {
+            d1_bias,
+            h4_bias,
+            h1_channel,
+            near_h4_support,
+            near_h4_resistance,
+        }
+    }
+
+    #[test]
+    fn htf_h4_filter_blocks_only_opposing_bias() {
+        let buy = raw_signal(0, SignalType::Buy, 100.0, 95.0, 110.0, 115.0);
+        let sell = raw_signal(0, SignalType::Sell, 100.0, 105.0, 90.0, 85.0);
+
+        let bearish = htf_snapshot(Bias::Neutral, Bias::Bearish, Some(0.5), false, false);
+        assert_eq!(
+            htf_filter_allows(HtfFilter::H4, &buy, &bearish),
+            Err("htf_h4_bearish")
+        );
+        assert_eq!(htf_filter_allows(HtfFilter::H4, &sell, &bearish), Ok(()));
+
+        let bullish = htf_snapshot(Bias::Neutral, Bias::Bullish, Some(0.5), false, false);
+        assert_eq!(
+            htf_filter_allows(HtfFilter::H4, &sell, &bullish),
+            Err("htf_h4_bullish")
+        );
+        assert_eq!(htf_filter_allows(HtfFilter::H4, &buy, &bullish), Ok(()));
+    }
+
+    #[test]
+    fn htf_h1_channel_requires_low_buy_and_high_sell() {
+        let buy = raw_signal(0, SignalType::Buy, 100.0, 95.0, 110.0, 115.0);
+        let sell = raw_signal(0, SignalType::Sell, 100.0, 105.0, 90.0, 85.0);
+
+        let low = htf_snapshot(Bias::Neutral, Bias::Neutral, Some(0.25), false, false);
+        assert_eq!(htf_filter_allows(HtfFilter::H1Channel, &buy, &low), Ok(()));
+        assert_eq!(
+            htf_filter_allows(HtfFilter::H1Channel, &sell, &low),
+            Err("htf_h1_channel_not_high")
+        );
+
+        let high = htf_snapshot(Bias::Neutral, Bias::Neutral, Some(0.75), false, false);
+        assert_eq!(
+            htf_filter_allows(HtfFilter::H1Channel, &buy, &high),
+            Err("htf_h1_channel_not_low")
+        );
+        assert_eq!(
+            htf_filter_allows(HtfFilter::H1Channel, &sell, &high),
+            Ok(())
+        );
+
+        let missing = htf_snapshot(Bias::Neutral, Bias::Neutral, None, false, false);
+        assert_eq!(
+            htf_filter_allows(HtfFilter::H1Channel, &buy, &missing),
+            Err("htf_h1_channel_missing")
+        );
+    }
+
+    #[test]
+    fn htf_combined_allows_countertrend_only_near_h4_zone() {
+        let buy = raw_signal(0, SignalType::Buy, 100.0, 95.0, 110.0, 115.0);
+        let sell = raw_signal(0, SignalType::Sell, 100.0, 105.0, 90.0, 85.0);
+
+        let allowed = htf_snapshot(Bias::Bearish, Bias::Neutral, Some(0.2), true, false);
+        assert_eq!(
+            htf_filter_allows(HtfFilter::Combined, &buy, &allowed),
+            Ok(())
+        );
+
+        let blocked = htf_snapshot(Bias::Bearish, Bias::Neutral, Some(0.2), false, false);
+        assert_eq!(
+            htf_filter_allows(HtfFilter::Combined, &buy, &blocked),
+            Err("htf_d1_countertrend_no_zone")
+        );
+
+        let sell_allowed = htf_snapshot(Bias::Bullish, Bias::Neutral, Some(0.8), false, true);
+        assert_eq!(
+            htf_filter_allows(HtfFilter::Combined, &sell, &sell_allowed),
+            Ok(())
+        );
+
+        let opposing_h4 = htf_snapshot(Bias::Neutral, Bias::Bearish, Some(0.2), true, false);
+        assert_eq!(
+            htf_filter_allows(HtfFilter::Combined, &buy, &opposing_h4),
+            Err("htf_h4_bearish")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 1B: adaptive swing stop
+    // -----------------------------------------------------------------------
+
+    fn wide_flat_candles(start: i64, count: usize, high: f64, low: f64) -> Vec<Candle> {
+        (0..count)
+            .map(|i| candle(start + i as i64 * STEP_MS, 100.0, high, low, 100.0))
+            .collect()
+    }
+
+    #[test]
+    fn swing_sl_uses_lookback_extreme_and_widens_to_eight_tenths_atr() {
+        let start = utc_ms(2024, 1, 10, 15, 0);
+        let candles = wide_flat_candles(start, 20, 110.0, 99.0);
+        let raw = raw_signal(19, SignalType::Buy, 100.0, 95.0, 130.0, 140.0);
+
+        let levels = swing_sl_levels(&candles, &raw).expect("swing levels");
+        // ATR14 = 11, so the 3.5 risk from swing_low - 2.5 is below 0.5 ATR
+        // and is widened to 0.8 * 11 = 8.8 below entry.
+        assert!((levels.stop_loss - 91.2).abs() < 1e-9);
+        assert!((levels.take_profit_1 - 130.0).abs() < 1e-9);
+        assert!((levels.take_profit_2 - 140.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn swing_sl_rejects_when_widened_risk_exceeds_cap() {
+        let start = utc_ms(2024, 1, 10, 15, 0);
+        let candles = wide_flat_candles(start, 20, 160.0, 99.0);
+        let raw = raw_signal(19, SignalType::Buy, 100.0, 95.0, 130.0, 140.0);
+
+        assert!(matches!(
+            swing_sl_levels(&candles, &raw),
+            Err("swing_risk_gt_30")
+        ));
+        assert!(matches!(
+            swing_sl_levels(
+                &candles[..19],
+                &raw_signal(18, SignalType::Buy, 100.0, 95.0, 130.0, 140.0)
+            ),
+            Err("swing_lookback_missing")
+        ));
+    }
+
+    #[test]
+    fn swing_sl_rounds_to_two_decimals() {
+        let start = utc_ms(2024, 1, 10, 15, 0);
+        let candles: Vec<Candle> = (0..20)
+            .map(|i| candle(start + i as i64 * STEP_MS, 100.0, 100.5, 98.876, 100.0))
+            .collect();
+        let raw = raw_signal(19, SignalType::Buy, 100.0, 95.0, 130.0, 140.0);
+
+        let levels = swing_sl_levels(&candles, &raw).expect("swing levels");
+        assert!((levels.stop_loss - 96.38).abs() < 1e-9);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 1B: TP structure variants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tp_structure_soft_falls_back_and_caps_instead_of_rejecting() {
+        let low = tp_structure_soft_levels(100.0, 95.0, true, &[115.0], &[125.0])
+            .expect("soft fallback levels");
+        assert!((low.take_profit_1 - 110.0).abs() < 1e-9);
+        assert!((low.take_profit_2 - 125.0).abs() < 1e-9);
+
+        let capped =
+            tp_structure_soft_levels(100.0, 95.0, true, &[150.0], &[]).expect("soft capped levels");
+        assert!((capped.take_profit_1 - 135.0).abs() < 1e-9);
+        assert!((capped.take_profit_2 - 140.0).abs() < 1e-9);
+
+        assert!(matches!(
+            tp_structure_soft_levels(100.0, 79.0, true, &[120.0], &[130.0]),
+            Err("risk_gt_20")
+        ));
+    }
+
+    #[test]
+    fn tp_structure_h4_uses_next_h4_level_and_fallbacks() {
+        let levels = tp_structure_h4_levels(100.0, 95.0, true, &[115.0, 125.0])
+            .expect("h4 structure levels");
+        assert!((levels.take_profit_1 - 110.0).abs() < 1e-9);
+        assert!((levels.take_profit_2 - 115.0).abs() < 1e-9);
+
+        let sell =
+            tp_structure_h4_levels(100.0, 105.0, false, &[85.0, 75.0]).expect("h4 sell levels");
+        assert!((sell.take_profit_1 - 90.0).abs() < 1e-9);
+        assert!((sell.take_profit_2 - 85.0).abs() < 1e-9);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 1B: partial 25% and trailing stops
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn partial_25_books_quarter_at_twenty_before_tp1() {
+        let candles = vec![
+            candle(0, 100.0, 100.5, 99.5, 100.0),
+            candle(STEP_MS, 100.0, 121.0, 99.0, 120.0),
+            candle(2 * STEP_MS, 120.0, 121.0, 94.0, 95.0),
+        ];
+        let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 130.0, 140.0);
+        let management = PartialTrailManagement {
+            partial_25_at_20: true,
+            trail_after_20: false,
+        };
+
+        let trade =
+            simulate_partial_trail(&candles, 0, &raw, raw.levels(), management).expect("trade");
+        assert_eq!(trade.outcome, Outcome::Sl);
+        assert!((trade.r_multiple - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn partial_25_does_not_book_after_tp1() {
+        let candles = vec![
+            candle(0, 100.0, 100.5, 99.5, 100.0),
+            candle(STEP_MS, 100.0, 121.0, 99.0, 120.0),
+            candle(2 * STEP_MS, 120.0, 121.0, 94.0, 95.0),
+        ];
+        let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 115.0, 140.0);
+        let management = PartialTrailManagement {
+            partial_25_at_20: true,
+            trail_after_20: false,
+        };
+
+        let trade =
+            simulate_partial_trail(&candles, 0, &raw, raw.levels(), management).expect("trade");
+        assert_eq!(trade.outcome, Outcome::Tp1);
+        assert!((trade.r_multiple - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn partial_trail_keeps_original_stop_after_tp1() {
+        // A pullback to TP1 must not become a hard TP1 stop: baseline keeps
+        // the original stop and can still reach TP2.
+        let candles = vec![
+            candle(0, 100.0, 100.5, 99.5, 100.0),
+            candle(STEP_MS, 100.0, 111.0, 109.0, 110.0),
+            candle(2 * STEP_MS, 110.0, 112.0, 108.0, 109.0),
+            candle(3 * STEP_MS, 109.0, 126.0, 108.0, 125.0),
+        ];
+        let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 110.0, 125.0);
+        let management = PartialTrailManagement {
+            partial_25_at_20: true,
+            trail_after_20: false,
+        };
+
+        let trade =
+            simulate_partial_trail(&candles, 0, &raw, raw.levels(), management).expect("trade");
+        assert_eq!(trade.outcome, Outcome::Tp2);
+        assert!((trade.r_multiple - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trail_after_twenty_ratchets_in_one_dollar_steps() {
+        let candles = vec![
+            candle(0, 100.0, 100.5, 99.5, 100.0),
+            candle(STEP_MS, 100.0, 121.0, 112.0, 120.0),
+            candle(2 * STEP_MS, 120.0, 131.0, 112.0, 130.0),
+            candle(3 * STEP_MS, 130.0, 130.0, 120.0, 121.0),
+        ];
+        let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 150.0, 160.0);
+        let management = PartialTrailManagement {
+            partial_25_at_20: false,
+            trail_after_20: true,
+        };
+
+        let trade =
+            simulate_partial_trail(&candles, 0, &raw, raw.levels(), management).expect("trade");
+        assert_eq!(trade.outcome, Outcome::Trail);
+        assert!((trade.exit_price - 121.0).abs() < 1e-9);
+        assert!((trade.r_multiple - 4.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trail_after_twenty_does_not_activate_below_threshold() {
+        let candles = vec![
+            candle(0, 100.0, 100.5, 99.5, 100.0),
+            candle(STEP_MS, 100.0, 119.0, 99.0, 110.0),
+            candle(2 * STEP_MS, 110.0, 111.0, 94.0, 95.0),
+        ];
+        let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 130.0, 140.0);
+        let management = PartialTrailManagement {
+            partial_25_at_20: false,
+            trail_after_20: true,
+        };
+
+        let trade =
+            simulate_partial_trail(&candles, 0, &raw, raw.levels(), management).expect("trade");
+        assert_eq!(trade.outcome, Outcome::Sl);
+        assert!((trade.r_multiple + 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn partial_25_and_trail_blend_quarter_and_remainder() {
+        let candles = vec![
+            candle(0, 100.0, 100.5, 99.5, 100.0),
+            candle(STEP_MS, 100.0, 121.0, 112.0, 120.0),
+            candle(2 * STEP_MS, 120.0, 121.0, 110.0, 111.0),
+        ];
+        let raw = raw_signal(0, SignalType::Buy, 100.0, 95.0, 150.0, 160.0);
+        let management = PartialTrailManagement {
+            partial_25_at_20: true,
+            trail_after_20: true,
+        };
+
+        let trade =
+            simulate_partial_trail(&candles, 0, &raw, raw.levels(), management).expect("trade");
+        assert_eq!(trade.outcome, Outcome::Trail);
+        assert!((trade.exit_price - 111.0).abs() < 1e-9);
+        assert!((trade.r_multiple - 2.65).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trail_outcome_is_counted_as_a_win_and_reported() {
+        let trades = vec![simulated_trade(Outcome::Trail, 4.2, 5.0, 0.4, 31.0)];
+        let metrics = compute_metrics(&trades);
+        assert_eq!(metrics.trail, 1);
+        assert_eq!(metrics.wins, 1);
+        assert!((metrics.net_r - 4.12).abs() < 1e-9);
     }
 }
