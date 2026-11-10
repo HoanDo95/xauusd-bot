@@ -227,6 +227,15 @@ pub struct Signal {
     /// Delta tuyệt đối của cây nến tín hiệu (chỉ điền khi bật Volume Delta filter).
     #[serde(default)]
     pub delta: Option<f64>,
+    /// RSI (Wilder) của cây nến tín hiệu — advisory/context.
+    #[serde(default)]
+    pub rsi_value: Option<f64>,
+    /// "Overbought" | "Neutral" | "Oversold".
+    #[serde(default)]
+    pub rsi_state: Option<String>,
+    /// "None" | "Bullish" | "Bearish".
+    #[serde(default)]
+    pub rsi_divergence: Option<String>,
 }
 
 fn default_entry_filled() -> bool {
@@ -337,6 +346,32 @@ pub struct BotConfig {
     /// Ngưỡng |delta_ratio| tối thiểu cho chế độ ALIGN (0..=1, mặc định 0.10).
     #[serde(default = "default_volume_delta_min_ratio")]
     pub volume_delta_min_ratio: f64,
+    /// Bật bộ lọc RSI cứng trước khi phát tín hiệu thật. Mặc định TẮT.
+    /// Phase R0 cho thấy RSI 70/30 tại nến trigger = 0/871 lệnh và divergence
+    /// mất tiền, nên chỉ bật sau khi forward-test có bằng chứng mới.
+    #[serde(default)]
+    pub rsi_filter_enabled: bool,
+    /// Chu kỳ Wilder RSI (2..=100, mặc định 14).
+    #[serde(default = "default_rsi_period")]
+    pub rsi_period: usize,
+    /// Ngưỡng Overbought (50..=100, mặc định 70).
+    #[serde(default = "default_rsi_overbought")]
+    pub rsi_overbought: f64,
+    /// Ngưỡng Oversold (0..=50, mặc định 30).
+    #[serde(default = "default_rsi_oversold")]
+    pub rsi_oversold: f64,
+    /// Bật thành phần divergence trong bộ lọc RSI (mặc định true).
+    #[serde(default = "default_rsi_divergence_enabled")]
+    pub rsi_divergence_enabled: bool,
+    /// Số nến nhìn lại để dò pivot divergence (10..=200, mặc định 40).
+    #[serde(default = "default_rsi_divergence_lookback")]
+    pub rsi_divergence_lookback: usize,
+    /// Số nến xác nhận mỗi bên của pivot (1..=10, mặc định 2).
+    #[serde(default = "default_rsi_pivot_k")]
+    pub rsi_pivot_k: usize,
+    /// Chế độ lọc: "EXTREME", "DIVERGENCE" hoặc "BOTH" (mặc định).
+    #[serde(default = "default_rsi_mode")]
+    pub rsi_mode: String,
 }
 
 fn default_max_signals_per_day() -> usize {
@@ -391,6 +426,34 @@ fn default_volume_delta_min_ratio() -> f64 {
     0.10
 }
 
+fn default_rsi_period() -> usize {
+    14
+}
+
+fn default_rsi_overbought() -> f64 {
+    70.0
+}
+
+fn default_rsi_oversold() -> f64 {
+    30.0
+}
+
+fn default_rsi_divergence_enabled() -> bool {
+    true
+}
+
+fn default_rsi_divergence_lookback() -> usize {
+    40
+}
+
+fn default_rsi_pivot_k() -> usize {
+    2
+}
+
+fn default_rsi_mode() -> String {
+    "BOTH".to_string()
+}
+
 impl Default for BotConfig {
     fn default() -> Self {
         Self {
@@ -433,6 +496,14 @@ impl Default for BotConfig {
             volume_delta_mode: default_volume_delta_mode(),
             volume_delta_lookback: default_volume_delta_lookback(),
             volume_delta_min_ratio: default_volume_delta_min_ratio(),
+            rsi_filter_enabled: false,
+            rsi_period: default_rsi_period(),
+            rsi_overbought: default_rsi_overbought(),
+            rsi_oversold: default_rsi_oversold(),
+            rsi_divergence_enabled: default_rsi_divergence_enabled(),
+            rsi_divergence_lookback: default_rsi_divergence_lookback(),
+            rsi_pivot_k: default_rsi_pivot_k(),
+            rsi_mode: default_rsi_mode(),
         }
     }
 }
@@ -503,6 +574,22 @@ impl BotConfig {
         .to_string();
         self.volume_delta_lookback = self.volume_delta_lookback.clamp(5, 100);
         self.volume_delta_min_ratio = finite_or(self.volume_delta_min_ratio, 0.10).clamp(0.0, 1.0);
+
+        self.rsi_period = self.rsi_period.clamp(2, 100);
+        self.rsi_overbought = finite_or(self.rsi_overbought, 70.0).clamp(50.0, 100.0);
+        self.rsi_oversold = finite_or(self.rsi_oversold, 30.0).clamp(0.0, 50.0);
+        if self.rsi_oversold >= self.rsi_overbought {
+            self.rsi_overbought = 70.0;
+            self.rsi_oversold = 30.0;
+        }
+        self.rsi_divergence_lookback = self.rsi_divergence_lookback.clamp(10, 200);
+        self.rsi_pivot_k = self.rsi_pivot_k.clamp(1, 10);
+        self.rsi_mode = match self.rsi_mode.trim().to_uppercase().as_str() {
+            "EXTREME" => "EXTREME",
+            "DIVERGENCE" => "DIVERGENCE",
+            _ => "BOTH",
+        }
+        .to_string();
 
         self.telegram_bot_token = self.telegram_bot_token.trim().to_string();
         self.telegram_chat_id = self.telegram_chat_id.trim().to_string();
@@ -854,6 +941,102 @@ mod tests {
         }
         .sanitized();
         assert!(!disabled.use_auto_spot_basis);
+    }
+
+    #[test]
+    fn rsi_defaults_off_and_are_backward_compatible() {
+        let defaults = BotConfig::default();
+        assert!(!defaults.rsi_filter_enabled);
+        assert_eq!(defaults.rsi_period, 14);
+        assert_eq!(defaults.rsi_overbought, 70.0);
+        assert_eq!(defaults.rsi_oversold, 30.0);
+        assert!(defaults.rsi_divergence_enabled);
+        assert_eq!(defaults.rsi_divergence_lookback, 40);
+        assert_eq!(defaults.rsi_pivot_k, 2);
+        assert_eq!(defaults.rsi_mode, "BOTH");
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        for key in [
+            "rsi_filter_enabled",
+            "rsi_period",
+            "rsi_overbought",
+            "rsi_oversold",
+            "rsi_divergence_enabled",
+            "rsi_divergence_lookback",
+            "rsi_pivot_k",
+            "rsi_mode",
+        ] {
+            object.remove(key);
+        }
+
+        let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(!config.rsi_filter_enabled, "filter must default OFF");
+        assert_eq!(config.rsi_period, 14);
+        assert_eq!(config.rsi_overbought, 70.0);
+        assert_eq!(config.rsi_oversold, 30.0);
+        assert!(config.rsi_divergence_enabled);
+        assert_eq!(config.rsi_divergence_lookback, 40);
+        assert_eq!(config.rsi_pivot_k, 2);
+        assert_eq!(config.rsi_mode, "BOTH");
+    }
+
+    #[test]
+    fn sanitize_rsi_settings_normalizes_and_clamps() {
+        let config = BotConfig {
+            rsi_filter_enabled: true,
+            rsi_period: 1,
+            rsi_overbought: 99.0,
+            rsi_oversold: -5.0,
+            rsi_divergence_lookback: 1,
+            rsi_pivot_k: 99,
+            rsi_mode: " extreme ".to_string(),
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert!(config.rsi_filter_enabled);
+        assert_eq!(config.rsi_period, 2);
+        assert_eq!(config.rsi_overbought, 99.0);
+        assert_eq!(config.rsi_oversold, 0.0);
+        assert_eq!(config.rsi_divergence_lookback, 10);
+        assert_eq!(config.rsi_pivot_k, 10);
+        assert_eq!(config.rsi_mode, "EXTREME");
+
+        let invalid = BotConfig {
+            rsi_period: 999,
+            rsi_overbought: 150.0,
+            rsi_oversold: 60.0,
+            rsi_divergence_lookback: 999,
+            rsi_pivot_k: 0,
+            rsi_mode: "garbage".to_string(),
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(invalid.rsi_period, 100);
+        // Both thresholds clamp to 100/50, which still satisfies oversold < overbought.
+        assert_eq!(invalid.rsi_overbought, 100.0);
+        assert_eq!(invalid.rsi_oversold, 50.0);
+        assert_eq!(invalid.rsi_divergence_lookback, 200);
+        assert_eq!(invalid.rsi_pivot_k, 1);
+        assert_eq!(invalid.rsi_mode, "BOTH");
+
+        let inverted = BotConfig {
+            rsi_overbought: 50.0,
+            rsi_oversold: 50.0,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(inverted.rsi_overbought, 70.0);
+        assert_eq!(inverted.rsi_oversold, 30.0);
+
+        let non_finite = BotConfig {
+            rsi_overbought: f64::NAN,
+            rsi_oversold: f64::INFINITY,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(non_finite.rsi_overbought, 70.0);
+        assert_eq!(non_finite.rsi_oversold, 30.0);
     }
 }
 

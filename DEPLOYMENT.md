@@ -289,6 +289,15 @@ Entry and session behaviour is **dashboard config**, persisted in
 - `session_alerts_enabled`, `session_alert_lead_minutes`, `session_filter_enabled`.
 - `ai_signal_review_enabled`, `ai_signal_review_min_confidence`,
   `ai_signal_review_fail_open` (AI key/model stay in `rust-backend/.env`).
+- `rsi_filter_enabled` (**default OFF**), `rsi_period`, `rsi_overbought`,
+  `rsi_oversold`, `rsi_divergence_enabled`, `rsi_divergence_lookback`,
+  `rsi_pivot_k`, `rsi_mode`. No new environment variables are required; toggle
+  these in **Sniper & Risk Config**. RSI M15/H1/H4 is always shown and sent to
+  the AI as context even while the hard filter is off.
+
+RSI is advisory/context by default. Phase R0 showed the 70/30 trigger-candle
+gate produced 0/871 trades and the divergence variant lost 4.76R, so enabling
+the hard filter is a deliberate opt-in after forward testing, not a deploy step.
 
 Change them in **Sniper & Risk Config** and save; no container restart is needed.
 Environment variables are only for secrets/runtime wiring (Telegram, webhook

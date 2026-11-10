@@ -4,7 +4,7 @@
 //! generation by itself. The backtest binary (Phase R0) consumes it to evaluate
 //! RSI extreme and divergence gates.
 
-use crate::models::Candle;
+use crate::models::{BotConfig, Candle};
 use serde::{Deserialize, Serialize};
 
 /// Wilder-smoothed RSI series.
@@ -206,6 +206,113 @@ pub fn rsi_snapshot(
     }
 }
 
+/// Nhãn divergence ổn định cho Signal/Telegram/API.
+pub fn divergence_label(divergence: RsiDivergence) -> String {
+    match divergence {
+        RsiDivergence::None => "None",
+        RsiDivergence::Bullish => "Bullish",
+        RsiDivergence::Bearish => "Bearish",
+    }
+    .to_string()
+}
+
+/// Cổng lọc RSI tùy chọn cho tín hiệu thật.
+///
+/// Mặc định `rsi_filter_enabled=false` nên hàm luôn cho qua. Khi bật:
+/// - `EXTREME`: BUY cần RSI <= oversold; SELL cần RSI >= overbought.
+/// - `DIVERGENCE`: BUY cần Bullish divergence; SELL cần Bearish divergence.
+/// - `BOTH`: một trong hai điều kiện trên.
+///
+/// Đây là filter cứng duy nhất của RSI; RSI vẫn luôn được hiển thị và gửi AI
+/// như context ngay cả khi filter tắt.
+pub fn rsi_allows_signal(
+    signal_type: &str,
+    snapshot: &RsiSnapshot,
+    config: &BotConfig,
+) -> (bool, String) {
+    let signal = signal_type.trim().to_uppercase();
+    if !matches!(signal.as_str(), "BUY" | "LONG" | "SELL" | "SHORT") {
+        return (
+            true,
+            format!(
+                "Loại tín hiệu '{}' không xác định — bỏ qua bộ lọc RSI.",
+                signal
+            ),
+        );
+    }
+
+    if !config.rsi_filter_enabled {
+        return (true, "RSI filter disabled".to_string());
+    }
+
+    let is_buy = matches!(signal.as_str(), "BUY" | "LONG");
+    let value = snapshot
+        .value
+        .map(|value| format!("{:.1}", value))
+        .unwrap_or_else(|| "n/a".to_string());
+    let divergence = divergence_label(snapshot.divergence);
+    let state = snapshot.state.as_str();
+
+    let extreme_allows = match snapshot.value {
+        Some(value) if is_buy => value <= config.rsi_oversold,
+        Some(value) => value >= config.rsi_overbought,
+        None => false,
+    };
+    let divergence_allows = if is_buy {
+        snapshot.divergence == RsiDivergence::Bullish
+    } else {
+        snapshot.divergence == RsiDivergence::Bearish
+    };
+    let divergence_component = config.rsi_divergence_enabled && divergence_allows;
+
+    let mode = config.rsi_mode.trim().to_uppercase();
+    let (allowed, mode_label) = match mode.as_str() {
+        "EXTREME" => (extreme_allows, "EXTREME"),
+        "DIVERGENCE" => {
+            if !config.rsi_divergence_enabled {
+                return (
+                    false,
+                    format!(
+                        "RSI DIVERGENCE chặn {}: divergence disabled (rsi_divergence_enabled=false) · value={} state={} divergence={}.",
+                        signal, value, state, divergence
+                    ),
+                );
+            }
+            (divergence_allows, "DIVERGENCE")
+        }
+        _ => (extreme_allows || divergence_component, "BOTH"),
+    };
+
+    if allowed {
+        (
+            true,
+            format!(
+                "RSI {} cho qua {} · value={} state={} divergence={} (oversold<= {:.1}, overbought>= {:.1}).",
+                mode_label, signal, value, state, divergence, config.rsi_oversold, config.rsi_overbought
+            ),
+        )
+    } else {
+        let requirement = if is_buy {
+            format!(
+                "BUY cần RSI <= {:.1} hoặc Bullish divergence",
+                config.rsi_oversold
+            )
+        } else {
+            format!(
+                "SELL cần RSI >= {:.1} hoặc Bearish divergence",
+                config.rsi_overbought
+            )
+        };
+        (
+            false,
+            format!(
+                "RSI {} chặn {} · value={} state={} divergence={} — {}.",
+                mode_label, signal, value, state, divergence, requirement
+            ),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,5 +481,172 @@ mod tests {
         assert_eq!(snapshot.value, Some(100.0));
         assert_eq!(snapshot.state, "Overbought");
         assert_eq!(snapshot.divergence, RsiDivergence::None);
+    }
+
+    fn snapshot(value: Option<f64>, state: &str, divergence: RsiDivergence) -> RsiSnapshot {
+        RsiSnapshot {
+            value,
+            state: state.to_string(),
+            divergence,
+        }
+    }
+
+    fn rsi_config(mode: &str) -> BotConfig {
+        BotConfig {
+            rsi_filter_enabled: true,
+            rsi_mode: mode.to_string(),
+            ..BotConfig::default()
+        }
+    }
+
+    #[test]
+    fn rsi_filter_disabled_allows_every_signal() {
+        let config = BotConfig::default();
+        let neutral = snapshot(Some(50.0), "Neutral", RsiDivergence::None);
+        let (allowed, reason) = rsi_allows_signal("BUY", &neutral, &config);
+        assert!(allowed);
+        assert!(reason.contains("disabled"));
+        assert!(rsi_allows_signal("SELL", &neutral, &config).0);
+    }
+
+    #[test]
+    fn rsi_extreme_mode_requires_oversold_buy_and_overbought_sell() {
+        let config = rsi_config("EXTREME");
+        let oversold = snapshot(Some(25.0), "Oversold", RsiDivergence::None);
+        let overbought = snapshot(Some(78.0), "Overbought", RsiDivergence::None);
+        let neutral = snapshot(Some(50.0), "Neutral", RsiDivergence::None);
+
+        let (allowed, reason) = rsi_allows_signal("BUY", &oversold, &config);
+        assert!(allowed, "{}", reason);
+        assert!(reason.contains("value=25.0"));
+        assert!(reason.contains("Oversold"));
+
+        let (allowed, reason) = rsi_allows_signal("SELL", &overbought, &config);
+        assert!(allowed, "{}", reason);
+
+        let (allowed, reason) = rsi_allows_signal("BUY", &neutral, &config);
+        assert!(!allowed);
+        assert!(reason.contains("Neutral"));
+        assert!(reason.contains("divergence=None"));
+
+        assert!(!rsi_allows_signal("SELL", &oversold, &config).0);
+        assert!(!rsi_allows_signal("BUY", &overbought, &config).0);
+    }
+
+    #[test]
+    fn rsi_divergence_mode_requires_matching_divergence() {
+        let config = rsi_config("DIVERGENCE");
+        let bullish = snapshot(Some(45.0), "Neutral", RsiDivergence::Bullish);
+        let bearish = snapshot(Some(55.0), "Neutral", RsiDivergence::Bearish);
+        let none = snapshot(Some(55.0), "Neutral", RsiDivergence::None);
+
+        let (allowed, reason) = rsi_allows_signal("BUY", &bullish, &config);
+        assert!(allowed, "{}", reason);
+        assert!(reason.contains("divergence=Bullish"));
+
+        let (allowed, reason) = rsi_allows_signal("SELL", &bearish, &config);
+        assert!(allowed, "{}", reason);
+        assert!(reason.contains("divergence=Bearish"));
+
+        assert!(!rsi_allows_signal("BUY", &bearish, &config).0);
+        assert!(!rsi_allows_signal("SELL", &bullish, &config).0);
+        assert!(!rsi_allows_signal("BUY", &none, &config).0);
+    }
+
+    #[test]
+    fn rsi_divergence_mode_blocks_when_divergence_component_disabled() {
+        let config = BotConfig {
+            rsi_divergence_enabled: false,
+            ..rsi_config("DIVERGENCE")
+        };
+        let bullish = snapshot(Some(45.0), "Neutral", RsiDivergence::Bullish);
+        let (allowed, reason) = rsi_allows_signal("BUY", &bullish, &config);
+        assert!(!allowed);
+        assert!(reason.contains("divergence disabled"));
+    }
+
+    #[test]
+    fn rsi_both_mode_is_or_of_extreme_and_divergence() {
+        let config = rsi_config("BOTH");
+        let neutral_bullish = snapshot(Some(50.0), "Neutral", RsiDivergence::Bullish);
+        let neutral_bearish = snapshot(Some(50.0), "Neutral", RsiDivergence::Bearish);
+        let overbought_none = snapshot(Some(80.0), "Overbought", RsiDivergence::None);
+        let neutral_none = snapshot(Some(50.0), "Neutral", RsiDivergence::None);
+
+        assert!(rsi_allows_signal("BUY", &neutral_bullish, &config).0);
+        assert!(rsi_allows_signal("SELL", &neutral_bearish, &config).0);
+        assert!(rsi_allows_signal("SELL", &overbought_none, &config).0);
+        assert!(!rsi_allows_signal("BUY", &overbought_none, &config).0);
+        assert!(!rsi_allows_signal("BUY", &neutral_none, &config).0);
+        assert!(!rsi_allows_signal("SELL", &neutral_none, &config).0);
+    }
+
+    #[test]
+    fn rsi_none_value_blocks_extreme_and_both_without_divergence() {
+        let none = snapshot(None, "Neutral", RsiDivergence::None);
+        for mode in ["EXTREME", "BOTH"] {
+            let config = rsi_config(mode);
+            let (allowed, reason) = rsi_allows_signal("BUY", &none, &config);
+            assert!(!allowed, "mode {} must block without a value", mode);
+            assert!(reason.contains("value=n/a"));
+        }
+    }
+
+    #[test]
+    fn rsi_custom_65_35_thresholds_are_respected() {
+        let config = BotConfig {
+            rsi_overbought: 65.0,
+            rsi_oversold: 35.0,
+            ..rsi_config("EXTREME")
+        };
+
+        assert!(
+            rsi_allows_signal(
+                "SELL",
+                &snapshot(Some(65.0), "Overbought", RsiDivergence::None),
+                &config
+            )
+            .0
+        );
+        assert!(
+            !rsi_allows_signal(
+                "SELL",
+                &snapshot(Some(64.9), "Neutral", RsiDivergence::None),
+                &config
+            )
+            .0
+        );
+        assert!(
+            rsi_allows_signal(
+                "BUY",
+                &snapshot(Some(35.0), "Oversold", RsiDivergence::None),
+                &config
+            )
+            .0
+        );
+        assert!(
+            !rsi_allows_signal(
+                "BUY",
+                &snapshot(Some(35.1), "Neutral", RsiDivergence::None),
+                &config
+            )
+            .0
+        );
+    }
+
+    #[test]
+    fn rsi_filter_allows_unknown_signal_types() {
+        let config = rsi_config("EXTREME");
+        let neutral = snapshot(Some(50.0), "Neutral", RsiDivergence::None);
+        let (allowed, reason) = rsi_allows_signal("UNKNOWN", &neutral, &config);
+        assert!(allowed);
+        assert!(reason.contains("không xác định"));
+    }
+
+    #[test]
+    fn divergence_label_matches_serialized_direction() {
+        assert_eq!(divergence_label(RsiDivergence::None), "None");
+        assert_eq!(divergence_label(RsiDivergence::Bullish), "Bullish");
+        assert_eq!(divergence_label(RsiDivergence::Bearish), "Bearish");
     }
 }

@@ -48,6 +48,16 @@ export const SignalModal: React.FC<Props> = ({
           typeof signal.cvd === 'number' ? ` | CVD: ${signal.cvd.toFixed(0)}` : ''
         }`
       : '';
+  const rsiDivergence =
+    signal.rsi_divergence && signal.rsi_divergence !== 'None'
+      ? ` · ${signal.rsi_divergence} Divergence`
+      : '';
+  const rsiTelegramLine =
+    typeof signal.rsi_value === 'number'
+      ? `\n📐 RSI M15: ${signal.rsi_value.toFixed(1)}${
+          signal.rsi_state ? ` · ${signal.rsi_state}` : ''
+        }${rsiDivergence}`
+      : '';
 
   const baseTelegramMessage = `${simulationPrefix}🚨 GOLD SIGNAL ALERT | ${signal.symbol} 🚨
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -62,7 +72,7 @@ export const SignalModal: React.FC<Props> = ({
 ━━━━━━━━━━━━━━━━━━━━━━
 🔍 Phân tích Kỹ thuật & Volume:
 • Price Action: ${signal.price_action_notes}
-• Volume Absorption: ${signal.volume_analysis_notes}${volumeDeltaLine}
+• Volume Absorption: ${signal.volume_analysis_notes}${volumeDeltaLine}${rsiTelegramLine}
 • Đánh giá: ${signal.full_rationale}${aiTelegramLine}
 ━━━━━━━━━━━━━━━━━━━━━━
 ⚠️ Quản lý rủi ro tối đa 1-2% tài khoản. Chúc bạn giao dịch kỷ luật!
@@ -223,8 +233,7 @@ export const SignalModal: React.FC<Props> = ({
           )}
 
           {/* Volume Delta/CVD (only present when the optional filter ran) */}
-          {typeof signal.delta_ratio === 'number' && (
-            <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-3.5 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs font-mono">
+          {typeof signal.delta_ratio === 'number' && (            <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-3.5 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs font-mono">
               <span className="text-cyan-300 font-bold">📊 Volume Delta</span>
               <span
                 className={
@@ -277,6 +286,45 @@ export const SignalModal: React.FC<Props> = ({
               )}
               <span className="text-[10px] text-neutral-500">
                 taker buy − sell · chỉ hiển thị khi filter bật
+              </span>
+            </div>
+          )}
+
+          {/* RSI M15 context (always present for real signals) */}
+          {typeof signal.rsi_value === 'number' && (
+            <div className="rounded-xl border border-fuchsia-500/30 bg-fuchsia-500/10 p-3.5 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs font-mono">
+              <span className="text-fuchsia-300 font-bold">📐 RSI M15</span>
+              <span className="text-neutral-200">
+                Value <strong className="tabular-nums">{signal.rsi_value.toFixed(1)}</strong>
+              </span>
+              {signal.rsi_state && (
+                <span
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                    signal.rsi_state === 'Oversold'
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                      : signal.rsi_state === 'Overbought'
+                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                        : 'bg-neutral-800 text-neutral-300 border-neutral-700'
+                  }`}
+                >
+                  {signal.rsi_state}
+                </span>
+              )}
+              {signal.rsi_divergence && signal.rsi_divergence !== 'None' && (
+                <span
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                    signal.rsi_divergence === 'Bullish'
+                      ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                      : signal.rsi_divergence === 'Bearish'
+                        ? 'bg-rose-500/10 text-rose-300 border-rose-500/30'
+                        : 'bg-neutral-900 text-neutral-400 border-neutral-800'
+                  }`}
+                >
+                  {signal.rsi_divergence} Divergence
+                </span>
+              )}
+              <span className="text-[10px] text-neutral-500">
+                Wilder · context/AI input · không tự vào lệnh
               </span>
             </div>
           )}

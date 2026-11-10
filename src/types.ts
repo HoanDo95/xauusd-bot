@@ -40,6 +40,13 @@ export interface TimeframeContext {
   candles: number;
 }
 
+/** Point-in-time Wilder RSI + divergence label. */
+export interface RsiSnapshot {
+  value: number | null;
+  state: string;
+  divergence: 'None' | 'Bullish' | 'Bearish' | string;
+}
+
 export interface MarketContext {
   d1: TimeframeContext;
   h4: TimeframeContext;
@@ -47,6 +54,12 @@ export interface MarketContext {
   updated_at: string;
   price_source: string;
   spot_basis: number | null;
+  /** RSI of the signal candle (computed live by the scanner/API). */
+  rsi_m15?: RsiSnapshot | null;
+  /** H1 RSI context (fixed 70/30 semantics). */
+  rsi_h1?: RsiSnapshot | null;
+  /** H4 RSI context (fixed 70/30 semantics). */
+  rsi_h4?: RsiSnapshot | null;
 }
 
 /** Aggressive taker flow of the latest M15 candle + CVD over the lookback window. */
@@ -134,6 +147,12 @@ export interface Signal {
   cvd?: number | null;
   /** Absolute buy-minus-sell volume of the signal candle. */
   delta?: number | null;
+  /** RSI (Wilder) of the signal candle — advisory/context. */
+  rsi_value?: number | null;
+  /** "Overbought" | "Neutral" | "Oversold". */
+  rsi_state?: string | null;
+  /** "None" | "Bullish" | "Bearish". */
+  rsi_divergence?: string | null;
 }
 
 /** AI Chief Risk Officer review — veto-only, never live SL/TP. */
@@ -144,6 +163,12 @@ export interface AiSignalReview {
   dynamic_sl?: number | null;
   tp?: number | null;
   macro_trend_h1_h4?: string | null;
+  /** RSI M15 echoed by the AI (nested object parsed server-side). */
+  rsi_value?: number | null;
+  rsi_state?: string | null;
+  rsi_divergence?: string | null;
+  /** Advisory execution rule proposed by the AI. */
+  execution_rule?: string | null;
   reason: string;
   provider: string;
   model: string;
@@ -244,6 +269,22 @@ export interface BotConfig {
   volume_delta_lookback: number;
   /** Minimum |delta_ratio| for ALIGN mode (0–1). */
   volume_delta_min_ratio: number;
+  /** Optional hard RSI gate. Default OFF — no behavior change when false. */
+  rsi_filter_enabled?: boolean;
+  /** Wilder RSI period (2–100, default 14). */
+  rsi_period?: number;
+  /** Overbought threshold (50–100, default 70). */
+  rsi_overbought?: number;
+  /** Oversold threshold (0–50, default 30). */
+  rsi_oversold?: number;
+  /** Enable the divergence component of the RSI gate. Default true. */
+  rsi_divergence_enabled?: boolean;
+  /** Divergence pivot lookback (10–200, default 40). */
+  rsi_divergence_lookback?: number;
+  /** Pivot confirmation candles per side (1–10, default 2). */
+  rsi_pivot_k?: number;
+  /** EXTREME | DIVERGENCE | BOTH. */
+  rsi_mode?: 'EXTREME' | 'DIVERGENCE' | 'BOTH';
 }
 
 export interface DailyMacroReport {

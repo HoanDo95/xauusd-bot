@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { MarketContext, TimeframeContext, VolumeDeltaSnapshot } from '../types';
+import { MarketContext, RsiSnapshot, TimeframeContext, VolumeDeltaSnapshot } from '../types';
 
 interface Props {
   context: MarketContext | null;
@@ -72,6 +72,81 @@ const DeltaBadge: React.FC<{ delta?: VolumeDeltaSnapshot | null }> = ({ delta })
     </div>
   );
 };
+
+function rsiStateClass(state: string | null | undefined): string {
+  switch ((state || '').toUpperCase()) {
+    case 'OVERSOLD':
+      return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40';
+    case 'OVERBOUGHT':
+      return 'bg-rose-500/15 text-rose-300 border-rose-500/40';
+    default:
+      return 'bg-neutral-800 text-neutral-300 border-neutral-700';
+  }
+}
+
+function rsiDivergenceClass(divergence: string | null | undefined): string {
+  switch ((divergence || '').toUpperCase()) {
+    case 'BULLISH':
+      return 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30';
+    case 'BEARISH':
+      return 'bg-rose-500/10 text-rose-300 border-rose-500/30';
+    default:
+      return 'bg-neutral-900 text-neutral-500 border-neutral-800';
+  }
+}
+
+const RsiCell: React.FC<{ label: string; snapshot?: RsiSnapshot | null }> = ({
+  label,
+  snapshot,
+}) => {
+  const value =
+    typeof snapshot?.value === 'number' && Number.isFinite(snapshot.value)
+      ? snapshot.value.toFixed(1)
+      : 'n/a';
+  const state = snapshot?.state || 'n/a';
+  const divergence = snapshot?.divergence || 'None';
+  const hasDivergence = divergence !== 'None' && divergence !== 'n/a';
+
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg border border-neutral-800 bg-neutral-900/80 px-2.5 py-2">
+      <div className="flex items-center justify-between gap-1">
+        <span className="text-[9px] font-mono uppercase tracking-wider text-neutral-500">{label}</span>
+        <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold border ${rsiStateClass(state)}`}>
+          {state}
+        </span>
+      </div>
+      <span className="text-base font-bold font-mono text-white tabular-nums leading-none">
+        {value}
+      </span>
+      <span
+        className={`px-1.5 py-0.5 rounded text-[9px] font-mono border text-center truncate ${rsiDivergenceClass(
+          divergence
+        )}`}
+        title={hasDivergence ? `${divergence} divergence` : 'No divergence'}
+      >
+        {hasDivergence ? `${divergence} Divergence` : 'No divergence'}
+      </span>
+    </div>
+  );
+};
+
+const RsiPanel: React.FC<{
+  m15?: RsiSnapshot | null;
+  h1?: RsiSnapshot | null;
+  h4?: RsiSnapshot | null;
+}> = ({ m15, h1, h4 }) => (
+  <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 px-3 py-2.5 flex flex-col gap-2">
+    <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono">
+      <span className="text-neutral-400 uppercase tracking-wider">📐 RSI Wilder (context)</span>
+      <span className="text-neutral-600">M15 trigger · H1/H4 fixed 70/30 · advisory</span>
+    </div>
+    <div className="grid grid-cols-3 gap-2">
+      <RsiCell label="M15" snapshot={m15} />
+      <RsiCell label="H1" snapshot={h1} />
+      <RsiCell label="H4" snapshot={h4} />
+    </div>
+  </div>
+);
 
 const TimeframePanel: React.FC<{ context: TimeframeContext; highlight?: boolean }> = ({
   context,
@@ -220,6 +295,8 @@ export const MacroContextCard: React.FC<Props> = ({ context, volumeDelta }) => {
       </div>
 
       <DeltaBadge delta={volumeDelta} />
+
+      <RsiPanel m15={context.rsi_m15} h1={context.rsi_h1} h4={context.rsi_h4} />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <TimeframePanel context={context.d1} />

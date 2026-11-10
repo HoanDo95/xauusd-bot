@@ -7,6 +7,7 @@ use crate::models::{
 };
 use crate::news_filter::{MacroBias, NewsFilterService};
 use crate::risk_manager::{PositionSizeResult, PositionSizer};
+use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot, RsiSnapshot};
 use crate::scheduler::DailyScheduler;
 use crate::signal_review::{review_blocks_signal, review_signal};
 use crate::storage::{PersistentState, PersistentStore};
@@ -173,6 +174,7 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
         "d1FilterEnabled": config.htf_d1_filter_enabled,
         "aiReviewEnabled": config.ai_signal_review_enabled,
         "volumeDeltaFilterEnabled": config.volume_delta_filter_enabled,
+        "rsiFilterEnabled": config.rsi_filter_enabled,
         "dataSource": active_data_source,
         "priceSource": price_source,
         "spotPrice": spot_price,
@@ -250,10 +252,23 @@ async fn get_recent_candles(State(state): State<AppState>) -> impl IntoResponse 
 }
 
 /// Bối cảnh D1/H4/H1 read-only cho dashboard. 204 khi chưa fetch được HTF.
+/// RSI M15 được tính live từ `state.candles` theo config hiện tại.
 async fn get_market_context(State(state): State<AppState>) -> impl IntoResponse {
     let context = state.market_context.read().await.clone();
     match context {
-        Some(context) => (StatusCode::OK, Json(context)).into_response(),
+        Some(mut context) => {
+            let config = state.config.read().await.clone();
+            let candles = state.candles.read().await.clone();
+            context.rsi_m15 = Some(rsi_snapshot(
+                &candles,
+                config.rsi_period,
+                config.rsi_overbought,
+                config.rsi_oversold,
+                config.rsi_divergence_lookback,
+                config.rsi_pivot_k,
+            ));
+            (StatusCode::OK, Json(context)).into_response()
+        }
         None => StatusCode::NO_CONTENT.into_response(),
     }
 }
@@ -336,6 +351,24 @@ fn apply_volume_delta_filter(
     signal.cvd = Some(snapshot.cvd);
     signal.delta = Some(snapshot.delta);
     None
+}
+
+/// Gắn RSI context (M15) vào tín hiệu để dashboard/Telegram/AI cùng thấy.
+fn attach_rsi_snapshot(signal: &mut Signal, snapshot: &RsiSnapshot) {
+    signal.rsi_value = snapshot.value;
+    signal.rsi_state = Some(snapshot.state.clone());
+    signal.rsi_divergence = Some(divergence_label(snapshot.divergence));
+}
+
+/// Áp bộ lọc RSI cứng cho tín hiệu thật. Trả lý do nếu bị chặn.
+/// Mặc định filter OFF => luôn None (không đổi hành vi).
+fn rsi_block_reason(config: &BotConfig, signal: &Signal, snapshot: &RsiSnapshot) -> Option<String> {
+    if !config.rsi_filter_enabled || signal.is_simulated {
+        return None;
+    }
+
+    let (allowed, reason) = rsi_allows_signal(signal.signal_type.as_str(), snapshot, config);
+    (!allowed).then_some(reason)
 }
 
 /// Chạy AI Risk Officer cho tín hiệu thật và trả lý do nếu bị chặn.
@@ -568,6 +601,17 @@ async fn receive_candle_webhook(
             );
         }
 
+        // 4a. RSI M15 context — luôn gắn, kể cả khi filter tắt.
+        let rsi = rsi_snapshot(
+            &candles_snapshot,
+            config.rsi_period,
+            config.rsi_overbought,
+            config.rsi_oversold,
+            config.rsi_divergence_lookback,
+            config.rsi_pivot_k,
+        );
+        attach_rsi_snapshot(&mut signal, &rsi);
+
         if let Some(reason) = htf_block_reason(&state, &config, signal.signal_type.as_str()).await {
             warn!(
                 "🛑 [Candle Webhook] Chặn {} do bộ lọc H4: {}",
@@ -591,6 +635,20 @@ async fn receive_candle_webhook(
                 StatusCode::OK,
                 Json(json!({
                     "status": "blocked_by_volume_delta",
+                    "reason": reason
+                })),
+            );
+        }
+
+        if let Some(reason) = rsi_block_reason(&config, &signal, &rsi) {
+            warn!(
+                "🛑 [Candle Webhook] RSI filter chặn {}: {}",
+                signal.signal_type, reason
+            );
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "blocked_by_rsi",
                     "reason": reason
                 })),
             );
@@ -933,10 +991,24 @@ async fn receive_tradingview_webhook(
         delta_ratio: None,
         cvd: None,
         delta: None,
+        rsi_value: None,
+        rsi_state: None,
+        rsi_divergence: None,
     };
 
-    // Bước 6a: Volume Delta/CVD tùy chọn (mặc định OFF) — chỉ tín hiệu thật.
+    // Bước 6a: RSI M15 context — luôn gắn, kể cả khi filter tắt.
     let candles_snapshot = state.candles.read().await.clone();
+    let rsi = rsi_snapshot(
+        &candles_snapshot,
+        config.rsi_period,
+        config.rsi_overbought,
+        config.rsi_oversold,
+        config.rsi_divergence_lookback,
+        config.rsi_pivot_k,
+    );
+    attach_rsi_snapshot(&mut signal, &rsi);
+
+    // Bước 6b: Volume Delta/CVD tùy chọn (mặc định OFF) — chỉ tín hiệu thật.
     if let Some(reason) = apply_volume_delta_filter(&config, &mut signal, &candles_snapshot) {
         warn!(
             "🛑 [TradingView Webhook] Volume Delta chặn {}: {}",
@@ -952,7 +1024,23 @@ async fn receive_tradingview_webhook(
         );
     }
 
-    // Bước 6b: AI Risk Officer tùy chọn (chỉ veto/standby, không sửa SL/TP).
+    // Bước 6c: RSI filter tùy chọn (mặc định OFF) — chỉ tín hiệu thật.
+    if let Some(reason) = rsi_block_reason(&config, &signal, &rsi) {
+        warn!(
+            "🛑 [TradingView Webhook] RSI filter chặn {}: {}",
+            action_upper, reason
+        );
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "status": "blocked_by_rsi",
+                "action_taken": "DROPPED",
+                "reason": reason
+            })),
+        );
+    }
+
+    // Bước 6d: AI Risk Officer tùy chọn (chỉ veto/standby, không sửa SL/TP).
     if let Some(reason) = ai_review_block_reason(&state, &config, &mut signal).await {
         warn!(
             "🤖 [TradingView Webhook] AI Risk Officer chặn {}: {}",
@@ -1331,6 +1419,15 @@ async fn simulate_setup(
 
     if let Some(mut signal) = detected_signal {
         signal.is_simulated = true;
+        let rsi = rsi_snapshot(
+            &candles_snapshot,
+            config.rsi_period,
+            config.rsi_overbought,
+            config.rsi_oversold,
+            config.rsi_divergence_lookback,
+            config.rsi_pivot_k,
+        );
+        attach_rsi_snapshot(&mut signal, &rsi);
         signal.price_action_notes = format!("[SIMULATION] {}", signal.price_action_notes);
         signal.full_rationale =
             format!("[SIMULATION - KHÔNG TÍNH QUOTA] {}", signal.full_rationale);

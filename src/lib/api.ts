@@ -59,6 +59,8 @@ export interface HealthResponse {
   aiReviewEnabled?: boolean;
   /** Optional Volume Delta/CVD gate state (default false). */
   volumeDeltaFilterEnabled?: boolean;
+  /** Optional hard RSI gate state (default false). */
+  rsiFilterEnabled?: boolean;
 }
 
 export interface AiReviewResponse {

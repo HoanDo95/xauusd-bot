@@ -435,6 +435,9 @@ impl GoldMarketAnalyzer {
                             delta_ratio: None,
                             cvd: None,
                             delta: None,
+                            rsi_value: None,
+                            rsi_state: None,
+                            rsi_divergence: None,
                         });
                     }
                 }
@@ -573,6 +576,9 @@ impl GoldMarketAnalyzer {
                             delta_ratio: None,
                             cvd: None,
                             delta: None,
+                            rsi_value: None,
+                            rsi_state: None,
+                            rsi_divergence: None,
                         });
                     }
                 }

@@ -76,6 +76,14 @@ const DEFAULT_CONFIG: BotConfig = {
   volume_delta_mode: 'BOTH',
   volume_delta_lookback: 20,
   volume_delta_min_ratio: 0.1,
+  rsi_filter_enabled: false,
+  rsi_period: 14,
+  rsi_overbought: 70,
+  rsi_oversold: 30,
+  rsi_divergence_enabled: true,
+  rsi_divergence_lookback: 40,
+  rsi_pivot_k: 2,
+  rsi_mode: 'BOTH',
 };
 
 export default function DashboardPage() {

@@ -125,7 +125,8 @@ signal before it is stored or sent to Telegram:
   blocks the signal. The AI can never change the live SL/TP or lot size.
 - The review prompt includes D1/H4/H1 bias, EMA50/200, channel position, ATR,
   S/R, current price/spot basis, candidate side/entry/SL/TP/RR/lot, volume,
-  Vietnam session time and upcoming High-Impact USD events.
+  RSI M15/H1/H4 context, Vietnam session time and upcoming High-Impact USD
+  events.
 - **Fail-open by default**: if `OPENCODE_GO_API_KEY` is missing, the request
   errors/times out, or the JSON is malformed, the signal proceeds. Set
   `ai_signal_review_fail_open=false` in the dashboard for fail-closed behaviour.
@@ -138,6 +139,38 @@ signal before it is stored or sent to Telegram:
 - Manual test endpoint: `POST /api/ai/review-signal` with
   `{"signal": {...}, "context": {...}}` (or a raw signal). It returns
   `{"status":"success","review":{...}}`, sends no Telegram and consumes no quota.
+
+### RSI context (Phase R1/R2)
+
+RSI is **advisory/context first**. The Rust engine computes Wilder RSI on
+closed candles and exposes it everywhere the bot makes or explains a decision:
+
+- `GET /api/context` returns `rsi_m15`, `rsi_h1` and `rsi_h4` snapshots
+  (`value`, `state`, `divergence`). The dashboard "View toàn cảnh" panel shows
+  M15/H1/H4 with Oversold/Overbought colouring and divergence badges.
+- Every real signal carries `rsi_value`, `rsi_state` and `rsi_divergence`; they
+  are shown in the signal modal and appended to Telegram alerts.
+- The AI Risk Officer prompt includes the RSI block plus the 3-layer rules
+  (H4/H1 supply/demand confluence + RSI extreme/divergence + volume
+  confirmation). Missing or contradictory layers should push the AI to
+  `STANDBY`. AI remains veto-only and never sets live SL/TP.
+- The optional hard gate (`rsi_filter_enabled`) is **OFF by default**, so live
+  behaviour is unchanged. When enabled it supports `EXTREME`, `DIVERGENCE` or
+  `BOTH` and only applies to real signals; simulations skip it.
+
+Phase R0 backtest evidence (why the default stays OFF):
+
+| Variant | Trades | Net R | Profit factor |
+|---|---|---|---|
+| `rsi_extreme` (70/30 at trigger candle) | 0/871 | — | — |
+| `rsi_extreme_65_35` | 1 | — | — |
+| `rsi_divergence` | 69 | −4.76R | 0.94 |
+| `htf_h4_d1_rsi_both` | 42 | +7.93R | 1.31 |
+
+`htf_h4_d1_rsi_both` was profitable in-sample (+7.93R, PF 1.31) and OOS
+(+5.78R, PF 2.00), but that is a single variant and not enough to change the
+default. **Recommendation:** keep RSI as context/AI input; do not enable the
+hard filter without new forward-test evidence.
 
 ### Entry execution (dashboard config)
 
@@ -238,6 +271,7 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
 |---|---|---|
 | `GET` | `/api/health` | Health, live price, feed source, spot basis/price source, daily quota, kill switch |
 | `GET` | `/api/candles` | Live + last closed price, S/R zones, EMA50/200, trend, `dataSource`, `spotPrice`, `spotBasis`, `priceSource` |
+| `GET` | `/api/context` | Read-only D1/H4/H1 context + `rsi_m15`/`rsi_h1`/`rsi_h4` (204 until HTF ready) |
 | `GET` | `/api/signals` | Signal history + performance stats |
 | `GET` | `/api/stats` | Win rate, avg R, net R, profit factor (real signals only) |
 | `GET/POST` | `/api/config` | Read/update sanitized bot config |

@@ -676,6 +676,206 @@ export const ConfigPanel: React.FC<Props> = ({
             </div>
           </div>
 
+          {/* RSI context + optional hard filter (default OFF) */}
+          <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-4 flex flex-col gap-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="flex flex-col gap-1">
+                <div className="text-xs font-bold text-rose-300 uppercase tracking-wider">
+                  📐 RSI Wilder — context & bộ lọc tùy chọn (mặc định OFF)
+                </div>
+                <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
+                  RSI M15/H1/H4 luôn được hiển thị và gửi kèm AI Risk Officer như context. Bộ lọc
+                  cứng bên dưới chỉ chặn tín hiệu thật khi được bật; simulation luôn bỏ qua.
+                </p>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+                <input
+                  type="checkbox"
+                  checked={formData.rsi_filter_enabled ?? false}
+                  onChange={(e) =>
+                    setFormData({ ...formData, rsi_filter_enabled: e.target.checked })
+                  }
+                  className="accent-rose-500 w-4 h-4 rounded cursor-pointer"
+                />
+                <span className="font-semibold text-white">
+                  Bật bộ lọc RSI (mặc định OFF)
+                </span>
+              </label>
+            </div>
+
+            <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200 leading-relaxed">
+              ⚠️ Backtest R0: RSI 70/30 tại nến trigger = 0/871 lệnh; divergence −4.76R. Chỉ bật
+              sau khi forward-test có bằng chứng mới.
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">Chế độ lọc RSI</label>
+                <select
+                  disabled={!formData.rsi_filter_enabled}
+                  value={formData.rsi_mode ?? 'BOTH'}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      rsi_mode: e.target.value as BotConfig['rsi_mode'],
+                    })
+                  }
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-rose-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none cursor-pointer disabled:opacity-40"
+                >
+                  <option value="EXTREME">EXTREME — BUY oversold / SELL overbought</option>
+                  <option value="DIVERGENCE">DIVERGENCE — Bullish / Bearish divergence</option>
+                  <option value="BOTH">BOTH — EXTREME hoặc DIVERGENCE</option>
+                </select>
+                <span className="text-[11px] text-neutral-500">
+                  BOTH là mặc định khi bật; EXTREME khớp backtest R0 70/30.
+                </span>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">Overbought</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="1"
+                    min="50"
+                    max="100"
+                    disabled={!formData.rsi_filter_enabled}
+                    value={formData.rsi_overbought ?? 70}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        rsi_overbought: Math.min(100, Math.max(50, parseFloat(e.target.value) || 70)),
+                      })
+                    }
+                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-rose-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                  />
+                  <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">50–100</span>
+                </div>
+                <span className="text-[11px] text-neutral-500">Mặc định 70.</span>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">Oversold</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="1"
+                    min="0"
+                    max="50"
+                    disabled={!formData.rsi_filter_enabled}
+                    value={formData.rsi_oversold ?? 30}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        rsi_oversold: Math.min(50, Math.max(0, parseFloat(e.target.value) || 30)),
+                      })
+                    }
+                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-rose-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                  />
+                  <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">0–50</span>
+                </div>
+                <span className="text-[11px] text-neutral-500">
+                  Mặc định 30; backend reset 30/70 nếu oversold ≥ overbought.
+                </span>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">Chu kỳ RSI (Wilder)</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="1"
+                    min="2"
+                    max="100"
+                    disabled={!formData.rsi_filter_enabled}
+                    value={formData.rsi_period ?? 14}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        rsi_period: Math.min(100, Math.max(2, parseInt(e.target.value) || 14)),
+                      })
+                    }
+                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-rose-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                  />
+                  <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">nến</span>
+                </div>
+                <span className="text-[11px] text-neutral-500">Mặc định 14.</span>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">
+                  Lookback divergence
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="1"
+                    min="10"
+                    max="200"
+                    disabled={!formData.rsi_filter_enabled}
+                    value={formData.rsi_divergence_lookback ?? 40}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        rsi_divergence_lookback: Math.min(
+                          200,
+                          Math.max(10, parseInt(e.target.value) || 40)
+                        ),
+                      })
+                    }
+                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-rose-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                  />
+                  <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">nến</span>
+                </div>
+                <span className="text-[11px] text-neutral-500">Mặc định 40 nến M15.</span>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">
+                  Pivot K (xác nhận mỗi bên)
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="1"
+                    min="1"
+                    max="10"
+                    disabled={!formData.rsi_filter_enabled}
+                    value={formData.rsi_pivot_k ?? 2}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        rsi_pivot_k: Math.min(10, Math.max(1, parseInt(e.target.value) || 2)),
+                      })
+                    }
+                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-rose-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                  />
+                  <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">1–10</span>
+                </div>
+                <span className="text-[11px] text-neutral-500">Mặc định 2 nến mỗi bên.</span>
+              </div>
+            </div>
+
+            <label
+              className={`flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none ${
+                formData.rsi_filter_enabled ? '' : 'opacity-40'
+              }`}
+            >
+              <input
+                type="checkbox"
+                disabled={!formData.rsi_filter_enabled}
+                checked={formData.rsi_divergence_enabled ?? true}
+                onChange={(e) =>
+                  setFormData({ ...formData, rsi_divergence_enabled: e.target.checked })
+                }
+                className="accent-rose-500 w-4 h-4 rounded cursor-pointer mt-0.5"
+              />
+              <span className="text-[11px] text-neutral-300 leading-snug">
+                Dùng divergence trong bộ lọc RSI (mặc định bật). Tắt = chỉ xét EXTREME.
+              </span>
+            </label>
+          </div>
+
           {/* AI Chief Risk Officer (optional, veto-only) */}
           <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/5 p-4 flex flex-col gap-4">
             <div className="flex flex-wrap items-start justify-between gap-3">

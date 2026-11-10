@@ -86,6 +86,22 @@ impl TelegramNotifier {
                 )
             })
             .unwrap_or_default();
+        let rsi_line = signal
+            .rsi_value
+            .map(|value| {
+                let state = Self::escape_html(signal.rsi_state.as_deref().unwrap_or("Neutral"));
+                let divergence = signal
+                    .rsi_divergence
+                    .as_deref()
+                    .filter(|label| !label.eq_ignore_ascii_case("none"))
+                    .map(|label| format!(" · {} Divergence", Self::escape_html(label)))
+                    .unwrap_or_default();
+                format!(
+                    "📐 <b>RSI M15:</b> <code>{:.1}</code> · {}{}\n",
+                    value, state, divergence
+                )
+            })
+            .unwrap_or_default();
 
         format!(
             "🚨 <b>GOLD SIGNAL ALERT | {}</b> 🚨\n\
@@ -106,6 +122,7 @@ impl TelegramNotifier {
             🔍 <b>Phân tích Kỹ thuật & Volume:</b>\n\
             • <b>Price Action:</b> {}\n\
             • <b>Volume Absorption:</b> {}\n\
+            {}\
             {}\
             • <b>Đánh giá:</b> {}\n\
             {}\
@@ -136,6 +153,7 @@ impl TelegramNotifier {
             price_action,
             volume_analysis,
             volume_delta_line,
+            rsi_line,
             rationale,
             ai_review_line
         )
@@ -487,6 +505,9 @@ mod tests {
             delta_ratio: None,
             cvd: None,
             delta: None,
+            rsi_value: None,
+            rsi_state: None,
+            rsi_divergence: None,
         }
     }
 
@@ -565,6 +586,41 @@ mod tests {
 
         let without = TelegramNotifier::format_signal_message(&sample_signal());
         assert!(!without.contains("Volume Delta:"));
+    }
+
+    #[test]
+    fn format_signal_message_appends_rsi_line_and_divergence() {
+        let mut signal = sample_signal();
+        signal.rsi_value = Some(76.4);
+        signal.rsi_state = Some("Overbought".to_string());
+        signal.rsi_divergence = Some("Bearish".to_string());
+
+        let message = TelegramNotifier::format_signal_message(&signal);
+        assert!(message.contains("RSI M15:"));
+        assert!(message.contains("76.4"));
+        assert!(message.contains("Overbought"));
+        assert!(message.contains("Bearish Divergence"));
+
+        signal.rsi_divergence = Some("None".to_string());
+        let without_divergence = TelegramNotifier::format_signal_message(&signal);
+        assert!(without_divergence.contains("RSI M15:"));
+        assert!(!without_divergence.contains("None Divergence"));
+
+        let no_rsi = TelegramNotifier::format_signal_message(&sample_signal());
+        assert!(!no_rsi.contains("RSI M15:"));
+    }
+
+    #[test]
+    fn format_signal_message_escapes_rsi_state() {
+        let mut signal = sample_signal();
+        signal.rsi_value = Some(50.0);
+        signal.rsi_state = Some("Neutral<script>".to_string());
+        signal.rsi_divergence = Some("Bullish<&>".to_string());
+
+        let message = TelegramNotifier::format_signal_message(&signal);
+        assert!(message.contains("Neutral&lt;script&gt;"));
+        assert!(message.contains("Bullish&lt;&amp;&gt; Divergence"));
+        assert!(!message.contains("Neutral<script>"));
     }
 
     #[test]

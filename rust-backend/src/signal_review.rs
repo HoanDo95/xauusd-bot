@@ -1,5 +1,6 @@
 use crate::market_context::{MarketContext, TimeframeContext};
 use crate::models::{BotConfig, EconomicEvent, ImpactLevel, Signal};
+use crate::rsi::{divergence_label, RsiSnapshot};
 use chrono::{DateTime, Duration, Timelike, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,16 @@ pub struct AiSignalReview {
     pub dynamic_sl: Option<f64>,
     pub tp: Option<f64>,
     pub macro_trend_h1_h4: Option<String>,
+    /// RSI M15 đọc từ AI (nested hoặc flat); fallback candidate signal.
+    #[serde(default)]
+    pub rsi_value: Option<f64>,
+    #[serde(default)]
+    pub rsi_state: Option<String>,
+    #[serde(default)]
+    pub rsi_divergence: Option<String>,
+    /// Quy tắc thực thi ngắn gọn do AI đề xuất (advisory).
+    #[serde(default)]
+    pub execution_rule: Option<String>,
     pub reason: String,
     pub provider: String,
     pub model: String,
@@ -118,6 +129,48 @@ fn format_timeframe_context(label: &str, context: &TimeframeContext) -> String {
     )
 }
 
+fn format_rsi_value(snapshot: &RsiSnapshot) -> String {
+    let value = snapshot
+        .value
+        .map(|value| format!("{:.1}", value))
+        .unwrap_or_else(|| "n/a".to_string());
+    format!(
+        "value={} state={} divergence={}",
+        value,
+        snapshot.state,
+        divergence_label(snapshot.divergence)
+    )
+}
+
+/// Khối RSI gọn cho prompt. M15 ưu tiên context, fallback candidate signal;
+/// H1/H4 lấy từ context và in "n/a" khi chưa có.
+fn format_rsi_block(candidate: &Signal, context: Option<&MarketContext>) -> String {
+    let m15 = context
+        .and_then(|context| context.rsi_m15.as_ref())
+        .map(format_rsi_value)
+        .or_else(|| {
+            candidate.rsi_value.map(|value| {
+                format!(
+                    "value={:.1} state={} divergence={}",
+                    value,
+                    candidate.rsi_state.as_deref().unwrap_or("n/a"),
+                    candidate.rsi_divergence.as_deref().unwrap_or("n/a")
+                )
+            })
+        })
+        .unwrap_or_else(|| "n/a".to_string());
+    let h1 = context
+        .and_then(|context| context.rsi_h1.as_ref())
+        .map(format_rsi_value)
+        .unwrap_or_else(|| "n/a".to_string());
+    let h4 = context
+        .and_then(|context| context.rsi_h4.as_ref())
+        .map(format_rsi_value)
+        .unwrap_or_else(|| "n/a".to_string());
+
+    format!("rsi_m15: {}\nrsi_h1: {}\nrsi_h4: {}", m15, h1, h4)
+}
+
 /// Prompt gọn: chỉ dữ liệu cần cho quyết định veto/standby.
 fn build_review_prompt(
     candidate: &Signal,
@@ -171,6 +224,7 @@ fn build_review_prompt(
     };
 
     let current_price = candidate.live_market_price.unwrap_or(candidate.entry_price);
+    let rsi_lines = format_rsi_block(candidate, context);
 
     format!(
         "You are the independent Chief Risk Officer (AI) for a XAU/USD signal bot.\n\
@@ -178,20 +232,31 @@ fn build_review_prompt(
         or contradict it. You must NEVER invent or change live SL/TP; dynamic_sl and tp are \
         advisory observations only.\n\n\
         Market context (read-only):\n{}\n\n\
+        RSI context (Wilder, closed candles):\n{}\n\n\
         Candidate signal:\n\
         side={} entry={:.2} SL={:.2} TP1={:.2} TP2={:.2} RR=1:{:.2} lot={:.2}\n\
         volume_surge={:.2}x entry_type={} candle_close={:.2} current_price={:.2}\n\
         price_action={}\n\n\
         Timing: {} UTC | {} (VN) | {}\n\
         Upcoming High-Impact USD events: {}\n\n\
+        User's 3-layer confluence rules:\n\
+        1) SELL setup requires H4/H1 supply confluence AND (RSI M15 Overbought OR Bearish Divergence). \
+        BUY is the mirror: H4/H1 demand confluence AND (RSI M15 Oversold OR Bullish Divergence).\n\
+        2) Volume confirmation: absorption (volume surge) or exhaustion. If volume does not confirm, \
+        lower confidence or choose STANDBY.\n\
+        3) If one of the three layers is missing or contradictory, prefer STANDBY.\n\n\
         Risk rules of thumb: reject counter-D1/H4 trades, stretched channel entries, \
         thin R:R, and signals immediately before red news. Be conservative but concise.\n\n\
         Return ONLY one valid JSON object with exactly these keys:\n\
         {{\"action\":\"BUY\"|\"SELL\"|\"STANDBY\",\"confidence_score\":0.0,\
         \"entry_zone\":\"short text or null\",\"dynamic_sl\":null,\"tp\":null,\
-        \"macro_trend_h1_h4\":\"short text or null\",\"reason\":\"non-empty, <=240 chars\"}}\n\
-        action must be uppercase BUY, SELL or STANDBY. confidence_score must be 0.0-1.0.",
+        \"macro_trend_h1_h4\":\"short text or null\",\
+        \"rsi_indicator_m15\":{{\"value\":76.4,\"status\":\"Overbought\",\"divergence\":\"Bearish\"}},\
+        \"execution_rule\":\"short text or null\",\"reason\":\"non-empty, <=240 chars\"}}\n\
+        action must be uppercase BUY, SELL or STANDBY. confidence_score must be 0.0-1.0. \
+        rsi_indicator_m15 must mirror the supplied RSI context (use null value when unavailable).",
         context_lines,
+        rsi_lines,
         candidate.signal_type.as_str(),
         candidate.entry_price,
         candidate.stop_loss,
@@ -245,6 +310,61 @@ fn optional_f64(value: &Value, key: &str) -> Option<f64> {
         .filter(|number| number.is_finite())
 }
 
+fn normalize_rsi_state(value: &str) -> String {
+    match value.trim().to_uppercase().as_str() {
+        "OVERBOUGHT" => "Overbought",
+        "OVERSOLD" => "Oversold",
+        "NEUTRAL" => "Neutral",
+        _ => value.trim(),
+    }
+    .to_string()
+}
+
+fn normalize_rsi_divergence(value: &str) -> String {
+    match value.trim().to_uppercase().as_str() {
+        "NONE" => "None",
+        "BULLISH" => "Bullish",
+        "BEARISH" => "Bearish",
+        _ => value.trim(),
+    }
+    .to_string()
+}
+
+fn non_empty_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToString::to_string)
+}
+
+/// Đọc RSI từ object lồng `rsi_indicator_m15` hoặc các key phẳng.
+/// Object sai kiểu/thiếu field không làm crash; field nào có thì dùng field đó.
+fn parse_rsi_fields(value: &Value) -> (Option<f64>, Option<String>, Option<String>) {
+    let mut rsi_value = optional_f64(value, "rsi_value");
+    let mut rsi_state =
+        optional_string(value, "rsi_state").map(|state| normalize_rsi_state(&state));
+    let mut rsi_divergence = optional_string(value, "rsi_divergence")
+        .map(|divergence| normalize_rsi_divergence(&divergence));
+
+    if let Some(nested) = value.get("rsi_indicator_m15").and_then(Value::as_object) {
+        let nested_value = nested.get("value").and_then(Value::as_f64);
+        if rsi_value.is_none() {
+            rsi_value = nested_value.filter(|number| number.is_finite());
+        }
+        if rsi_state.is_none() {
+            rsi_state =
+                non_empty_string(nested.get("status")).map(|state| normalize_rsi_state(&state));
+        }
+        if rsi_divergence.is_none() {
+            rsi_divergence = non_empty_string(nested.get("divergence"))
+                .map(|divergence| normalize_rsi_divergence(&divergence));
+        }
+    }
+
+    (rsi_value, rsi_state, rsi_divergence)
+}
+
 /// Parse + validate JSON do AI trả về. Malformed => None.
 fn parse_review_content(content: &str, provider: &str, model: &str) -> Option<AiSignalReview> {
     let value: Value = serde_json::from_str(normalize_json_content(content)).ok()?;
@@ -264,6 +384,8 @@ fn parse_review_content(content: &str, provider: &str, model: &str) -> Option<Ai
         return None;
     }
 
+    let (rsi_value, rsi_state, rsi_divergence) = parse_rsi_fields(&value);
+
     Some(AiSignalReview {
         action,
         confidence_score: confidence.clamp(0.0, 1.0),
@@ -271,10 +393,27 @@ fn parse_review_content(content: &str, provider: &str, model: &str) -> Option<Ai
         dynamic_sl: optional_f64(&value, "dynamic_sl"),
         tp: optional_f64(&value, "tp"),
         macro_trend_h1_h4: optional_string(&value, "macro_trend_h1_h4"),
+        rsi_value,
+        rsi_state,
+        rsi_divergence,
+        execution_rule: optional_string(&value, "execution_rule"),
         reason: reason.to_string(),
         provider: provider.to_string(),
         model: model.to_string(),
     })
+}
+
+/// Nếu AI bỏ trống RSI, dùng RSI của candidate signal để response luôn có context.
+fn apply_candidate_rsi_fallback(review: &mut AiSignalReview, candidate: &Signal) {
+    if review.rsi_value.is_none() {
+        review.rsi_value = candidate.rsi_value;
+    }
+    if review.rsi_state.is_none() {
+        review.rsi_state = candidate.rsi_state.clone();
+    }
+    if review.rsi_divergence.is_none() {
+        review.rsi_divergence = candidate.rsi_divergence.clone();
+    }
 }
 
 /// Quyết định AI review có chặn tín hiệu hay không (pure, không network).
@@ -423,7 +562,10 @@ pub async fn review_signal(
         return None;
     };
 
-    let review = parse_review_content(content, "opencode_go", &settings.model);
+    let mut review = parse_review_content(content, "opencode_go", &settings.model);
+    if let Some(review) = review.as_mut() {
+        apply_candidate_rsi_fallback(review, candidate);
+    }
     match review.as_ref() {
         Some(review) => info!(
             "🤖 [AI Risk Officer] verdict={} confidence={:.2} model={}",
@@ -482,6 +624,9 @@ mod tests {
             delta_ratio: None,
             cvd: None,
             delta: None,
+            rsi_value: None,
+            rsi_state: None,
+            rsi_divergence: None,
         }
     }
 
@@ -493,6 +638,10 @@ mod tests {
             dynamic_sl: None,
             tp: None,
             macro_trend_h1_h4: None,
+            rsi_value: None,
+            rsi_state: None,
+            rsi_divergence: None,
+            execution_rule: None,
             reason: "structure agrees".to_string(),
             provider: "opencode_go".to_string(),
             model: DEFAULT_REVIEW_MODEL.to_string(),
@@ -520,9 +669,89 @@ mod tests {
         assert_eq!(parsed.dynamic_sl, Some(2672.5));
         assert_eq!(parsed.tp, None);
         assert_eq!(parsed.macro_trend_h1_h4.as_deref(), Some("H4 bullish"));
+        assert_eq!(parsed.rsi_value, None);
+        assert_eq!(parsed.rsi_state, None);
+        assert_eq!(parsed.rsi_divergence, None);
         assert_eq!(parsed.reason, "D1/H4 cùng hướng tăng.");
         assert_eq!(parsed.provider, "opencode_go");
         assert_eq!(parsed.model, DEFAULT_REVIEW_MODEL);
+    }
+
+    #[test]
+    fn parses_nested_and_flat_rsi_fields() {
+        let nested = r#"{
+            "action": "SELL",
+            "confidence_score": 0.82,
+            "rsi_indicator_m15": {"value": 76.4, "status": "overbought", "divergence": "bearish"},
+            "execution_rule": "Wait for M15 close below 2650",
+            "reason": "Supply confluence + RSI overbought"
+        }"#;
+        let parsed =
+            parse_review_content(nested, "opencode_go", "test-model").expect("nested RSI JSON");
+        assert_eq!(parsed.rsi_value, Some(76.4));
+        assert_eq!(parsed.rsi_state.as_deref(), Some("Overbought"));
+        assert_eq!(parsed.rsi_divergence.as_deref(), Some("Bearish"));
+        assert_eq!(
+            parsed.execution_rule.as_deref(),
+            Some("Wait for M15 close below 2650")
+        );
+
+        let flat = r#"{
+            "action": "BUY",
+            "confidence_score": 0.9,
+            "rsi_value": 28.2,
+            "rsi_state": "oversold",
+            "rsi_divergence": "bullish",
+            "reason": "Demand + RSI oversold"
+        }"#;
+        let parsed =
+            parse_review_content(flat, "opencode_go", "test-model").expect("flat RSI JSON");
+        assert_eq!(parsed.rsi_value, Some(28.2));
+        assert_eq!(parsed.rsi_state.as_deref(), Some("Oversold"));
+        assert_eq!(parsed.rsi_divergence.as_deref(), Some("Bullish"));
+    }
+
+    #[test]
+    fn malformed_rsi_object_does_not_crash_or_block_parsing() {
+        for content in [
+            r#"{"action":"BUY","confidence_score":0.8,"rsi_indicator_m15":"not-an-object","reason":"ok"}"#,
+            r#"{"action":"BUY","confidence_score":0.8,"rsi_indicator_m15":{"value":"high","status":42},"reason":"ok"}"#,
+            r#"{"action":"BUY","confidence_score":0.8,"rsi_indicator_m15":null,"reason":"ok"}"#,
+        ] {
+            let parsed = parse_review_content(content, "opencode_go", "test-model")
+                .expect("valid review despite malformed RSI");
+            assert_eq!(parsed.rsi_value, None);
+            assert_eq!(parsed.rsi_state, None);
+            assert_eq!(parsed.rsi_divergence, None);
+        }
+    }
+
+    #[test]
+    fn rsi_falls_back_to_candidate_fields_when_ai_omits_them() {
+        let mut candidate = sample_signal();
+        candidate.rsi_value = Some(64.2);
+        candidate.rsi_state = Some("Neutral".to_string());
+        candidate.rsi_divergence = Some("Bullish".to_string());
+
+        let content = r#"{"action":"BUY","confidence_score":0.8,"reason":"structure agrees"}"#;
+        let mut parsed =
+            parse_review_content(content, "opencode_go", "test-model").expect("review without RSI");
+        apply_candidate_rsi_fallback(&mut parsed, &candidate);
+
+        assert_eq!(parsed.rsi_value, Some(64.2));
+        assert_eq!(parsed.rsi_state.as_deref(), Some("Neutral"));
+        assert_eq!(parsed.rsi_divergence.as_deref(), Some("Bullish"));
+
+        // AI-provided RSI wins over the candidate fallback.
+        let mut provided = parse_review_content(
+            r#"{"action":"BUY","confidence_score":0.8,"rsi_value":71.5,"reason":"ok"}"#,
+            "opencode_go",
+            "test-model",
+        )
+        .expect("review with RSI");
+        apply_candidate_rsi_fallback(&mut provided, &candidate);
+        assert_eq!(provided.rsi_value, Some(71.5));
+        assert_eq!(provided.rsi_state.as_deref(), Some("Neutral"));
     }
 
     #[test]
@@ -614,6 +843,56 @@ mod tests {
         assert!(prompt.contains("IN golden session 13:00-23:00 VN"));
         assert!(prompt.contains("\"action\":\"BUY\"|"));
         assert!(prompt.contains("VETO-ONLY"));
+    }
+
+    #[test]
+    fn prompt_contains_rsi_context_and_three_layer_rules() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 11, 10, 14, 30, 0)
+            .single()
+            .expect("valid timestamp");
+        let mut candidate = sample_signal();
+        candidate.rsi_value = Some(76.4);
+        candidate.rsi_state = Some("Overbought".to_string());
+        candidate.rsi_divergence = Some("Bearish".to_string());
+
+        let prompt = build_review_prompt(&candidate, None, &[], now);
+
+        assert!(prompt.contains("RSI context (Wilder, closed candles):"));
+        assert!(prompt.contains("rsi_m15: value=76.4 state=Overbought divergence=Bearish"));
+        assert!(prompt.contains("rsi_h1: n/a"));
+        assert!(prompt.contains("rsi_h4: n/a"));
+        assert!(prompt.contains("SELL setup requires H4/H1 supply confluence"));
+        assert!(prompt.contains("BUY is the mirror"));
+        assert!(prompt.contains("Volume confirmation: absorption"));
+        assert!(prompt.contains("prefer STANDBY"));
+        assert!(prompt.contains("\"rsi_indicator_m15\""));
+        assert!(prompt.contains("\"execution_rule\""));
+    }
+
+    #[test]
+    fn prompt_prefers_context_rsi_over_candidate_fields() {
+        use crate::rsi::RsiDivergence;
+
+        let now = Utc
+            .with_ymd_and_hms(2026, 11, 10, 14, 30, 0)
+            .single()
+            .expect("valid timestamp");
+        let mut candidate = sample_signal();
+        candidate.rsi_value = Some(40.0);
+        candidate.rsi_state = Some("Neutral".to_string());
+        candidate.rsi_divergence = Some("None".to_string());
+
+        let mut context = crate::market_context::build_market_context(&[], &[], &[], "TEST", None);
+        context.rsi_m15 = Some(RsiSnapshot {
+            value: Some(81.2),
+            state: "Overbought".to_string(),
+            divergence: RsiDivergence::Bearish,
+        });
+
+        let prompt = build_review_prompt(&candidate, Some(&context), &[], now);
+        assert!(prompt.contains("rsi_m15: value=81.2 state=Overbought divergence=Bearish"));
+        assert!(!prompt.contains("rsi_m15: value=40.0"));
     }
 
     #[test]

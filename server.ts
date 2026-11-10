@@ -70,6 +70,9 @@ interface Signal {
   delta_ratio?: number | null;
   cvd?: number | null;
   delta?: number | null;
+  rsi_value?: number | null;
+  rsi_state?: string | null;
+  rsi_divergence?: string | null;
 }
 
 interface EconomicEvent {
@@ -127,6 +130,15 @@ interface BotConfig {
   volume_delta_mode: 'ALIGN' | 'DIVERGENCE' | 'BOTH';
   volume_delta_lookback: number;
   volume_delta_min_ratio: number;
+  /** Optional hard RSI gate. Default false — no behavior change. */
+  rsi_filter_enabled: boolean;
+  rsi_period: number;
+  rsi_overbought: number;
+  rsi_oversold: number;
+  rsi_divergence_enabled: boolean;
+  rsi_divergence_lookback: number;
+  rsi_pivot_k: number;
+  rsi_mode: 'EXTREME' | 'DIVERGENCE' | 'BOTH';
 }
 
 interface DailyMacroReport {
@@ -266,6 +278,14 @@ const DEFAULT_CONFIG: BotConfig = {
   volume_delta_mode: 'BOTH',
   volume_delta_lookback: 20,
   volume_delta_min_ratio: 0.1,
+  rsi_filter_enabled: false,
+  rsi_period: 14,
+  rsi_overbought: 70,
+  rsi_oversold: 30,
+  rsi_divergence_enabled: true,
+  rsi_divergence_lookback: 40,
+  rsi_pivot_k: 2,
+  rsi_mode: 'BOTH',
 };
 
 function normalizeConfig(input: Partial<BotConfig>): BotConfig {
@@ -300,6 +320,22 @@ function normalizeConfig(input: Partial<BotConfig>): BotConfig {
     rawVolumeDeltaMode === 'BOTH'
       ? (rawVolumeDeltaMode as BotConfig['volume_delta_mode'])
       : base.volume_delta_mode;
+
+  const rawRsiMode =
+    typeof input.rsi_mode === 'string' ? input.rsi_mode.trim().toUpperCase() : '';
+  const rsiMode: BotConfig['rsi_mode'] =
+    rawRsiMode === 'EXTREME' || rawRsiMode === 'DIVERGENCE' || rawRsiMode === 'BOTH'
+      ? (rawRsiMode as BotConfig['rsi_mode'])
+      : base.rsi_mode;
+
+  const rsiOverbought = clamp(
+    numeric(input.rsi_overbought, base.rsi_overbought),
+    50,
+    100
+  );
+  const rsiOversold = clamp(numeric(input.rsi_oversold, base.rsi_oversold), 0, 50);
+  const [normalizedOverbought, normalizedOversold] =
+    rsiOversold >= rsiOverbought ? [70, 30] : [rsiOverbought, rsiOversold];
 
   return {
     symbol: typeof input.symbol === 'string' && input.symbol.trim() ? input.symbol.trim() : base.symbol,
@@ -430,6 +466,25 @@ function normalizeConfig(input: Partial<BotConfig>): BotConfig {
       0,
       1
     ),
+    rsi_filter_enabled: booleanOr(
+      input.rsi_filter_enabled,
+      base.rsi_filter_enabled
+    ),
+    rsi_period: clampInt(input.rsi_period, base.rsi_period, 2, 100),
+    rsi_overbought: normalizedOverbought,
+    rsi_oversold: normalizedOversold,
+    rsi_divergence_enabled: booleanOr(
+      input.rsi_divergence_enabled,
+      base.rsi_divergence_enabled
+    ),
+    rsi_divergence_lookback: clampInt(
+      input.rsi_divergence_lookback,
+      base.rsi_divergence_lookback,
+      10,
+      200
+    ),
+    rsi_pivot_k: clampInt(input.rsi_pivot_k, base.rsi_pivot_k, 1, 10),
+    rsi_mode: rsiMode,
   };
 }
 
@@ -1657,6 +1712,7 @@ async function startServer() {
       d1FilterEnabled: config.htf_d1_filter_enabled,
       aiReviewEnabled: config.ai_signal_review_enabled,
       volumeDeltaFilterEnabled: config.volume_delta_filter_enabled,
+      rsiFilterEnabled: config.rsi_filter_enabled,
       tradingviewWebhook: '/api/webhook/tradingview',
     });
   });

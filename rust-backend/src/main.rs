@@ -8,6 +8,7 @@ use gold_signal_bot::market_context::{
 use gold_signal_bot::market_feed::{MarketDataFeed, MarketFeedSnapshot};
 use gold_signal_bot::models::{BotConfig, Candle, Timeframe};
 use gold_signal_bot::news_filter::{ImpactLevel, NewsFilterConfig, NewsFilterService};
+use gold_signal_bot::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot};
 use gold_signal_bot::scheduler::DailyScheduler;
 use gold_signal_bot::signal_review::{review_blocks_signal, review_signal};
 use gold_signal_bot::storage::PersistentStore;
@@ -398,6 +399,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
 
+                // 6.7a RSI M15 (advisory/context) — luôn gắn vào tín hiệu.
+                let rsi = rsi_snapshot(
+                    &candles,
+                    config.rsi_period,
+                    config.rsi_overbought,
+                    config.rsi_oversold,
+                    config.rsi_divergence_lookback,
+                    config.rsi_pivot_k,
+                );
+                signal.rsi_value = rsi.value;
+                signal.rsi_state = Some(rsi.state.clone());
+                signal.rsi_divergence = Some(divergence_label(rsi.divergence));
+
                 // 6.7b Bộ lọc H4/D1 tùy chọn (mặc định OFF).
                 if config.htf_h4_filter_enabled || config.htf_d1_filter_enabled {
                     let context = scanner_state.market_context.read().await;
@@ -436,10 +450,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     info!("📊 [Volume Delta] {} — {}", signal.id, reason);
                 }
 
-                // 6.7d AI Chief Risk Officer tùy chọn (mặc định OFF).
+                // 6.7d RSI filter tùy chọn (mặc định OFF).
+                // Chỉ áp dụng cho tín hiệu thật; simulation bỏ qua hoàn toàn.
+                if config.rsi_filter_enabled && !signal.is_simulated {
+                    let (allowed, reason) =
+                        rsi_allows_signal(signal.signal_type.as_str(), &rsi, &config);
+                    if !allowed {
+                        warn!(
+                            "🛑 [RSI Filter] Bỏ qua {} {}: {}",
+                            signal.signal_type, signal.symbol, reason
+                        );
+                        continue;
+                    }
+                    info!("📐 [RSI Filter] {} — {}", signal.id, reason);
+                }
+
+                // 6.7e AI Chief Risk Officer tùy chọn (mặc định OFF).
                 // AI chỉ được veto/standby; không bao giờ sửa SL/TP live.
                 if config.ai_signal_review_enabled {
-                    let context = scanner_state.market_context.read().await.clone();
+                    let mut context = scanner_state.market_context.read().await.clone();
+                    if let Some(context) = context.as_mut() {
+                        context.rsi_m15 = Some(rsi.clone());
+                    }
                     let events = scanner_state
                         .news_filter
                         .read()

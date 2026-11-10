@@ -1,5 +1,6 @@
 use crate::analyzer::GoldMarketAnalyzer;
 use crate::models::Candle;
+use crate::rsi::{rsi_snapshot, RsiSnapshot};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +11,12 @@ const ATR_PERIOD: usize = 14;
 const SR_LOOKBACK: usize = 100;
 /// Số nến cuối dùng cho fallback swing high/low khi không có zone.
 const SWING_FALLBACK_LOOKBACK: usize = 20;
+/// RSI context dùng cố định 70/30 để semantics ổn định, độc lập threshold filter live.
+const RSI_CONTEXT_PERIOD: usize = 14;
+const RSI_CONTEXT_OVERBOUGHT: f64 = 70.0;
+const RSI_CONTEXT_OVERSOLD: f64 = 30.0;
+const RSI_CONTEXT_LOOKBACK: usize = 40;
+const RSI_CONTEXT_PIVOT_K: usize = 2;
 
 /// Bối cảnh kỹ thuật của một khung thời gian lớn (D1/H4/H1).
 /// Read-only/advisory: chỉ dùng để hiển thị "view toàn cảnh" và làm bộ lọc tùy chọn.
@@ -41,6 +48,15 @@ pub struct MarketContext {
     pub price_source: String,
     /// Basis PAXG → spot XAU/USD đang áp dụng (nếu có).
     pub spot_basis: Option<f64>,
+    /// RSI M15 của nến tín hiệu — gắn bởi scanner/API, None ở build time.
+    #[serde(default)]
+    pub rsi_m15: Option<RsiSnapshot>,
+    /// RSI H1 (context cố định 70/30).
+    #[serde(default)]
+    pub rsi_h1: Option<RsiSnapshot>,
+    /// RSI H4 (context cố định 70/30).
+    #[serde(default)]
+    pub rsi_h4: Option<RsiSnapshot>,
 }
 
 /// Dựng bối cảnh từ nến đã đóng của D1/H4/H1.
@@ -58,6 +74,23 @@ pub fn build_market_context(
         updated_at: Utc::now().to_rfc3339(),
         price_source: price_source.to_string(),
         spot_basis,
+        rsi_m15: None,
+        rsi_h1: Some(rsi_snapshot(
+            h1,
+            RSI_CONTEXT_PERIOD,
+            RSI_CONTEXT_OVERBOUGHT,
+            RSI_CONTEXT_OVERSOLD,
+            RSI_CONTEXT_LOOKBACK,
+            RSI_CONTEXT_PIVOT_K,
+        )),
+        rsi_h4: Some(rsi_snapshot(
+            h4,
+            RSI_CONTEXT_PERIOD,
+            RSI_CONTEXT_OVERBOUGHT,
+            RSI_CONTEXT_OVERSOLD,
+            RSI_CONTEXT_LOOKBACK,
+            RSI_CONTEXT_PIVOT_K,
+        )),
     }
 }
 
@@ -394,6 +427,9 @@ mod tests {
             updated_at: Utc::now().to_rfc3339(),
             price_source: "BINANCE_PAXG".to_string(),
             spot_basis: None,
+            rsi_m15: None,
+            rsi_h1: None,
+            rsi_h4: None,
         }
     }
 
@@ -546,6 +582,35 @@ mod tests {
         assert_eq!(context.price_source, "BINANCE_PAXG");
         assert_eq!(context.spot_basis, Some(5.07));
         assert!(!context.updated_at.is_empty());
+        assert!(context.rsi_m15.is_none());
+        assert!(context.rsi_h1.is_some());
+        assert!(context.rsi_h4.is_some());
+    }
+
+    #[test]
+    fn build_market_context_populates_h1_h4_rsi_with_enough_candles() {
+        let h4 = trend_candles(220, 2000.0, 1.0);
+        let h1 = trend_candles(220, 2000.0, 1.0);
+        let context = build_market_context(&[], &h4, &h1, "BINANCE_PAXG", None);
+
+        let h4_rsi = context.rsi_h4.expect("H4 RSI snapshot");
+        assert_eq!(h4_rsi.value, Some(100.0));
+        assert_eq!(h4_rsi.state, "Overbought");
+
+        let h1_rsi = context.rsi_h1.expect("H1 RSI snapshot");
+        assert_eq!(h1_rsi.value, Some(100.0));
+        assert_eq!(h1_rsi.state, "Overbought");
+    }
+
+    #[test]
+    fn build_market_context_with_empty_candles_returns_neutral_rsi() {
+        let context = build_market_context(&[], &[], &[], "BINANCE_PAXG", None);
+
+        for rsi in [context.rsi_h1, context.rsi_h4].into_iter().flatten() {
+            assert_eq!(rsi.value, None);
+            assert_eq!(rsi.state, "Neutral");
+        }
+        assert!(context.rsi_m15.is_none());
     }
 
     #[test]
@@ -553,7 +618,17 @@ mod tests {
         let context = build_market_context(&[], &[], &[], "BINANCE_PAXG", None);
         let payload = serde_json::to_value(&context).expect("serialize context");
 
-        for key in ["d1", "h4", "h1", "updated_at", "price_source", "spot_basis"] {
+        for key in [
+            "d1",
+            "h4",
+            "h1",
+            "updated_at",
+            "price_source",
+            "spot_basis",
+            "rsi_m15",
+            "rsi_h1",
+            "rsi_h4",
+        ] {
             assert!(payload.get(key).is_some(), "missing key: {}", key);
         }
 
