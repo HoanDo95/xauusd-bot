@@ -379,7 +379,8 @@ pub fn score_macro_flow(metrics: &[MacroMetric], cot: Option<&CotSnapshot>) -> M
     if insufficient {
         confidence = confidence.min(40);
     }
-    let confidence = confidence.clamp(0, 100) as u8;
+    // Never present a heuristic as absolute certainty.
+    let confidence = confidence.clamp(0, 95) as u8;
 
     let gold_sign = non_zero_sign(gold_change_pct);
     let etf_sign = non_zero_sign(etf_change_pct);
@@ -1136,7 +1137,7 @@ mod tests {
         assert_eq!(scorecard.risk_regime, "NEUTRAL");
         assert_eq!(scorecard.vol_regime, "NORMAL");
         assert!(scorecard.score >= 2);
-        assert_eq!(scorecard.confidence, 100);
+        assert_eq!(scorecard.confidence, 95);
         assert!(scorecard.driver.contains("COT ↑"));
         assert!(scorecard.driver.contains("real yield ↓"));
     }
