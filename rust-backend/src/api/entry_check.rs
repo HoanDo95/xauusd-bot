@@ -352,7 +352,12 @@ pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult
     })?;
 
     *state.last_ai_decision.write().await = Some(decision.clone());
-    let entry_plan = select_entry_plan(&decision, candidate.as_ref(), &scenarios, &config);
+    // A scenario-built candidate should be displayed under its scenario role
+    // (PRIMARY/ALTERNATE), not as an opaque CANDIDATE plan.
+    let plan_candidate = candidate
+        .as_ref()
+        .filter(|candidate| !candidate.dedup_key.contains("_SCENARIO_"));
+    let entry_plan = select_entry_plan(&decision, plan_candidate, &scenarios, &config);
 
     Ok(EntryCheckResult {
         decision,
