@@ -334,14 +334,19 @@ pub struct BotConfig {
     /// Mặc định TẮT.
     #[serde(default)]
     pub htf_d1_filter_enabled: bool,
-    /// Bật AI Chief Risk Officer review trước khi gửi/lưu tín hiệu thật.
-    /// Mặc định TẮT — không thay đổi hành vi tín hiệu hiện tại.
-    #[serde(default)]
+    /// Bật AI review trước khi gửi/lưu tín hiệu thật.
+    /// Mặc định BẬT cho cấu hình mới; config đã lưu với `false` vẫn giữ `false`.
+    #[serde(default = "default_true")]
     pub ai_signal_review_enabled: bool,
-    /// Ngưỡng confidence tối thiểu để cho qua (0.5..=1.0, mặc định 0.75).
+    /// Chế độ AI: "DECISION" (AI quyết BUY/SELL/STANDBY, mặc định) hoặc
+    /// "VETO_ONLY" (hành vi cũ: AI chỉ veto tín hiệu deterministic).
+    #[serde(default = "default_ai_review_mode")]
+    pub ai_review_mode: String,
+    /// Ngưỡng confidence tối thiểu để AI decision cho qua (0.5..=1.0, mặc định 0.75).
     #[serde(default = "default_ai_signal_review_min_confidence")]
     pub ai_signal_review_min_confidence: f64,
-    /// Khi AI lỗi/timeout: true = cho tín hiệu qua (fail-open), false = chặn.
+    /// Khi AI lỗi/timeout ở chế độ VETO_ONLY: true = cho tín hiệu qua (fail-open),
+    /// false = chặn. Ở chế độ DECISION, AI lỗi luôn fail-closed (không tín hiệu).
     #[serde(default = "default_true")]
     pub ai_signal_review_fail_open: bool,
     /// Bật bộ lọc Volume Delta/CVD trước khi phát tín hiệu thật. Mặc định TẮT.
@@ -454,6 +459,10 @@ fn default_ai_signal_review_min_confidence() -> f64 {
     0.75
 }
 
+fn default_ai_review_mode() -> String {
+    "DECISION".to_string()
+}
+
 fn default_volume_delta_mode() -> String {
     "BOTH".to_string()
 }
@@ -538,7 +547,8 @@ impl Default for BotConfig {
             session_alert_lead_minutes: default_session_alert_lead_minutes(),
             htf_h4_filter_enabled: false,
             htf_d1_filter_enabled: false,
-            ai_signal_review_enabled: false,
+            ai_signal_review_enabled: true,
+            ai_review_mode: default_ai_review_mode(),
             ai_signal_review_min_confidence: default_ai_signal_review_min_confidence(),
             ai_signal_review_fail_open: true,
             volume_delta_filter_enabled: false,
@@ -622,6 +632,11 @@ impl BotConfig {
         self.max_entry_drift_points = finite_or(self.max_entry_drift_points, 2.5).clamp(0.5, 10.0);
         self.max_candle_age_secs = self.max_candle_age_secs.clamp(30, 900);
         self.session_alert_lead_minutes = self.session_alert_lead_minutes.clamp(15, 120);
+        self.ai_review_mode = match self.ai_review_mode.trim().to_uppercase().as_str() {
+            "VETO_ONLY" => "VETO_ONLY",
+            _ => "DECISION",
+        }
+        .to_string();
         self.ai_signal_review_min_confidence =
             finite_or(self.ai_signal_review_min_confidence, 0.75).clamp(0.5, 1.0);
 
@@ -897,22 +912,66 @@ mod tests {
     }
 
     #[test]
-    fn ai_signal_review_defaults_off_and_is_backward_compatible() {
+    fn ai_signal_review_defaults_on_and_is_backward_compatible() {
         let defaults = BotConfig::default();
-        assert!(!defaults.ai_signal_review_enabled);
+        assert!(defaults.ai_signal_review_enabled);
+        assert_eq!(defaults.ai_review_mode, "DECISION");
         assert_eq!(defaults.ai_signal_review_min_confidence, 0.75);
         assert!(defaults.ai_signal_review_fail_open);
 
         let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
         let object = value.as_object_mut().expect("config object");
         object.remove("ai_signal_review_enabled");
+        object.remove("ai_review_mode");
         object.remove("ai_signal_review_min_confidence");
         object.remove("ai_signal_review_fail_open");
 
         let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
-        assert!(!config.ai_signal_review_enabled);
+        assert!(config.ai_signal_review_enabled);
+        assert_eq!(config.ai_review_mode, "DECISION");
         assert_eq!(config.ai_signal_review_min_confidence, 0.75);
         assert!(config.ai_signal_review_fail_open);
+    }
+
+    #[test]
+    fn persisted_ai_review_off_stays_off_until_changed() {
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        value["ai_signal_review_enabled"] = serde_json::json!(false);
+
+        let config: BotConfig =
+            serde_json::from_value(value).expect("deserialize persisted config");
+        assert!(!config.ai_signal_review_enabled);
+    }
+
+    #[test]
+    fn sanitize_normalizes_ai_review_mode() {
+        let veto = BotConfig {
+            ai_review_mode: " veto_only ".to_string(),
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(veto.ai_review_mode, "VETO_ONLY");
+
+        let decision = BotConfig {
+            ai_review_mode: "decision".to_string(),
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(decision.ai_review_mode, "DECISION");
+
+        let invalid = BotConfig {
+            ai_review_mode: "advisor".to_string(),
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(invalid.ai_review_mode, "DECISION");
+
+        let empty = BotConfig {
+            ai_review_mode: "   ".to_string(),
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(empty.ai_review_mode, "DECISION");
     }
 
     #[test]

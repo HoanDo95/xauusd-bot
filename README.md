@@ -79,7 +79,7 @@ A production-oriented XAU/USD signal engine with **100% free market data**, a ha
 | US high-impact calendar | ForexFactory public JSON | none |
 | Trend | EMA50/200 computed locally | none |
 | Daily macro commentary (optional) | OpenCode Go (default), Gemini or OpenRouter | optional |
-| AI signal risk review (optional, veto-only) | OpenCode Go, default `gemini-4-argon` | optional |
+| AI decision layer (default `DECISION`, legacy `VETO_ONLY`) | OpenCode Go, default `gemini-4-argon` | optional (key required) |
 | Alerts | Telegram Bot API | `@BotFather` token |
 
 ### PAXG → XAU/USD spot basis calibration
@@ -149,35 +149,60 @@ calls an AI API.
   `config.macro_bias`, so `AUTO` keeps following EMA50/200 dynamically; an
   explicit `BULLISH`/`BEARISH`/`NEUTRAL` choice is preserved.
 
-### Optional AI Chief Risk Officer (veto-only)
+### AI Decision Mode (default) + legacy VETO_ONLY
 
-`ai_signal_review_enabled` is **OFF by default**, so signal generation and
-Telegram delivery are unchanged unless you turn it on in **Sniper & Risk
-Config**. When enabled, the Rust engine asks OpenCode Go (default model
-`gemini-4-argon`, override with `AI_SIGNAL_REVIEW_MODEL`) to review each **real**
-signal before it is stored or sent to Telegram:
+`ai_signal_review_enabled` defaults to **ON** for new/default configs; an
+existing `data/bot_state.json` that explicitly stored `false` stays off until
+you change it. `ai_review_mode` defaults to **`DECISION`** and accepts
+`DECISION` or `VETO_ONLY` (invalid values sanitize to `DECISION`).
 
-- The AI may return `BUY`, `SELL` or `STANDBY` plus an advisory `entry_zone`,
-  `dynamic_sl`, `tp`, `macro_trend_h1_h4` and `reason`.
-- It is **veto-only**: a `STANDBY` verdict, an opposite direction, or confidence
-  below `ai_signal_review_min_confidence` (default `0.75`, range `0.5–1.0`)
-  blocks the signal. The AI can never change the live SL/TP or lot size.
-- The review prompt includes D1/H4/H1 bias, EMA50/200, channel position, ATR,
-  S/R, current price/spot basis, candidate side/entry/SL/TP/RR/lot, volume,
-  RSI M15/H1/H4 context, Vietnam session time and upcoming High-Impact USD
-  events.
-- **Fail-open by default**: if `OPENCODE_GO_API_KEY` is missing, the request
-  errors/times out, or the JSON is malformed, the signal proceeds. Set
-  `ai_signal_review_fail_open=false` in the dashboard for fail-closed behaviour.
-- One review call per real signal (the daily Sniper quota still caps real
-  signals at 1/day by default). Simulated setups never call the AI and never
-  consume quota.
-- Blocked signals are not stored or sent, and `ai_verdict`, `ai_confidence` and
-  `ai_reason` are attached to accepted signals and shown in Telegram and the
-  dashboard modal.
-- Manual test endpoint: `POST /api/ai/review-signal` with
-  `{"signal": {...}, "context": {...}}` (or a raw signal). It returns
-  `{"status":"success","review":{...}}`, sends no Telegram and consumes no quota.
+**`DECISION` — AI is the primary decision layer.** The Rust engine still owns
+every hard risk rule; the AI chooses the direction:
+
+- Candidate discovery is deliberately **relaxed**: `volume_filter_enabled=false`
+  and `macro_bias="NEUTRAL"` for the analysis pass, so AI can review setups that
+  the old soft filters would have rejected.
+- The AI receives the full collected brief: current price/source/volume caveat,
+  D1/H4/H1 bias/EMA/channel/ATR/S-R, Macro & Flow scorecard (real yield, DXY,
+  gold, GLD/IAU, COT, VIX/GVZ, MMF), RSI M15/H1/H4, Volume Delta/CVD with the
+  PAXG-proxy warning, PRIMARY/ALTERNATE/WATCHLIST scenarios, the candidate
+  setup, upcoming High-Impact USD events, and Vietnam session time.
+- It returns `BUY`, `SELL` or `STANDBY`, `confidence_score`, a selected
+  scenario and a short reason. A `STANDBY`, opposite direction, or confidence
+  below `ai_signal_review_min_confidence` means **no trade signal**.
+- After AI approval, the soft HTF/Volume Delta/RSI filters are **skipped** (the
+  AI already weighed them as context). Hard checks still run: SL/TP ordering,
+  minimum R:R, risk budget, daily quota, session window, news kill switch and
+  dedup. The AI never sets or changes live SL/TP.
+- **Fail-closed on AI failure**: if `OPENCODE_GO_API_KEY` is missing, the
+  provider errors/times out, or the JSON is malformed, there is no trade signal
+  in `DECISION` mode regardless of `ai_signal_review_fail_open`.
+- **Start** runs one AI decision and sends an `AI MARKET BRIEF` to Telegram with
+  the action/confidence/selected scenario/reason plus the compact scenario body.
+  Start still never inserts a signal or consumes quota. If AI is unavailable it
+  sends the scenario summary and returns `aiError`; it does not block Start.
+  The response includes `aiDecision` and `aiError`, and `/api/action-view`
+  exposes the latest decision as `aiDecision`.
+- One AI decision call per real signal attempt (quota still caps real signals at
+  1/day by default). Simulated setups never call the AI and never consume quota.
+- Accepted signals carry `ai_verdict`, `ai_confidence` and `ai_reason`.
+
+**`VETO_ONLY` — legacy behaviour.** The AI reviews each real deterministic
+signal and may only approve, contradict or return `STANDBY`; an opposite
+direction or low confidence blocks the signal. `ai_signal_review_fail_open`
+(default `true`) applies **only** here: AI error/timeout lets the deterministic
+signal proceed, and setting it to `false` makes VETO_ONLY fail-closed. Start
+keeps sending the plain scenario summary.
+
+**RSI 70/30 meaning:** `RSI >= 70` is **Overbought** and `RSI <= 30` is
+**Oversold**. These flag an extended move, not an automatic reversal; a
+bullish/bearish divergence is a warning, not an entry. RSI remains context/AI
+input unless the optional hard `rsi_filter_enabled` gate is explicitly turned
+on.
+
+Manual test endpoint: `POST /api/ai/review-signal` with
+`{"signal": {...}, "context": {...}}` (or a raw signal). It returns
+`{"status":"success","review":{...}}`, sends no Telegram and consumes no quota.
 
 ### RSI context (Phase R1/R2)
 
@@ -189,10 +214,11 @@ closed candles and exposes it everywhere the bot makes or explains a decision:
   M15/H1/H4 with Oversold/Overbought colouring and divergence badges.
 - Every real signal carries `rsi_value`, `rsi_state` and `rsi_divergence`; they
   are shown in the signal modal and appended to Telegram alerts.
-- The AI Risk Officer prompt includes the RSI block plus the 3-layer rules
-  (H4/H1 supply/demand confluence + RSI extreme/divergence + volume
-  confirmation). Missing or contradictory layers should push the AI to
-  `STANDBY`. AI remains veto-only and never sets live SL/TP.
+- Both AI modes receive the RSI block plus the 3-layer rules (H4/H1
+  supply/demand confluence + RSI extreme/divergence + volume confirmation).
+  Missing or contradictory layers should push the AI to `STANDBY`. In
+  `DECISION` mode RSI is context the AI weighs; in `VETO_ONLY` it can still only
+  veto. Neither mode ever sets live SL/TP.
 - The optional hard gate (`rsi_filter_enabled`) is **OFF by default**, so live
   behaviour is unchanged. When enabled it supports `EXTREME`, `DIVERGENCE` or
   `BOTH` and only applies to real signals; simulations skip it.
@@ -261,8 +287,8 @@ SELL + macro BULLISH  → COUNTER
 
 - Every real signal carries `macro_flow_alignment` / `macro_flow_note`; Telegram
   and the signal modal show them.
-- The AI Risk Officer prompt includes the macro/flow block and may lower
-  confidence or choose `STANDBY` when the setup is counter-macro.
+- The AI prompt includes the macro/flow block and may lower confidence or choose
+  `STANDBY` when the setup is counter-macro.
 - `GET /api/live-view` returns the same alignment in its `macroFlow` block; the
   Live Setup card shows an ALIGNED/COUNTER/MIXED/UNKNOWN chip.
 - **No hard macro filter**: alignment is advisory only; it does not block a
@@ -297,10 +323,13 @@ Pressing **Start** now:
 
 1. Enables `is_active`.
 2. Builds the live view + scenario view immediately.
-3. Sends the scenario summary to Telegram (so you have a view even if the
-   dashboard is unreachable). The message uses the compact
-   PRIMARY/ALTERNATE/WATCHLIST format.
-4. Returns the same view to the dashboard.
+3. In `DECISION` mode, runs one AI decision from the full brief. In `VETO_ONLY`
+   mode it does not call the AI on Start (legacy behaviour).
+4. Sends Telegram: `DECISION` sends an **AI MARKET BRIEF** with the AI verdict
+   plus the compact PRIMARY/ALTERNATE/WATCHLIST body; if AI is unavailable it
+   sends the scenario summary and returns `aiError`. `VETO_ONLY` sends the plain
+   scenario summary. Start never inserts a signal or consumes quota.
+5. Returns the same view plus `aiDecision`/`aiError` to the dashboard.
 
 The Scenario View card also has **Gửi Telegram** to resend the current snapshot
 on demand. Stop only pauses the scanner; it does not close open signals or reset
@@ -334,10 +363,16 @@ scenario and the macro/flow snapshot into one read-only verdict:
   scenario to show what to wait for instead of a dead panel. It states that the
   stream only lists confirmed trade signals and points to Action View / Scenario
   View for reference plans.
+- In `DECISION` mode the response also includes the latest cached
+  `aiDecision` (action/confidence/selected scenario/reason). The Action Card
+  shows it prominently but keeps the deterministic verdict visible; when the AI
+  action differs from a `WAIT`/`NO_TRADE` verdict both labels are shown and the
+  AI never silently overrides the code verdict.
 - The endpoint is **read-only**: no Telegram, no signal insertion, no Sniper
-  quota, no AI review and no auto-trading. It never blocks a real signal beyond
-  the existing scanner filters; it only reports them. The card is labelled
-  “View hành động — không phải lệnh tự động; bot không tự vào lệnh.”
+  quota, no AI call (it only reads the last cached decision) and no
+  auto-trading. It never blocks a real signal beyond the existing scanner
+  filters; it only reports them. The card is labelled “View hành động — không
+  phải lệnh tự động; bot không tự vào lệnh.”
 
 ### Daily Plan 07:00 (Telegram, read-only)
 
@@ -544,7 +579,7 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `GET` | `/api/health` | Health, live price, feed/volume source, spot basis/price source, daily quota, kill switch |
+| `GET` | `/api/health` | Health, live price, feed/volume source, spot basis/price source, daily quota, kill switch, `aiReviewMode` |
 | `GET` | `/api/candles` | Live + last closed price, S/R zones, EMA50/200, trend, `dataSource`, `volumeSource`, `spotPrice`, `spotBasis`, `priceSource` |
 | `GET` | `/api/context` | Read-only D1/H4/H1 context + `rsi_m15`/`rsi_h1`/`rsi_h4` (204 until HTF ready) |
 | `GET` | `/api/signals` | Signal history + performance stats |
@@ -556,8 +591,8 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
 | `POST` | `/api/ai/review-signal` | Manual AI Risk Officer review (no Telegram, no quota) |
 | `GET` | `/api/scenarios` | Four ranked reference scenarios (`PRIMARY`/`ALTERNATE`/`WATCHLIST`); no quota |
 | `GET` | `/api/live-view` | Read-only setup preview (Entry/SL/TP/R:R) or `no_setup`; no quota |
-| `GET` | `/api/action-view` | Read-only BUY/SELL/WAIT/NO_TRADE verdict + PRIMARY proximity fields; no quota |
-| `POST` | `/api/scanner/start` | Enable scanner + send scenario summary (no signal/quota) |
+| `GET` | `/api/action-view` | Read-only BUY/SELL/WAIT/NO_TRADE verdict + PRIMARY proximity + latest `aiDecision`; no quota |
+| `POST` | `/api/scanner/start` | Enable scanner + DECISION AI brief / VETO_ONLY scenario summary (no signal/quota) |
 | `POST` | `/api/scanner/stop` | Pause scanner (does not close open signals or reset quota) |
 | `POST` | `/api/scenarios/telegram` | Re-send the reference scenario snapshot (no quota) |
 | `POST` | `/api/telegram/test` | Telegram connection test |

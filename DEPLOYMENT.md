@@ -270,7 +270,7 @@ OPENCODE_GO_BASE_URL="https://opencode.ai/inference/go/openai/v1"
 OPENCODE_GO_MODEL="gemini-4-argon"
 # Model alternatives: "deepseek-v4.1-flash" (cheap/reasoning),
 # "glm-5.3-flash" (fast/cheap).
-# Optional AI Chief Risk Officer model (veto-only real-signal review):
+# AI model for DECISION / VETO_ONLY signal review:
 AI_SIGNAL_REVIEW_MODEL="gemini-4-argon"
 GEMINI_API_KEY=""
 GEMINI_MODEL="gemini-2.5-flash"
@@ -299,25 +299,41 @@ docker compose logs -f api   # logs provider/model, never the key
   **never** written to `config.macro_bias`, so `AUTO` stays dynamic and an
   explicit `BULLISH`/`BEARISH`/`NEUTRAL` setting is preserved.
 
-### Optional AI Chief Risk Officer (veto-only)
+### AI Decision Mode (default) + legacy VETO_ONLY
 
-The AI Risk Officer is **disabled by default** and is separate from the daily
-macro report. Enable it in **Sniper & Risk Config** (`ai_signal_review_enabled`),
-not in env. When enabled, each real signal is reviewed by OpenCode Go before
-Telegram/storage:
+AI review defaults to **ON** for new/default configs and is separate from the
+daily macro report. `ai_review_mode` defaults to **`DECISION`**; `VETO_ONLY`
+restores the old veto-only behaviour. An existing `data/bot_state.json` with
+`ai_signal_review_enabled=false` stays off until you change it. Configure both
+in **Sniper & Risk Config**, not in env.
 
 - Model: `AI_SIGNAL_REVIEW_MODEL` (default `gemini-4-argon`); base URL:
   `OPENCODE_GO_BASE_URL`; key: the existing `OPENCODE_GO_API_KEY`.
-- The AI may only approve, contradict or return `STANDBY`. It cannot set live
-  SL/TP; `dynamic_sl`/`tp` are advisory only.
-- Dashboard controls: `ai_signal_review_min_confidence` (`0.5–1.0`, default
-  `0.75`) and `ai_signal_review_fail_open` (default `true`). On AI error or
-  timeout, fail-open lets the deterministic signal proceed; set it to `false`
-  for fail-closed.
-- One review per real signal (daily Sniper quota still caps real signals at
-  1/day by default). Simulated setups skip AI and quota.
+- **DECISION:** AI is the primary BUY/SELL/STANDBY layer. Candidate discovery
+  relaxes `volume_filter_enabled` and `macro_bias` so AI can review setups the
+  old soft filters rejected. After AI approval the HTF/Volume Delta/RSI soft
+  filters are skipped, but code still enforces SL/TP ordering, minimum R:R,
+  risk budget, quota, session, news and dedup. AI never sets live SL/TP.
+- **DECISION is fail-closed:** missing key, provider error/timeout, or malformed
+  JSON means no trade signal, regardless of `ai_signal_review_fail_open`.
+- **VETO_ONLY:** AI may only approve, contradict or return `STANDBY`.
+  `ai_signal_review_fail_open` (default `true`) applies only here; `false`
+  makes it fail-closed.
+- Dashboard controls: `ai_review_mode`, `ai_signal_review_min_confidence`
+  (`0.5–1.0`, default `0.75`), `ai_signal_review_fail_open` (VETO_ONLY only).
+- One decision/review per real signal attempt (daily Sniper quota still caps
+  real signals at 1/day by default). Simulated setups skip AI and quota.
+- **Start:** in DECISION mode it runs one AI decision and sends an
+  `AI MARKET BRIEF` (verdict + compact scenario body) to Telegram; it never
+  inserts a signal or spends quota. If AI is unavailable, Start still succeeds,
+  sends the scenario summary and returns `aiError`. The response includes
+  `aiDecision`/`aiError`; `/api/action-view` exposes the latest `aiDecision`.
 - `POST /api/ai/review-signal` validates a signal manually without sending
-  Telegram or consuming quota. `GET /api/health` exposes `aiReviewEnabled`.
+  Telegram or consuming quota. `GET /api/health` exposes `aiReviewEnabled` and
+  `aiReviewMode`.
+
+RSI 70/30 is a context label, not an automatic reversal: `>=70` Overbought,
+`<=30` Oversold; divergence is a warning, not an entry.
 
 ## 15. Runtime config vs environment
 
@@ -327,8 +343,10 @@ Entry and session behaviour is **dashboard config**, persisted in
 - `entry_mode` (`MARKET` / `LIMIT_RETEST` / `BREAKOUT`), `broker_price_offset`,
   `max_entry_drift_points`, `max_candle_age_secs`.
 - `session_alerts_enabled`, `session_alert_lead_minutes`, `session_filter_enabled`.
-- `ai_signal_review_enabled`, `ai_signal_review_min_confidence`,
-  `ai_signal_review_fail_open` (AI key/model stay in `rust-backend/.env`).
+- `ai_signal_review_enabled`, `ai_review_mode` (`DECISION` default /
+  `VETO_ONLY`), `ai_signal_review_min_confidence`,
+  `ai_signal_review_fail_open` (VETO_ONLY only; AI key/model stay in
+  `rust-backend/.env`).
 - `rsi_filter_enabled` (**default OFF**), `rsi_period`, `rsi_overbought`,
   `rsi_oversold`, `rsi_divergence_enabled`, `rsi_divergence_lookback`,
   `rsi_pivot_k`, `rsi_mode`. No new environment variables are required; toggle
@@ -396,7 +414,7 @@ docker compose logs -f api   # look for: TwelveData XAU/USD ... / Đã ghép vol
 - The dashboard Live Setup card has the Start/Stop control for `is_active`.
 - Macro/flow alignment (ALIGNED/COUNTER/MIXED/UNKNOWN) is attached to real
   signals and the Live Setup preview. It is advisory only: no code-level hard
-  macro filter. The AI Risk Officer receives the macro/flow block and may
+  macro filter. The AI receives the macro/flow block and may
   lower confidence or STANDBY.
 - Scenario View (`GET /api/scenarios`) returns four ranked reference scenarios
   even when the signal engine says `no_setup`. Ranking is transparent:

@@ -1,18 +1,25 @@
+use crate::ai_decision::{
+    ai_decision_enabled, decision_blocks_or_approves, relaxed_candidate_config,
+    review_market_decision,
+};
 use crate::analyzer::GoldMarketAnalyzer;
 use crate::api::{attach_macro_flow_alignment, persist_state, AppState};
 use crate::market_context::{
     build_market_context, htf_allows_signal, shift_candles_prices, MarketContext,
 };
 use crate::market_feed::{MarketDataFeed, MarketFeedSnapshot};
-use crate::models::{BotConfig, Candle, Timeframe};
+use crate::models::{BotConfig, Candle, Signal, Timeframe};
 use crate::news_filter::ImpactLevel;
+use crate::risk_manager::PositionSizer;
 use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot};
+use crate::scenarios::build_scenarios;
 use crate::scheduler::DailyScheduler;
 use crate::session_alerts::evaluate_and_dispatch;
 use crate::signal_review::{review_blocks_signal, review_signal};
+use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
 use crate::storage::PersistentStore;
 use crate::tracker::evaluate_active_signals;
-use crate::volume_delta::delta_allows_signal;
+use crate::volume_delta::{compute_delta, delta_allows_signal};
 use chrono::Utc;
 use std::time::Instant;
 use tracing::{info, warn};
@@ -184,6 +191,30 @@ pub async fn fetch_market_context(
     ))
 }
 
+/// Hard risk validation for an AI-approved candidate. The AI only chooses the
+/// direction; SL/TP ordering, R:R and the risk budget remain deterministic.
+fn validate_ai_hard_risk(signal: &Signal, config: &BotConfig) -> Result<(), String> {
+    validate_signal_levels(
+        signal.signal_type,
+        signal.entry_price,
+        signal.stop_loss,
+        signal.take_profit_1,
+        signal.take_profit_2,
+        config.min_risk_reward,
+    )?;
+
+    let sizing = PositionSizer::calculate_lot_size(
+        config.account_balance,
+        config.risk_percentage,
+        signal.risk_points,
+        signal.reward_points_tp1,
+        signal.reward_points_tp2,
+        signal.entry_price,
+        config.account_leverage,
+    );
+    validate_risk_budget(config, &sizing)
+}
+
 /// Background Scanner 24/7 — quét mỗi 60 giây.
 ///
 /// `initial_spot_cache` giữ lại kết quả spot/basis vừa fetch lúc bootstrap để
@@ -336,10 +367,18 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
             }
 
             // 6.7 Phân tích và phát tín hiệu nếu đủ 5 tầng lọc.
+            // Ở DECISION mode, soft filters (volume/macro bias) được nới lỏng để
+            // AI có thể review candidate; hard risk vẫn do code kiểm tra.
             let live_price = *state.live_price.read().await;
+            let decision_mode = ai_decision_enabled(&config);
+            let candidate_config = if decision_mode {
+                relaxed_candidate_config(&config)
+            } else {
+                config.clone()
+            };
             if let Some(mut signal) = GoldMarketAnalyzer::analyze_market_with_live_price(
                 &candles,
-                &config,
+                &candidate_config,
                 live_price,
                 Utc::now().timestamp_millis(),
             ) {
@@ -360,122 +399,211 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                 signal.rsi_state = Some(rsi.state.clone());
                 signal.rsi_divergence = Some(divergence_label(rsi.divergence));
 
-                // 6.7b Bộ lọc H4/D1 tùy chọn (mặc định OFF).
-                if config.htf_h4_filter_enabled || config.htf_d1_filter_enabled {
-                    let context = state.market_context.read().await;
-                    if let Some(context) = context.as_ref() {
-                        let (allowed, reason) = htf_allows_signal(
-                            signal.signal_type.as_str(),
-                            context,
-                            config.htf_h4_filter_enabled,
-                            config.htf_d1_filter_enabled,
-                        );
-                        if !allowed {
-                            warn!(
-                                "🛑 [HTF Filter] Bỏ qua {} {}: {}",
-                                signal.signal_type, signal.symbol, reason
-                            );
-                            continue;
-                        }
-                    }
-                }
-
-                // 6.7c Volume Delta/CVD tùy chọn (mặc định OFF).
-                // Chỉ áp dụng cho tín hiệu thật; simulation bỏ qua hoàn toàn.
-                if config.volume_delta_filter_enabled && !signal.is_simulated {
-                    let (allowed, reason, snapshot) =
-                        delta_allows_signal(signal.signal_type.as_str(), &candles, &config);
-                    if !allowed {
-                        warn!(
-                            "🛑 [Volume Delta] Bỏ qua {} {}: {}",
-                            signal.signal_type, signal.symbol, reason
-                        );
-                        continue;
-                    }
-                    signal.delta_ratio = Some(snapshot.delta_ratio);
-                    signal.cvd = Some(snapshot.cvd);
-                    signal.delta = Some(snapshot.delta);
-                    info!("📊 [Volume Delta] {} — {}", signal.id, reason);
-                }
-
-                // 6.7d RSI filter tùy chọn (mặc định OFF).
-                // Chỉ áp dụng cho tín hiệu thật; simulation bỏ qua hoàn toàn.
-                if config.rsi_filter_enabled && !signal.is_simulated {
-                    let (allowed, reason) =
-                        rsi_allows_signal(signal.signal_type.as_str(), &rsi, &config);
-                    if !allowed {
-                        warn!(
-                            "🛑 [RSI Filter] Bỏ qua {} {}: {}",
-                            signal.signal_type, signal.symbol, reason
-                        );
-                        continue;
-                    }
-                    info!("📐 [RSI Filter] {} — {}", signal.id, reason);
-                }
-
-                // 6.7e Macro & Flow alignment (advisory) — luôn gắn, kể cả khi AI
-                // review tắt. Không bao giờ chặn tín hiệu.
-                let macro_flow = state.macro_flow.read().await.clone();
-                attach_macro_flow_alignment(&mut signal, macro_flow.as_ref());
-
-                // 6.7f AI Chief Risk Officer tùy chọn (mặc định OFF).
-                // AI chỉ được veto/standby; không bao giờ sửa SL/TP live.
-                if config.ai_signal_review_enabled {
+                if decision_mode {
+                    // 6.7b AI Decision Mode: build the full brief and let the AI
+                    // choose BUY/SELL/STANDBY. No AI response = fail-closed.
                     let mut context = state.market_context.read().await.clone();
                     if let Some(context) = context.as_mut() {
                         context.rsi_m15 = Some(rsi.clone());
                     }
                     let events = state.news_filter.read().await.calendar_events.clone();
-
-                    match review_signal(
-                        &signal,
+                    let macro_flow = state.macro_flow.read().await.clone();
+                    let active_data_source = state.active_data_source.read().await.clone();
+                    let active_volume_source = state.active_volume_source.read().await.clone();
+                    let delta = compute_delta(&candles, config.volume_delta_lookback);
+                    let scenarios = build_scenarios(
+                        &candles,
+                        &config,
+                        live_price,
                         context.as_ref(),
                         macro_flow.as_ref(),
-                        &config,
-                        &events,
-                    )
-                    .await
-                    {
-                        Some(review) => {
-                            signal.ai_verdict = Some(review.action.clone());
-                            signal.ai_confidence = Some(review.confidence_score);
-                            signal.ai_reason = Some(review.reason.clone());
-                            if review.macro_flow_alignment.is_some() {
-                                signal.macro_flow_alignment = review.macro_flow_alignment.clone();
-                            }
-                            if review.macro_flow_note.is_some() {
-                                signal.macro_flow_note = review.macro_flow_note.clone();
-                            }
+                        &active_data_source,
+                        &active_volume_source,
+                        Utc::now().timestamp_millis(),
+                    );
 
-                            let (blocked, reason) = review_blocks_signal(
-                                &signal,
-                                &review,
-                                config.ai_signal_review_min_confidence,
+                    // Macro/flow alignment is advisory context for the AI and UI.
+                    attach_macro_flow_alignment(&mut signal, macro_flow.as_ref());
+
+                    let decision = review_market_decision(
+                        Some(&signal),
+                        context.as_ref(),
+                        macro_flow.as_ref(),
+                        Some(&scenarios),
+                        Some(&rsi),
+                        Some(&delta),
+                        &events,
+                        &config,
+                    )
+                    .await;
+
+                    let Some(decision) = decision else {
+                        warn!(
+                            "🛑 [AI Decision] Không có quyết định cho {} {} — fail-closed, bỏ qua tín hiệu.",
+                            signal.signal_type, signal.symbol
+                        );
+                        continue;
+                    };
+                    *state.last_ai_decision.write().await = Some(decision.clone());
+
+                    signal.ai_verdict = Some(decision.action.clone());
+                    signal.ai_confidence = Some(decision.confidence_score);
+                    signal.ai_reason = Some(decision.reason.clone());
+                    if decision.macro_flow_alignment.is_some() {
+                        signal.macro_flow_alignment = decision.macro_flow_alignment.clone();
+                    }
+                    if decision.macro_flow_note.is_some() {
+                        signal.macro_flow_note = decision.macro_flow_note.clone();
+                    }
+                    signal.delta_ratio = Some(delta.delta_ratio);
+                    signal.cvd = Some(delta.cvd);
+                    signal.delta = Some(delta.delta);
+
+                    let (blocked, reason) = decision_blocks_or_approves(
+                        &signal,
+                        &decision,
+                        config.ai_signal_review_min_confidence,
+                    );
+                    if blocked {
+                        warn!(
+                            "🧠 [AI Decision] Bỏ qua {} {}: {}",
+                            signal.signal_type, signal.symbol, reason
+                        );
+                        continue;
+                    }
+                    info!(
+                        "✅ [AI Decision] Cho qua {} {} — {}",
+                        signal.signal_type, signal.symbol, reason
+                    );
+
+                    // AI has weighed HTF/volume/RSI/macro as context. Skip the
+                    // soft filters but keep every hard risk rule.
+                    if let Err(reason) = validate_ai_hard_risk(&signal, &config) {
+                        warn!(
+                            "🛑 [AI Decision] Hard risk từ chối {} {}: {}",
+                            signal.signal_type, signal.symbol, reason
+                        );
+                        continue;
+                    }
+                } else {
+                    // 6.7b Bộ lọc H4/D1 tùy chọn (mặc định OFF).
+                    if config.htf_h4_filter_enabled || config.htf_d1_filter_enabled {
+                        let context = state.market_context.read().await;
+                        if let Some(context) = context.as_ref() {
+                            let (allowed, reason) = htf_allows_signal(
+                                signal.signal_type.as_str(),
+                                context,
+                                config.htf_h4_filter_enabled,
+                                config.htf_d1_filter_enabled,
                             );
-                            if blocked {
+                            if !allowed {
                                 warn!(
-                                    "🤖 [AI Risk Officer] Bỏ qua {} {}: {}",
+                                    "🛑 [HTF Filter] Bỏ qua {} {}: {}",
                                     signal.signal_type, signal.symbol, reason
                                 );
                                 continue;
                             }
-                            info!(
-                                "✅ [AI Risk Officer] Cho qua {} {} — {}",
+                        }
+                    }
+
+                    // 6.7c Volume Delta/CVD tùy chọn (mặc định OFF).
+                    // Chỉ áp dụng cho tín hiệu thật; simulation bỏ qua hoàn toàn.
+                    if config.volume_delta_filter_enabled && !signal.is_simulated {
+                        let (allowed, reason, snapshot) =
+                            delta_allows_signal(signal.signal_type.as_str(), &candles, &config);
+                        if !allowed {
+                            warn!(
+                                "🛑 [Volume Delta] Bỏ qua {} {}: {}",
                                 signal.signal_type, signal.symbol, reason
                             );
+                            continue;
                         }
-                        None => {
-                            if config.ai_signal_review_fail_open {
-                                warn!(
-                                    "⚠️ [AI Risk Officer] Không có review cho {} {} — fail-open, cho tín hiệu qua.",
-                                    signal.signal_type, signal.symbol
+                        signal.delta_ratio = Some(snapshot.delta_ratio);
+                        signal.cvd = Some(snapshot.cvd);
+                        signal.delta = Some(snapshot.delta);
+                        info!("📊 [Volume Delta] {} — {}", signal.id, reason);
+                    }
+
+                    // 6.7d RSI filter tùy chọn (mặc định OFF).
+                    // Chỉ áp dụng cho tín hiệu thật; simulation bỏ qua hoàn toàn.
+                    if config.rsi_filter_enabled && !signal.is_simulated {
+                        let (allowed, reason) =
+                            rsi_allows_signal(signal.signal_type.as_str(), &rsi, &config);
+                        if !allowed {
+                            warn!(
+                                "🛑 [RSI Filter] Bỏ qua {} {}: {}",
+                                signal.signal_type, signal.symbol, reason
+                            );
+                            continue;
+                        }
+                        info!("📐 [RSI Filter] {} — {}", signal.id, reason);
+                    }
+
+                    // 6.7e Macro & Flow alignment (advisory) — luôn gắn, kể cả khi
+                    // AI review tắt. Không bao giờ chặn tín hiệu.
+                    let macro_flow = state.macro_flow.read().await.clone();
+                    attach_macro_flow_alignment(&mut signal, macro_flow.as_ref());
+
+                    // 6.7f AI Chief Risk Officer VETO_ONLY (hành vi cũ).
+                    // AI chỉ được veto/standby; không bao giờ sửa SL/TP live.
+                    if config.ai_signal_review_enabled {
+                        let mut context = state.market_context.read().await.clone();
+                        if let Some(context) = context.as_mut() {
+                            context.rsi_m15 = Some(rsi.clone());
+                        }
+                        let events = state.news_filter.read().await.calendar_events.clone();
+
+                        match review_signal(
+                            &signal,
+                            context.as_ref(),
+                            macro_flow.as_ref(),
+                            &config,
+                            &events,
+                        )
+                        .await
+                        {
+                            Some(review) => {
+                                signal.ai_verdict = Some(review.action.clone());
+                                signal.ai_confidence = Some(review.confidence_score);
+                                signal.ai_reason = Some(review.reason.clone());
+                                if review.macro_flow_alignment.is_some() {
+                                    signal.macro_flow_alignment =
+                                        review.macro_flow_alignment.clone();
+                                }
+                                if review.macro_flow_note.is_some() {
+                                    signal.macro_flow_note = review.macro_flow_note.clone();
+                                }
+
+                                let (blocked, reason) = review_blocks_signal(
+                                    &signal,
+                                    &review,
+                                    config.ai_signal_review_min_confidence,
                                 );
-                            } else {
-                                warn!(
-                                    "🛑 [AI Risk Officer] Không có review cho {} {} — fail-closed, bỏ qua tín hiệu.",
-                                    signal.signal_type, signal.symbol
+                                if blocked {
+                                    warn!(
+                                        "🤖 [AI Risk Officer] Bỏ qua {} {}: {}",
+                                        signal.signal_type, signal.symbol, reason
+                                    );
+                                    continue;
+                                }
+                                info!(
+                                    "✅ [AI Risk Officer] Cho qua {} {} — {}",
+                                    signal.signal_type, signal.symbol, reason
                                 );
-                                continue;
+                            }
+                            None => {
+                                if config.ai_signal_review_fail_open {
+                                    warn!(
+                                        "⚠️ [AI Risk Officer] Không có review cho {} {} — fail-open, cho tín hiệu qua.",
+                                        signal.signal_type, signal.symbol
+                                    );
+                                } else {
+                                    warn!(
+                                        "🛑 [AI Risk Officer] Không có review cho {} {} — fail-closed, bỏ qua tín hiệu.",
+                                        signal.signal_type, signal.symbol
+                                    );
+                                    continue;
+                                }
                             }
                         }
                     }

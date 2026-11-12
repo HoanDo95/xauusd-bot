@@ -1,3 +1,4 @@
+use crate::ai_decision::AiDecision;
 use crate::divergence_alerts::DivergenceAlert;
 use crate::models::{
     DailyMacroReport, EconomicEvent, EntryType, ImpactLevel, Signal, SignalStatus, SignalType,
@@ -572,6 +573,90 @@ impl TelegramNotifier {
         Self::format_scenario_body(scenarios, &header_lines.join("\n"), footer)
     }
 
+    /// Định dạng AI Market Brief khi Scanner Start ở chế độ DECISION.
+    ///
+    /// Đây là nhận định AI + scenario tham khảo, KHÔNG phải lệnh tự động và
+    /// không tiêu hao quota. Mọi text động đều được escape HTML.
+    pub fn format_ai_market_brief(
+        decision: &AiDecision,
+        scenarios: &ScenarioResponse,
+        live_view: &serde_json::Value,
+    ) -> String {
+        let symbol = live_view
+            .get("signal")
+            .and_then(|signal| signal.get("symbol"))
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("XAU/USD");
+        let price = live_view
+            .get("signal")
+            .and_then(|signal| json_number(signal, "entry_price"))
+            .or_else(|| json_number(live_view, "last_close"))
+            .or(scenarios.price);
+        let source = live_view
+            .get("source")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(&scenarios.source);
+
+        let action = Self::escape_html(&truncate_chars(&decision.action, 16));
+        let confidence = if decision.confidence_score.is_finite() {
+            (decision.confidence_score * 100.0)
+                .round()
+                .clamp(0.0, 100.0) as u8
+        } else {
+            0
+        };
+        let selected = decision
+            .selected_scenario
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("NONE");
+        let reason = Self::escape_html(&truncate_chars(&decision.reason, 300));
+        let alignment = Self::escape_html(&truncate_chars(
+            decision
+                .macro_flow_alignment
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("UNKNOWN"),
+            24,
+        ));
+        let macro_note = decision
+            .macro_flow_note
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|note| Self::escape_html(&truncate_chars(note, 200)));
+
+        let mut macro_line = format!("Macro/Flow: {alignment}");
+        if let Some(note) = macro_note {
+            macro_line.push_str(&format!(" — {note}"));
+        }
+
+        let header_lines = [
+            format!(
+                "🧠 <b>AI MARKET BRIEF</b> — {}",
+                Self::escape_html(&truncate_chars(symbol, 40))
+            ),
+            format!(
+                "Action: <b>{action}</b> · confidence {confidence}%\nSelected: {}",
+                Self::escape_html(&truncate_chars(selected, 24))
+            ),
+            format!("Reason: {reason}"),
+            macro_line,
+            format!(
+                "Giá: {} · Nguồn: {}",
+                price
+                    .filter(|value| value.is_finite())
+                    .map(|value| format!("{value:.2}"))
+                    .unwrap_or_else(|| "—".to_string()),
+                Self::escape_html(&truncate_chars(source, 80))
+            ),
+        ];
+        let footer = "\nĐây là nhận định AI, không phải lệnh tự động.";
+
+        Self::format_scenario_body(scenarios, &header_lines.join("\n"), footer)
+    }
+
     /// Shared PRIMARY/ALTERNATE/WATCHLIST renderer used by the scanner-start
     /// summary and the 07:00 daily plan. The header and footer are provided by
     /// the caller; all scenario fields are escaped here.
@@ -837,6 +922,56 @@ impl TelegramNotifier {
             Err(err) => {
                 let err = err.without_url();
                 error!("❌ Không thể gửi scenario summary tới Telegram: {}", err);
+                Err(format!("Network Error: {}", err))
+            }
+        }
+    }
+
+    /// Gửi AI Market Brief (DECISION mode) tới Telegram. Token/Chat trống =
+    /// simulator thành công. Không đụng quota, tín hiệu hay trạng thái giao dịch.
+    pub async fn send_ai_market_brief(
+        &self,
+        decision: &AiDecision,
+        scenarios: &ScenarioResponse,
+        live_view: &serde_json::Value,
+    ) -> Result<i64, String> {
+        if self.bot_token.is_empty() || self.chat_id.is_empty() {
+            info!("⚠️ [Telegram Simulator] AI market brief (chưa cấu hình token/chat)");
+            return Ok(1001);
+        }
+
+        let message_text = Self::format_ai_market_brief(decision, scenarios, live_view);
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
+        let payload = json!({
+            "chat_id": self.chat_id,
+            "text": message_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true
+        });
+
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let body: serde_json::Value =
+                        resp.json().await.map_err(|e| e.without_url().to_string())?;
+                    let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
+                    info!(
+                        "✅ Đã gửi AI market brief tới Telegram! Message ID: {}",
+                        msg_id
+                    );
+                    Ok(msg_id)
+                } else {
+                    let err_text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Lỗi không xác định".into());
+                    error!("❌ Telegram AI market brief API lỗi: {}", err_text);
+                    Err(format!("Telegram API Error: {}", err_text))
+                }
+            }
+            Err(err) => {
+                let err = err.without_url();
+                error!("❌ Không thể gửi AI market brief tới Telegram: {}", err);
                 Err(format!("Network Error: {}", err))
             }
         }
@@ -1789,6 +1924,70 @@ mod tests {
                 "missing message text: {expected}"
             );
         }
+    }
+
+    fn sample_ai_decision() -> AiDecision {
+        AiDecision {
+            action: "SELL".to_string(),
+            confidence_score: 0.78,
+            selected_scenario: Some("PRIMARY".to_string()),
+            reason: "H4/H1 supply confluence + RSI overbought".to_string(),
+            execution_rule: Some("Wait for M15 close below 3960".to_string()),
+            macro_flow_alignment: Some("ALIGNED".to_string()),
+            macro_flow_note: Some("Real yield và DXY cùng hỗ trợ SELL.".to_string()),
+            provider: "opencode_go".to_string(),
+            model: "gemini-4-argon".to_string(),
+        }
+    }
+
+    #[test]
+    fn format_ai_market_brief_includes_decision_and_scenario_body() {
+        let message = TelegramNotifier::format_ai_market_brief(
+            &sample_ai_decision(),
+            &sample_scenario_response(),
+            &sample_live_view(),
+        );
+
+        for expected in [
+            "🧠 <b>AI MARKET BRIEF</b> — XAU/USD",
+            "Action: <b>SELL</b> · confidence 78%",
+            "Selected: PRIMARY",
+            "Reason: H4/H1 supply confluence + RSI overbought",
+            "Macro/Flow: ALIGNED — Real yield và DXY cùng hỗ trợ SELL.",
+            "Giá: 3980.50 · Nguồn: TWELVEDATA",
+            "🎯 PRIMARY — Bearish breakdown [ALIGNED] [VALID] · confidence 95",
+            "🔁 ALTERNATE — Bullish breakout [COUNTER] [NOT VALID] · confidence 50",
+            "👀 Watchlist: Bullish bounce (not valid) · Bearish rejection (not valid)",
+            "Đây là nhận định AI, không phải lệnh tự động.",
+        ] {
+            assert!(
+                message.contains(expected),
+                "missing message text: {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_ai_market_brief_escapes_dynamic_text_and_handles_none() {
+        let mut decision = sample_ai_decision();
+        decision.action = "STANDBY<script>".to_string();
+        decision.selected_scenario = None;
+        decision.reason = "risk <high> & red news".to_string();
+        decision.macro_flow_alignment = None;
+        decision.macro_flow_note = Some("note <unsafe>".to_string());
+
+        let message = TelegramNotifier::format_ai_market_brief(
+            &decision,
+            &sample_scenario_response(),
+            &sample_live_view(),
+        );
+
+        assert!(message.contains("Action: <b>STANDBY&lt;script&gt;</b> · confidence 78%"));
+        assert!(message.contains("Selected: NONE"));
+        assert!(message.contains("Reason: risk &lt;high&gt; &amp; red news"));
+        assert!(message.contains("Macro/Flow: UNKNOWN — note &lt;unsafe&gt;"));
+        assert!(!message.contains("<script>"));
+        assert!(!message.contains("<unsafe>"));
     }
 
     #[test]

@@ -1106,33 +1106,57 @@ export const ConfigPanel: React.FC<Props> = ({
             </div>
           </div>
 
-          {/* AI Chief Risk Officer (optional, veto-only) */}
+          {/* AI Decision Mode / legacy VETO_ONLY */}
           <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/5 p-4 flex flex-col gap-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="flex flex-col gap-1">
                 <div className="text-xs font-bold text-indigo-300 uppercase tracking-wider">
-                  🤖 AI Chief Risk Officer (tùy chọn — mặc định OFF)
+                  🧠 AI Decision Mode (mặc định BẬT)
                 </div>
                 <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
-                  Khi bật, bot gọi OpenCode Go (Gemini 4 Argon) để review mỗi tín hiệu thật trước
-                  khi gửi Telegram/lưu. AI chỉ được veto hoặc chọn
-                  STANDBY — <strong className="text-neutral-200">không bao giờ đặt SL/TP live</strong>.
+                  Ở chế độ <strong className="text-neutral-200">DECISION</strong>, AI là lớp quyết
+                  định chính: nhận full brief (D1/H4/H1, macro/flow, RSI, volume delta, scenarios,
+                  news) rồi chọn BUY / SELL / STANDBY. Code chỉ giữ hard risk: SL/TP ordering, R:R,
+                  risk budget, quota, session, news, dedup.{' '}
+                  <strong className="text-neutral-200">AI không bao giờ đặt SL/TP live</strong>.
                 </p>
               </div>
               <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
                 <input
                   type="checkbox"
-                  checked={formData.ai_signal_review_enabled ?? false}
+                  checked={formData.ai_signal_review_enabled ?? true}
                   onChange={(e) =>
                     setFormData({ ...formData, ai_signal_review_enabled: e.target.checked })
                   }
                   className="accent-indigo-500 w-4 h-4 rounded cursor-pointer"
                 />
-                <span className="font-semibold text-white">Bật AI Risk Officer</span>
+                <span className="font-semibold text-white">Bật AI</span>
               </label>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">Chế độ AI</label>
+                <select
+                  disabled={!formData.ai_signal_review_enabled}
+                  value={formData.ai_review_mode ?? 'DECISION'}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      ai_review_mode: e.target.value as 'DECISION' | 'VETO_ONLY',
+                    })
+                  }
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-indigo-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                >
+                  <option value="DECISION">DECISION — AI quyết BUY/SELL/STANDBY</option>
+                  <option value="VETO_ONLY">VETO_ONLY — hành vi cũ</option>
+                </select>
+                <span className="text-[11px] text-neutral-500">
+                  DECISION: AI quyết định, code validate risk. VETO_ONLY: AI chỉ veto tín hiệu
+                  deterministic.
+                </span>
+              </div>
+
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-neutral-300">
                   Confidence tối thiểu để cho qua
@@ -1159,7 +1183,8 @@ export const ConfigPanel: React.FC<Props> = ({
                   <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">0.5–1.0</span>
                 </div>
                 <span className="text-[11px] text-neutral-500">
-                  Mặc định 0.75. AI confidence thấp hơn ngưỡng → tín hiệu bị chặn.
+                  Mặc định 0.75. DECISION: AI confidence thấp hơn ngưỡng → không tín hiệu.
+                  VETO_ONLY: tín hiệu bị veto.
                 </span>
               </div>
 
@@ -1169,12 +1194,18 @@ export const ConfigPanel: React.FC<Props> = ({
                 </label>
                 <label
                   className={`flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none ${
-                    formData.ai_signal_review_enabled ? '' : 'opacity-40'
+                    formData.ai_signal_review_enabled &&
+                    (formData.ai_review_mode ?? 'DECISION') === 'VETO_ONLY'
+                      ? ''
+                      : 'opacity-40'
                   }`}
                 >
                   <input
                     type="checkbox"
-                    disabled={!formData.ai_signal_review_enabled}
+                    disabled={
+                      !formData.ai_signal_review_enabled ||
+                      (formData.ai_review_mode ?? 'DECISION') !== 'VETO_ONLY'
+                    }
                     checked={formData.ai_signal_review_fail_open ?? true}
                     onChange={(e) =>
                       setFormData({ ...formData, ai_signal_review_fail_open: e.target.checked })
@@ -1182,19 +1213,20 @@ export const ConfigPanel: React.FC<Props> = ({
                     className="accent-indigo-500 w-4 h-4 rounded cursor-pointer mt-0.5"
                   />
                   <span className="text-[11px] text-neutral-300 leading-snug">
-                    Fail-open: AI lỗi thì vẫn cho tín hiệu qua (khuyến nghị)
+                    VETO_ONLY: fail-open khi AI lỗi (mặc định)
                   </span>
                 </label>
                 <span className="text-[11px] text-neutral-500">
-                  Tắt fail-open = fail-closed: AI không phản hồi thì chặn tín hiệu.
+                  DECISION luôn fail-closed: AI không phản hồi → không tín hiệu, bất kể flag này.
+                  Tắt fail-open ở VETO_ONLY cũng chặn tín hiệu.
                 </span>
               </div>
 
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-neutral-300">Phạm vi áp dụng</label>
                 <div className="bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 text-[11px] text-neutral-300 leading-snug">
-                  Chỉ tín hiệu thật (scanner, candle webhook, TradingView). Simulation không gọi AI
-                  và không tiêu hao quota.
+                  DECISION nới soft filters (volume/RSI/HTF/macro) để AI review candidate; hard
+                  risk vẫn do code chặn. Chỉ tín hiệu thật; simulation không gọi AI/quota.
                 </div>
                 <span className="text-[11px] text-neutral-500">
                   Cần <span className="font-mono text-neutral-400">OPENCODE_GO_API_KEY</span> trong

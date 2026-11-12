@@ -183,6 +183,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         action_trigger_last_sent: Arc::new(RwLock::new(std::collections::HashMap::new())),
         macro_flow: Arc::new(RwLock::new(None)),
         macro_flow_updated_at: Arc::new(RwLock::new(None)),
+        last_ai_decision: Arc::new(RwLock::new(None)),
     };
 
     // 6. Background Scanner 24/7 — quét mỗi 60 giây

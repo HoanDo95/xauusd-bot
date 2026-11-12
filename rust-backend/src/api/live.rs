@@ -366,7 +366,7 @@ mod tests {
             .contains("disabled"));
         assert!(filters["delta_ratio"].is_number());
         assert!(filters["cvd"].is_number());
-        assert_eq!(filters["ai_review_enabled"], false);
+        assert_eq!(filters["ai_review_enabled"], true);
         assert!(
             view.get("macroFlow").is_none(),
             "no snapshot must not add a macroFlow block"

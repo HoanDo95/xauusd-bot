@@ -101,6 +101,7 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "h4FilterEnabled": config.htf_h4_filter_enabled,
         "d1FilterEnabled": config.htf_d1_filter_enabled,
         "aiReviewEnabled": config.ai_signal_review_enabled,
+        "aiReviewMode": config.ai_review_mode,
         "volumeDeltaFilterEnabled": config.volume_delta_filter_enabled,
         "rsiFilterEnabled": config.rsi_filter_enabled,
         "divergenceAlertEnabled": config.divergence_alert_enabled,

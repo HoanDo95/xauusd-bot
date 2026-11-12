@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActionViewResponse,
+  AiDecision,
   BotConfig,
   Candle,
   DivergenceAlertsResponse,
@@ -89,7 +90,8 @@ const DEFAULT_CONFIG: BotConfig = {
   max_candle_age_secs: 120,
   htf_h4_filter_enabled: false,
   htf_d1_filter_enabled: false,
-  ai_signal_review_enabled: false,
+  ai_signal_review_enabled: true,
+  ai_review_mode: 'DECISION',
   ai_signal_review_min_confidence: 0.75,
   ai_signal_review_fail_open: true,
   volume_delta_filter_enabled: false,
@@ -184,6 +186,7 @@ export default function DashboardPage() {
   });
   const [liveView, setLiveView] = useState<LiveViewResponse | null>(null);
   const [actionView, setActionView] = useState<ActionViewResponse | null>(null);
+  const [aiDecision, setAiDecision] = useState<AiDecision | null>(null);
   const [macroFlow, setMacroFlow] = useState<MacroFlowResponse | null>(null);
   const [scenarios, setScenarios] = useState<ScenarioResponse | null>(null);
 
@@ -446,11 +449,17 @@ export default function DashboardPage() {
         setConfig((prev) => ({ ...prev, is_active: true }));
         if (data.liveView) setLiveView(data.liveView);
         if (data.scenarios) setScenarios(data.scenarios);
+        setAiDecision(data.aiDecision ?? null);
+        const aiLabel = data.aiDecision
+          ? ` · AI ${data.aiDecision.action} ${(data.aiDecision.confidence_score * 100).toFixed(0)}%`
+          : data.aiError
+            ? ` · AI unavailable`
+            : '';
         if (data.telegramSent) {
-          setStatusMessage('Scanner started — scenario view sent to Telegram');
+          setStatusMessage(`Scanner started — brief sent to Telegram${aiLabel}`);
         } else {
           setStatusMessage(
-            `Scanner started — chưa gửi được Telegram${
+            `Scanner started — chưa gửi được Telegram${aiLabel}${
               data.telegramError ? `: ${data.telegramError}` : ''
             }`
           );
@@ -569,12 +578,13 @@ export default function DashboardPage() {
         {currentTab === 'monitor' && (
           <div className="flex flex-col gap-6">
             {/* Top-level "Should I enter now?" verdict (read-only, no quota) */}
-            <ActionCard data={actionView} />
+            <ActionCard data={actionView} aiDecision={actionView?.aiDecision ?? aiDecision} />
 
             {/* Live setup preview + Start/Stop scanner (read-only, quota-free) */}
             <LiveSetupCard
               config={config}
               liveView={liveView}
+              aiDecision={actionView?.aiDecision ?? aiDecision}
               isTogglingScanner={isTogglingScanner}
               onToggleScanner={() => {
                 void handleToggleScanner();

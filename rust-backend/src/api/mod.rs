@@ -1,3 +1,4 @@
+use crate::ai_decision::AiDecision;
 use crate::divergence_alerts::DivergenceAlert;
 use crate::macro_flow::{align_signal_with_macro_flow, MacroFlowSnapshot};
 use crate::market_context::{htf_allows_signal, MarketContext};
@@ -112,6 +113,9 @@ pub struct AppState {
     pub macro_flow: Arc<RwLock<Option<MacroFlowSnapshot>>>,
     /// Thời điểm snapshot Macro & Flow được làm mới gần nhất.
     pub macro_flow_updated_at: Arc<RwLock<Option<DateTime<Utc>>>>,
+    /// Quyết định AI gần nhất (BUY/SELL/STANDBY), chỉ giữ trong RAM.
+    /// Chỉ được ghi khi AI Decision Mode chạy; không phải lệnh tự động.
+    pub last_ai_decision: Arc<RwLock<Option<AiDecision>>>,
 }
 
 /// Ghi snapshot Config + Signals + DailyReport + session alert dedup xuống đĩa

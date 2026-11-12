@@ -1,11 +1,13 @@
 'use client';
 
 import React from 'react';
-import { BotConfig, LiveViewResponse, MacroFlowAlignment } from '../types';
+import { AiDecision, BotConfig, LiveViewResponse, MacroFlowAlignment } from '../types';
 
 interface Props {
   config: BotConfig;
   liveView: LiveViewResponse | null;
+  /** AI verdict returned by the latest Start click (DECISION mode). */
+  aiDecision?: AiDecision | null;
   isTogglingScanner: boolean;
   onToggleScanner: () => void;
   onRefresh: () => void;
@@ -120,6 +122,7 @@ const MacroFlowAlignmentBlock: React.FC<{ alignment: MacroFlowAlignment }> = ({ 
 export const LiveSetupCard: React.FC<Props> = ({
   config,
   liveView,
+  aiDecision,
   isTogglingScanner,
   onToggleScanner,
   onRefresh,
@@ -191,6 +194,35 @@ export const LiveSetupCard: React.FC<Props> = ({
           {liveView
             ? ' Đang giữ kết quả gần nhất bên dưới.'
             : ' Chưa có dữ liệu live view.'}
+        </div>
+      )}
+
+      {aiDecision && (
+        <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/5 px-3 py-2.5 flex flex-col gap-1 text-[11px] font-mono">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="px-2 py-0.5 rounded border border-indigo-500/40 bg-indigo-500/15 text-indigo-200 font-bold">
+              🧠 AI: {aiDecision.action} ·{' '}
+              {Number.isFinite(aiDecision.confidence_score)
+                ? `${Math.round(Math.min(1, Math.max(0, aiDecision.confidence_score)) * 100)}%`
+                : '—'}
+            </span>
+            {aiDecision.selected_scenario && (
+              <span className="text-neutral-400">
+                Selected <strong className="text-neutral-200">{aiDecision.selected_scenario}</strong>
+              </span>
+            )}
+            {aiDecision.macro_flow_alignment && (
+              <span className="text-neutral-400">
+                Macro <strong className="text-neutral-200">{aiDecision.macro_flow_alignment}</strong>
+              </span>
+            )}
+          </div>
+          <p className="text-neutral-300">
+            <span className="text-neutral-500">Reason:</span> {aiDecision.reason}
+          </p>
+          <p className="text-[9px] text-neutral-500">
+            Từ lần Start gần nhất — nhận định AI, không phải lệnh tự động.
+          </p>
         </div>
       )}
 

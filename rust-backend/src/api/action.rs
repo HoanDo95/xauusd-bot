@@ -1,4 +1,5 @@
 use super::{current_live_view, current_scenarios, AppState};
+use crate::ai_decision::AiDecision;
 use crate::macro_flow::{align_signal_with_macro_flow, MacroFlowSnapshot};
 use crate::models::Signal;
 use crate::scenarios::{Scenario, ScenarioResponse};
@@ -23,6 +24,7 @@ pub(super) async fn get_action_view(State(state): State<AppState>) -> impl IntoR
     let source = state.active_data_source.read().await.clone();
     let volume_source = state.active_volume_source.read().await.clone();
     let trigger_alert_enabled = state.config.read().await.action_trigger_alert_enabled;
+    let ai_decision = state.last_ai_decision.read().await.clone();
 
     Json(build_action_view(
         &live_view,
@@ -31,6 +33,7 @@ pub(super) async fn get_action_view(State(state): State<AppState>) -> impl IntoR
         &source,
         &volume_source,
         trigger_alert_enabled,
+        ai_decision.as_ref(),
     ))
 }
 
@@ -235,6 +238,7 @@ pub(super) fn build_action_view(
     source: &str,
     volume_source: &str,
     trigger_alert_enabled: bool,
+    ai_decision: Option<&AiDecision>,
 ) -> Value {
     let quality = volume_quality(volume_source);
     let warning = volume_warning(quality);
@@ -381,6 +385,7 @@ pub(super) fn build_action_view(
         "volumeQuality": quality,
         "volumeWarning": warning,
         "triggerAlertEnabled": trigger_alert_enabled,
+        "aiDecision": ai_decision,
         "source": source,
         "volumeSource": volume_source,
         "generated_at": generated_at(live_view),
@@ -580,6 +585,7 @@ mod tests {
             "TWELVEDATA",
             "BINANCE_PAXG_PROXY",
             true,
+            None,
         )
     }
 
@@ -612,6 +618,45 @@ mod tests {
         assert_eq!(sell["verdict"], "SELL");
         assert_eq!(sell["headline"], "Có thể vào SELL");
         assert_eq!(sell["signal"]["signal_type"], "SELL");
+    }
+
+    #[test]
+    fn action_view_includes_latest_ai_decision_without_overriding_verdict() {
+        let ai_decision = AiDecision {
+            action: "SELL".to_string(),
+            confidence_score: 0.82,
+            selected_scenario: Some("PRIMARY".to_string()),
+            reason: "Supply confluence".to_string(),
+            execution_rule: None,
+            macro_flow_alignment: Some("ALIGNED".to_string()),
+            macro_flow_note: None,
+            provider: "opencode_go".to_string(),
+            model: "gemini-4-argon".to_string(),
+        };
+        let action = build_action_view(
+            &setup_view(SignalType::Buy, true, true, true, None),
+            &scenario_response(Vec::new()),
+            None,
+            "TWELVEDATA",
+            "BINANCE_PAXG_PROXY",
+            true,
+            Some(&ai_decision),
+        );
+
+        assert_eq!(
+            action["verdict"], "BUY",
+            "deterministic verdict stays primary"
+        );
+        assert_eq!(action["aiDecision"]["action"], "SELL");
+        assert_eq!(action["aiDecision"]["confidence_score"], 0.82);
+        assert_eq!(action["aiDecision"]["selected_scenario"], "PRIMARY");
+
+        let without = build(
+            &setup_view(SignalType::Buy, true, true, true, None),
+            &scenario_response(Vec::new()),
+            None,
+        );
+        assert!(without["aiDecision"].is_null());
     }
 
     #[test]
@@ -742,6 +787,7 @@ mod tests {
             "TWELVEDATA",
             "BINANCE_PAXG",
             false,
+            None,
         );
         assert_eq!(action["volumeQuality"], "PAXG");
         assert_eq!(action["volumeWarning"], VOLUME_PROXY_WARNING);

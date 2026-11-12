@@ -1,5 +1,6 @@
 import type {
   ActionViewResponse,
+  AiDecision,
   AiSignalReview,
   BotConfig,
   Candle,
@@ -46,6 +47,10 @@ export interface StartScannerResponse {
   telegramError?: string;
   liveView: LiveViewResponse;
   scenarios: ScenarioResponse;
+  /** DECISION mode only: AI verdict; null when disabled/unavailable. */
+  aiDecision?: AiDecision | null;
+  /** Present when DECISION mode was enabled but AI was unavailable. */
+  aiError?: string | null;
 }
 
 /** POST /api/scanner/stop — pauses the scanner without touching quota/signals. */
@@ -82,8 +87,10 @@ export interface HealthResponse {
   killSwitchActive?: boolean;
   /** Optional H4 trend filter state (default false). */
   h4FilterEnabled?: boolean;
-  /** Optional AI Chief Risk Officer veto gate (default false). */
+  /** AI review enabled (default true for new configs). */
   aiReviewEnabled?: boolean;
+  /** DECISION | VETO_ONLY */
+  aiReviewMode?: 'DECISION' | 'VETO_ONLY' | string;
   /** Optional Volume Delta/CVD gate state (default false). */
   volumeDeltaFilterEnabled?: boolean;
   /** Optional hard RSI gate state (default false). */

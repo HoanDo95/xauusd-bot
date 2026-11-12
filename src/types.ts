@@ -296,6 +296,8 @@ export interface ActionViewResponse {
   volumeWarning: string | null;
   /** Whether the read-only PRIMARY-scenario trigger Telegram alert is enabled. */
   triggerAlertEnabled?: boolean;
+  /** Latest AI Decision (DECISION mode) — advisory, never an automatic order. */
+  aiDecision?: AiDecision | null;
   source: string;
   volumeSource: string;
   generated_at: string;
@@ -397,6 +399,20 @@ export interface Signal {
   macro_flow_alignment?: string | null;
   /** Short Vietnamese macro/flow note (advisory only). */
   macro_flow_note?: string | null;
+}
+
+/** AI Decision Mode verdict — primary BUY/SELL/STANDBY, never live SL/TP. */
+export interface AiDecision {
+  action: 'BUY' | 'SELL' | 'STANDBY' | string;
+  /** 0..1 */
+  confidence_score: number;
+  selected_scenario: 'PRIMARY' | 'ALTERNATE' | 'WATCHLIST' | 'NONE' | null | string;
+  reason: string;
+  execution_rule?: string | null;
+  macro_flow_alignment?: 'ALIGNED' | 'COUNTER' | 'MIXED' | 'UNKNOWN' | string | null;
+  macro_flow_note?: string | null;
+  provider: string;
+  model: string;
 }
 
 /** AI Chief Risk Officer review — veto-only, never live SL/TP. */
@@ -504,11 +520,13 @@ export interface BotConfig {
   /** Optional H4 trend filter — blocks counter-H4 signals only when true. Default OFF. */
   htf_h4_filter_enabled: boolean;
   htf_d1_filter_enabled: boolean;
-  /** Optional AI Chief Risk Officer veto gate. Default OFF — no behavior change when false. */
+  /** AI review enabled. Default ON for new configs; persisted false stays false. */
   ai_signal_review_enabled?: boolean;
+  /** DECISION = AI chooses BUY/SELL/STANDBY; VETO_ONLY = legacy veto-only review. Default DECISION. */
+  ai_review_mode?: 'DECISION' | 'VETO_ONLY';
   /** Minimum AI confidence (0.5–1.0) required to let a signal through. Default 0.75. */
   ai_signal_review_min_confidence?: number;
-  /** When AI errors/times out: true = pass (fail-open, default), false = block. */
+  /** VETO_ONLY only: true = pass on AI error (fail-open, default), false = block. */
   ai_signal_review_fail_open?: boolean;
   /** Optional Volume Delta/CVD gate. Default OFF — no behavior change when false. */
   volume_delta_filter_enabled: boolean;

@@ -1,10 +1,12 @@
 'use client';
 
 import React from 'react';
-import { ActionVerdict, ActionViewResponse } from '../types';
+import { ActionVerdict, ActionViewResponse, AiDecision } from '../types';
 
 interface Props {
   data: ActionViewResponse | null;
+  /** Latest AI Decision (DECISION mode). Display-only; deterministic verdict stays primary. */
+  aiDecision?: AiDecision | null;
 }
 
 function price(value: number | null | undefined): string {
@@ -44,6 +46,19 @@ function verdictTone(verdict: ActionVerdict): string {
     case 'SELL':
       return 'bg-rose-500/15 text-rose-300 border-rose-500/40';
     case 'WAIT':
+      return 'bg-amber-500/15 text-amber-300 border-amber-500/40';
+    default:
+      return 'bg-neutral-800 text-neutral-300 border-neutral-700';
+  }
+}
+
+function aiActionTone(action: string): string {
+  switch ((action || '').toUpperCase()) {
+    case 'BUY':
+      return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40';
+    case 'SELL':
+      return 'bg-rose-500/15 text-rose-300 border-rose-500/40';
+    case 'STANDBY':
       return 'bg-amber-500/15 text-amber-300 border-amber-500/40';
     default:
       return 'bg-neutral-800 text-neutral-300 border-neutral-700';
@@ -118,7 +133,7 @@ const Metric: React.FC<{
  * It is a display-only summary of `/api/action-view`: the backend never sends
  * Telegram, inserts a signal, consumes quota or auto-trades for this endpoint.
  */
-export const ActionCard: React.FC<Props> = ({ data }) => {
+export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
   if (!data) {
     return (
       <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-4 flex flex-col gap-2">
@@ -132,6 +147,14 @@ export const ActionCard: React.FC<Props> = ({ data }) => {
 
   const signal = data.signal;
   const primary = data.primaryScenario;
+  const ai = aiDecision;
+  const aiConfidence =
+    ai && Number.isFinite(ai.confidence_score)
+      ? `${Math.round(Math.min(1, Math.max(0, ai.confidence_score)) * 100)}%`
+      : '—';
+  const aiAction = (ai?.action || '').toUpperCase();
+  const aiDiffersFromVerdict =
+    (aiAction === 'BUY' || aiAction === 'SELL') && aiAction !== data.verdict;
   const proximity = (data.proximity || 'UNKNOWN').toUpperCase();
   const distanceLabel = price(data.distanceToTrigger);
   const distanceAtrLabel =
@@ -177,6 +200,46 @@ export const ActionCard: React.FC<Props> = ({ data }) => {
           <p className="text-xs text-neutral-400 leading-relaxed">{data.reason}</p>
         </div>
       </div>
+
+      {ai && (
+        <div className="flex flex-col gap-1.5 rounded-lg border border-indigo-500/30 bg-indigo-500/5 px-3 py-2.5">
+          <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono">
+            <span
+              className={`px-2 py-0.5 rounded border font-bold ${aiActionTone(aiAction)}`}
+            >
+              🧠 AI: {aiAction || 'UNKNOWN'} · {aiConfidence}
+            </span>
+            {ai.selected_scenario && (
+              <span className="text-neutral-400">
+                Selected <strong className="text-neutral-200">{ai.selected_scenario}</strong>
+              </span>
+            )}
+            {ai.macro_flow_alignment && (
+              <span className="text-neutral-400">
+                Macro <strong className="text-neutral-200">{ai.macro_flow_alignment}</strong>
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] text-neutral-300 leading-relaxed">
+            <span className="text-neutral-500">Reason:</span> {ai.reason}
+          </p>
+          {ai.execution_rule && (
+            <p className="text-[10px] text-neutral-400">
+              <span className="text-neutral-500">Execution rule:</span> {ai.execution_rule}
+            </p>
+          )}
+          {aiDiffersFromVerdict && (
+            <p className="text-[10px] font-mono text-amber-300">
+              AI {aiAction} khác verdict deterministic {data.verdict} — hiển thị cả hai, không tự
+              động override.
+            </p>
+          )}
+          <p className="text-[9px] text-neutral-500">
+            AI là lớp quyết định chính; code vẫn giữ hard risk (SL/TP, R:R, risk budget, quota,
+            session, news, dedup). Không auto-trade.
+          </p>
+        </div>
+      )}
 
       <div className="flex flex-col gap-1">
         <div

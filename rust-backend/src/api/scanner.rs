@@ -1,9 +1,16 @@
 use super::live::current_live_view;
 use super::scenarios::current_scenarios;
 use super::{persist_state, AppState};
+use crate::ai_decision::{
+    ai_decision_enabled, relaxed_candidate_config, review_market_decision, AiDecision,
+};
+use crate::analyzer::GoldMarketAnalyzer;
 use crate::models::BotConfig;
+use crate::rsi::rsi_snapshot;
 use crate::scenarios::ScenarioResponse;
+use crate::volume_delta::compute_delta;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use chrono::Utc;
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
@@ -32,6 +39,72 @@ pub(crate) struct StartResult {
     pub telegram_error: Option<String>,
     pub live_view: Value,
     pub scenarios: ScenarioResponse,
+    pub ai_decision: Option<AiDecision>,
+    pub ai_error: Option<String>,
+}
+
+const AI_DECISION_UNAVAILABLE_MESSAGE: &str =
+    "AI Decision không khả dụng (thiếu OPENCODE_GO_API_KEY, lỗi provider hoặc phản hồi không hợp lệ). Không có tín hiệu AI mới; scenario view vẫn được gửi.";
+
+/// Run one AI decision for the Start brief. Read-only: never inserts a signal
+/// and never consumes the Sniper quota.
+async fn start_ai_decision(
+    state: &AppState,
+    config: &BotConfig,
+    scenarios: &ScenarioResponse,
+) -> (Option<AiDecision>, Option<String>) {
+    if !ai_decision_enabled(config) {
+        return (None, None);
+    }
+
+    let candles = state.candles.read().await.clone();
+    let live_price = *state.live_price.read().await;
+    let mut context = state.market_context.read().await.clone();
+    let macro_flow = state.macro_flow.read().await.clone();
+    let events = state.news_filter.read().await.calendar_events.clone();
+    let now = Utc::now();
+    let now_ms = now.timestamp_millis();
+
+    let rsi = rsi_snapshot(
+        &candles,
+        config.rsi_period,
+        config.rsi_overbought,
+        config.rsi_oversold,
+        config.rsi_divergence_lookback,
+        config.rsi_pivot_k,
+    );
+    if let Some(context) = context.as_mut() {
+        context.rsi_m15 = Some(rsi.clone());
+    }
+    let delta = compute_delta(&candles, config.volume_delta_lookback);
+    let relaxed = relaxed_candidate_config(config);
+    let candidate =
+        GoldMarketAnalyzer::analyze_market_with_live_price(&candles, &relaxed, live_price, now_ms);
+
+    let decision = review_market_decision(
+        candidate.as_ref(),
+        context.as_ref(),
+        macro_flow.as_ref(),
+        Some(scenarios),
+        Some(&rsi),
+        Some(&delta),
+        &events,
+        config,
+    )
+    .await;
+
+    match decision {
+        Some(decision) => {
+            *state.last_ai_decision.write().await = Some(decision.clone());
+            (Some(decision), None)
+        }
+        None => {
+            warn!(
+                "⚠️ [AI Decision] Start không có quyết định AI — fail-closed cho tín hiệu, gửi scenario view."
+            );
+            (None, Some(AI_DECISION_UNAVAILABLE_MESSAGE.to_string()))
+        }
+    }
 }
 
 /// Shared Start logic: flip `is_active`, persist, build the read-only views and
@@ -57,16 +130,25 @@ pub(crate) async fn start_scanner_inner(state: &AppState) -> StartResult {
     let live_view = current_live_view(state).await;
     let scenarios = current_scenarios(state).await;
     let config = state.config.read().await.clone();
+    let (ai_decision, ai_error) = start_ai_decision(state, &config, &scenarios).await;
 
     let (telegram_sent, telegram_error) = if !telegram_configured(&config) {
         warn!("⚠️ Scanner start: Telegram chưa cấu hình token/chat ID.");
         (false, Some(TELEGRAM_NOT_CONFIGURED_MESSAGE.to_string()))
     } else {
         let telegram = state.telegram.read().await.clone();
-        match telegram.send_scenario_summary(&live_view, &scenarios).await {
+        let send_result = match ai_decision.as_ref() {
+            Some(decision) => {
+                telegram
+                    .send_ai_market_brief(decision, &scenarios, &live_view)
+                    .await
+            }
+            None => telegram.send_scenario_summary(&live_view, &scenarios).await,
+        };
+        match send_result {
             Ok(_) => (true, None),
             Err(err) => {
-                warn!("⚠️ Không gửi được scenario summary tới Telegram: {}", err);
+                warn!("⚠️ Không gửi được brief tới Telegram: {}", err);
                 (false, Some(TELEGRAM_ERROR_MESSAGE.to_string()))
             }
         }
@@ -78,6 +160,8 @@ pub(crate) async fn start_scanner_inner(state: &AppState) -> StartResult {
         telegram_error,
         live_view,
         scenarios,
+        ai_decision,
+        ai_error,
     }
 }
 
@@ -95,6 +179,8 @@ pub(super) async fn start_scanner(State(state): State<AppState>) -> impl IntoRes
         "telegramSent": result.telegram_sent,
         "liveView": result.live_view,
         "scenarios": result.scenarios,
+        "aiDecision": result.ai_decision,
+        "aiError": result.ai_error,
     });
     if let Some(error) = result.telegram_error {
         payload["telegramError"] = json!(error);

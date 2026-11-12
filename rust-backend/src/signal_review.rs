@@ -50,15 +50,19 @@ pub struct AiSignalReview {
     pub model: String,
 }
 
-struct ReviewSettings {
-    api_key: String,
-    api_base: String,
-    model: String,
+pub(crate) struct ReviewSettings {
+    pub(crate) api_key: String,
+    pub(crate) api_base: String,
+    pub(crate) model: String,
 }
 
 /// Resolve cấu hình review từ env. Trả None khi thiếu API key.
 /// Tuyệt đối không log key.
-fn resolve_review_settings(key: &str, base: &str, model: &str) -> Option<ReviewSettings> {
+pub(crate) fn resolve_review_settings(
+    key: &str,
+    base: &str,
+    model: &str,
+) -> Option<ReviewSettings> {
     let api_key = key.trim();
     if api_key.is_empty() {
         return None;
@@ -89,11 +93,11 @@ fn resolve_review_settings(key: &str, base: &str, model: &str) -> Option<ReviewS
 }
 
 /// Session id gửi kèm OpenCode Go request (một phiên review/ngày UTC).
-fn review_session_id(now: DateTime<Utc>) -> String {
+pub(crate) fn review_session_id(now: DateTime<Utc>) -> String {
     now.format("xauusd-review-%Y-%m-%d").to_string()
 }
 
-fn review_min_confidence(value: f64) -> f64 {
+pub(crate) fn review_min_confidence(value: f64) -> f64 {
     if value.is_finite() {
         value.clamp(0.5, 1.0)
     } else {
@@ -101,7 +105,7 @@ fn review_min_confidence(value: f64) -> f64 {
     }
 }
 
-fn truncate_chars(value: &str, max_chars: usize) -> String {
+pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> String {
     let mut chars = value.chars();
     let truncated: String = chars.by_ref().take(max_chars).collect();
     if chars.next().is_some() {
@@ -111,7 +115,7 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
     }
 }
 
-fn format_timeframe_context(label: &str, context: &TimeframeContext) -> String {
+pub(crate) fn format_timeframe_context(label: &str, context: &TimeframeContext) -> String {
     let support = context
         .nearest_support
         .map(|price| format!("{:.2}", price))
@@ -136,7 +140,7 @@ fn format_timeframe_context(label: &str, context: &TimeframeContext) -> String {
     )
 }
 
-fn format_rsi_value(snapshot: &RsiSnapshot) -> String {
+pub(crate) fn format_rsi_value(snapshot: &RsiSnapshot) -> String {
     let value = snapshot
         .value
         .map(|value| format!("{:.1}", value))
@@ -178,13 +182,13 @@ fn format_rsi_block(candidate: &Signal, context: Option<&MarketContext>) -> Stri
     format!("rsi_m15: {}\nrsi_h1: {}\nrsi_h4: {}", m15, h1, h4)
 }
 
-fn format_metric_value(value: Option<f64>, decimals: usize) -> String {
+pub(crate) fn format_metric_value(value: Option<f64>, decimals: usize) -> String {
     value
         .map(|value| format!("{:.*}", decimals, value))
         .unwrap_or_else(|| "n/a".to_string())
 }
 
-fn format_metric_change(value: Option<f64>, decimals: usize) -> String {
+pub(crate) fn format_metric_change(value: Option<f64>, decimals: usize) -> String {
     value
         .map(|value| format!("{:+.decimals$}", value, decimals = decimals))
         .unwrap_or_else(|| "n/a".to_string())
@@ -363,7 +367,7 @@ fn build_review_prompt(
     )
 }
 
-fn normalize_json_content(content: &str) -> &str {
+pub(crate) fn normalize_json_content(content: &str) -> &str {
     let trimmed = content.trim();
     let without_open = if let Some(rest) = trimmed.strip_prefix("```json") {
         rest
@@ -381,7 +385,7 @@ fn normalize_json_content(content: &str) -> &str {
     without_close.trim()
 }
 
-fn optional_string(value: &Value, key: &str) -> Option<String> {
+pub(crate) fn optional_string(value: &Value, key: &str) -> Option<String> {
     value
         .get(key)
         .and_then(Value::as_str)
@@ -390,7 +394,7 @@ fn optional_string(value: &Value, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn optional_f64(value: &Value, key: &str) -> Option<f64> {
+pub(crate) fn optional_f64(value: &Value, key: &str) -> Option<f64> {
     value
         .get(key)
         .and_then(Value::as_f64)
@@ -417,7 +421,7 @@ fn normalize_rsi_divergence(value: &str) -> String {
     .to_string()
 }
 
-fn normalize_macro_flow_alignment(value: &str) -> Option<String> {
+pub(crate) fn normalize_macro_flow_alignment(value: &str) -> Option<String> {
     let normalized = value.trim().to_uppercase();
     matches!(
         normalized.as_str(),
@@ -596,6 +600,82 @@ pub fn review_blocks_signal(
     )
 }
 
+/// Shared OpenCode Go chat-completion call used by both the veto-only review and
+/// the AI decision engine. Returns the raw assistant content, never the key.
+pub(crate) async fn post_ai_chat_completion(
+    settings: &ReviewSettings,
+    system_prompt: &str,
+    prompt: &str,
+    session_id: &str,
+    temperature: f64,
+    log_label: &str,
+) -> Option<String> {
+    let url = format!(
+        "{}/chat/completions",
+        settings.api_base.trim_end_matches('/')
+    );
+    let payload = json!({
+        "model": settings.model,
+        "messages": [
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": prompt }
+        ],
+        "response_format": { "type": "json_object" },
+        "temperature": temperature
+    });
+
+    let client = Client::builder()
+        .timeout(StdDuration::from_secs(REVIEW_TIMEOUT_SECS))
+        .build()
+        .unwrap_or_else(|_| Client::new());
+
+    let request = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", settings.api_key))
+        .header("Content-Type", "application/json")
+        .header("User-Agent", OPENCODE_GO_USER_AGENT)
+        .header("x-opencode-session", session_id);
+
+    let response = match request.json(&payload).send().await {
+        Ok(response) => response,
+        Err(err) => {
+            warn!(
+                "⚠️ [{}] Không kết nối được OpenCode Go ({}).",
+                log_label,
+                err.without_url()
+            );
+            return None;
+        }
+    };
+
+    if !response.status().is_success() {
+        warn!(
+            "⚠️ [{}] OpenCode Go trả HTTP {}.",
+            log_label,
+            response.status()
+        );
+        return None;
+    }
+
+    let body = match response.json::<Value>().await {
+        Ok(body) => body,
+        Err(err) => {
+            warn!("⚠️ [{}] Response JSON lỗi: {}", log_label, err);
+            return None;
+        }
+    };
+
+    let Some(content) = body["choices"][0]["message"]["content"].as_str() else {
+        warn!(
+            "⚠️ [{}] Response thiếu choices[0].message.content.",
+            log_label
+        );
+        return None;
+    };
+
+    Some(content.to_string())
+}
+
 /// Gọi OpenCode Go để review một tín hiệu thật.
 ///
 /// Trả None khi AI review tắt, thiếu `OPENCODE_GO_API_KEY`, lỗi mạng/timeout,
@@ -619,68 +699,17 @@ pub async fn review_signal(
 
     let now = Utc::now();
     let prompt = build_review_prompt(candidate, context, macro_flow, events, now);
-    let url = format!(
-        "{}/chat/completions",
-        settings.api_base.trim_end_matches('/')
-    );
-    let payload = json!({
-        "model": settings.model,
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are the independent Chief Risk Officer for an XAU/USD signal bot. You can only approve, veto (STANDBY) or contradict a candidate. Return pure valid JSON only, with no markdown wrapping."
-            },
-            { "role": "user", "content": prompt }
-        ],
-        "response_format": { "type": "json_object" },
-        "temperature": 0.2
-    });
+    let content = post_ai_chat_completion(
+        &settings,
+        "You are the independent Chief Risk Officer for an XAU/USD signal bot. You can only approve, veto (STANDBY) or contradict a candidate. Return pure valid JSON only, with no markdown wrapping.",
+        &prompt,
+        &review_session_id(now),
+        0.2,
+        "AI Risk Officer",
+    )
+    .await?;
 
-    let client = Client::builder()
-        .timeout(StdDuration::from_secs(REVIEW_TIMEOUT_SECS))
-        .build()
-        .unwrap_or_else(|_| Client::new());
-
-    let request = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", settings.api_key))
-        .header("Content-Type", "application/json")
-        .header("User-Agent", OPENCODE_GO_USER_AGENT)
-        .header("x-opencode-session", review_session_id(now));
-
-    let response = match request.json(&payload).send().await {
-        Ok(response) => response,
-        Err(err) => {
-            warn!(
-                "⚠️ [AI Risk Officer] Không kết nối được OpenCode Go ({}).",
-                err.without_url()
-            );
-            return None;
-        }
-    };
-
-    if !response.status().is_success() {
-        warn!(
-            "⚠️ [AI Risk Officer] OpenCode Go trả HTTP {}.",
-            response.status()
-        );
-        return None;
-    }
-
-    let body = match response.json::<Value>().await {
-        Ok(body) => body,
-        Err(err) => {
-            warn!("⚠️ [AI Risk Officer] Response JSON lỗi: {}", err);
-            return None;
-        }
-    };
-
-    let Some(content) = body["choices"][0]["message"]["content"].as_str() else {
-        warn!("⚠️ [AI Risk Officer] Response thiếu choices[0].message.content.");
-        return None;
-    };
-
-    let mut review = parse_review_content(content, "opencode_go", &settings.model);
+    let mut review = parse_review_content(&content, "opencode_go", &settings.model);
     if let Some(review) = review.as_mut() {
         apply_candidate_rsi_fallback(review, candidate);
         apply_macro_flow_fallback(review, candidate, macro_flow);
@@ -1209,8 +1238,10 @@ mod tests {
     #[tokio::test]
     async fn review_signal_returns_none_when_disabled_without_network() {
         let candidate = sample_signal();
-        let config = BotConfig::default();
-        assert!(!config.ai_signal_review_enabled);
+        let config = BotConfig {
+            ai_signal_review_enabled: false,
+            ..BotConfig::default()
+        };
 
         let result = review_signal(&candidate, None, None, &config, &[]).await;
         assert!(result.is_none());
