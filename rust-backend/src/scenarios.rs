@@ -644,7 +644,9 @@ fn scenario_priority(
 ) -> i32 {
     let mut priority = i32::from(confidence);
     if valid {
-        priority += 100;
+        // A viable scenario must outrank an invalid one; macro/H4 alignment
+        // can only break ties among viable scenarios.
+        priority += 200;
     }
     match macro_alignment {
         "ALIGNED" => priority += 30,
@@ -664,16 +666,16 @@ fn scenario_priority(
     priority
 }
 
-/// Sort by priority (confidence, validity as tie-breakers), then label one
+/// Sort viable scenarios first, then by priority/confidence, then label one
 /// PRIMARY, one opposite-bias ALTERNATE and the rest WATCHLIST. The returned
 /// order is PRIMARY, ALTERNATE, then the remaining WATCHLIST by priority.
 fn rank_scenarios(mut scenarios: Vec<Scenario>) -> Vec<Scenario> {
     scenarios.sort_by(|left, right| {
         right
-            .priority
-            .cmp(&left.priority)
+            .valid
+            .cmp(&left.valid)
+            .then_with(|| right.priority.cmp(&left.priority))
             .then_with(|| right.confidence.cmp(&left.confidence))
-            .then_with(|| right.valid.cmp(&left.valid))
             .then_with(|| left.id.cmp(&right.id))
     });
 
