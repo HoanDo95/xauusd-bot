@@ -20,6 +20,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tracing::warn;
 
+mod action;
 mod ai;
 mod config;
 mod divergence;
@@ -35,6 +36,7 @@ mod simulation;
 mod telegram;
 mod webhooks;
 
+use action::get_action_view;
 use ai::ai_review_signal;
 use config::{calculate_lot, get_config, update_config};
 use divergence::get_divergence_alerts;
@@ -169,6 +171,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/live-view", get(get_live_view))
         // 4 kịch bản tham khảo read-only: không phải entry, không gửi Telegram/quota
         .route("/api/scenarios", get(get_scenarios))
+        // "Should I enter now?" read-only: chỉ báo verdict, không Telegram/quota/tín hiệu
+        .route("/api/action-view", get(get_action_view))
         // Start/Stop scanner chỉ đổi is_active; Start gửi scenario view tham khảo
         .route("/api/scanner/start", post(start_scanner))
         .route("/api/scanner/stop", post(stop_scanner))

@@ -283,6 +283,30 @@ The Scenario View card also has **Gửi Telegram** to resend the current snapsho
 on demand. Stop only pauses the scanner; it does not close open signals or reset
 quota.
 
+### Action View — “Should I enter now?”
+
+The monitor tab starts with an **Action View** card backed by
+`GET /api/action-view`. It combines the live setup, the primary reference
+scenario and the macro/flow snapshot into one read-only verdict:
+
+| Verdict | Meaning |
+|---|---|
+| `BUY` / `SELL` | A live setup exists and the HTF/RSI/Delta display filters all pass. Entry, SL, TP1/TP2, R:R and lot size are shown. |
+| `WAIT` | A setup exists but at least one filter is blocked (`FILTER_BLOCKED`), or `no_setup` with a valid primary scenario — wait for the trigger. |
+| `NO_TRADE` | No valid scenario, or not enough candles (`no_data`). |
+
+- `caution` is `COUNTER_MACRO` when macro/flow opposes the signal or primary
+  scenario, `FILTER_BLOCKED` when a display filter blocks the setup, and
+  `VOLUME_PROXY` for an actionable signal whose volume is a PAXG proxy.
+- `volumeQuality` maps `BINANCE_PAXG_PROXY → PAXG_PROXY`,
+  `BINANCE_PAXG → PAXG`, `NONE → NONE`, otherwise `UNKNOWN`. For PAXG/PAXG
+  proxy the API also returns: “Volume là proxy PAXG, không phải volume XAUUSD
+  thật; chỉ nên xem là tương đối.”
+- The endpoint is **read-only**: no Telegram, no signal insertion, no Sniper
+  quota, no AI review and no auto-trading. It never blocks a real signal beyond
+  the existing scanner filters; it only reports them. The card is labelled
+  “View hành động — không phải lệnh tự động; bot không tự vào lệnh.”
+
 ### Telegram bot commands
 
 The API runs a long-poll command worker. Commands are accepted only from the

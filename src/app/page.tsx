@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  ActionViewResponse,
   BotConfig,
   Candle,
   DivergenceAlertsResponse,
@@ -16,6 +17,7 @@ import {
   VolumeDeltaSnapshot,
 } from '../types';
 import {
+  fetchActionView,
   fetchCandles,
   fetchConfig,
   fetchDivergenceAlerts,
@@ -35,6 +37,7 @@ import {
   type SimulateSetupType,
 } from '../lib/api';
 import { Header, type DashboardTab } from '../components/Header';
+import { ActionCard } from '../components/ActionCard';
 import { MetricCards } from '../components/MetricCards';
 import { MacroContextCard } from '../components/MacroContextCard';
 import { MacroFlowCard } from '../components/MacroFlowCard';
@@ -138,6 +141,7 @@ export default function DashboardPage() {
     alerts: [],
   });
   const [liveView, setLiveView] = useState<LiveViewResponse | null>(null);
+  const [actionView, setActionView] = useState<ActionViewResponse | null>(null);
   const [macroFlow, setMacroFlow] = useState<MacroFlowResponse | null>(null);
   const [scenarios, setScenarios] = useState<ScenarioResponse | null>(null);
 
@@ -243,6 +247,16 @@ export default function DashboardPage() {
     }
   }, []);
 
+  // Fetch the read-only "Should I enter now?" action view (no quota/Telegram).
+  const loadActionView = useCallback(async () => {
+    try {
+      const data = await fetchActionView();
+      setActionView(data);
+    } catch (err) {
+      console.error('Lỗi tải action view:', err);
+    }
+  }, []);
+
   // Fetch the read-only macro/flow snapshot (FRED/Yahoo/CFTC; no quota impact).
   const loadMacroFlow = useCallback(async () => {
     try {
@@ -303,6 +317,16 @@ export default function DashboardPage() {
 
     return () => clearInterval(timer);
   }, [isConfigLoaded, config.is_active, loadLiveView]);
+
+  // Action View is independent of the scanner: fetch on load and every 30s.
+  useEffect(() => {
+    void loadActionView();
+    const timer = setInterval(() => {
+      void loadActionView();
+    }, 30_000);
+
+    return () => clearInterval(timer);
+  }, [loadActionView]);
 
   // Macro & Flow is independent of the scanner; refresh once a minute.
   useEffect(() => {
@@ -497,6 +521,9 @@ export default function DashboardPage() {
         {/* Tab 1: Live Trading Desk & Candlestick Monitor */}
         {currentTab === 'monitor' && (
           <div className="flex flex-col gap-6">
+            {/* Top-level "Should I enter now?" verdict (read-only, no quota) */}
+            <ActionCard data={actionView} />
+
             {/* Live setup preview + Start/Stop scanner (read-only, quota-free) */}
             <LiveSetupCard
               config={config}

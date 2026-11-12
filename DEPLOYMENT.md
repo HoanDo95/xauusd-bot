@@ -421,3 +421,17 @@ docker compose logs -f api   # look for: TwelveData XAU/USD ... / Đã ghép vol
   the command. `/start` sends the scenario summary and does **not** consume
   quota; `/stop` only pauses the scanner. Commands are rate-limited to one per
   2 seconds per chat and old pending updates are drained on startup.
+
+## 16c. Action View
+
+- `GET /api/action-view` returns one read-only verdict: `BUY`, `SELL`, `WAIT`
+  or `NO_TRADE`, plus the live signal (when present), the primary scenario,
+  macro/flow alignment, volume quality and a short Vietnamese reason.
+- `volumeQuality` maps `BINANCE_PAXG_PROXY → PAXG_PROXY`,
+  `BINANCE_PAXG → PAXG`, `NONE → NONE`, otherwise `UNKNOWN`. PAXG/PAXG-proxy
+  responses include a warning that volume is a proxy, not real XAU/USD volume.
+- The endpoint is **read-only and quota-free**: no Telegram send, no signal
+  insertion/persistence, no AI review, no Sniper quota consumption and no
+  auto-trading. It reuses the existing live-view/scenario builders and reports
+  their filters; it does not add a hard macro filter or change analyzer logic.
+- The dashboard Action View card polls the endpoint on load and every 30 seconds.

@@ -1,4 +1,5 @@
 import type {
+  ActionViewResponse,
   AiSignalReview,
   BotConfig,
   Candle,
@@ -271,6 +272,37 @@ export async function fetchLiveView(): Promise<LiveViewResponse> {
     const contentType = res.headers.get('content-type') || '';
     if (!contentType.includes('application/json')) return unavailable;
     return (await res.json()) as LiveViewResponse;
+  } catch {
+    return unavailable;
+  }
+}
+
+/**
+ * GET /api/action-view — one read-only "Should I enter now?" verdict.
+ * Never sends Telegram, stores a signal, consumes quota or auto-trades. The
+ * Express dev fallback has no endpoint; resolve to a safe no-data payload.
+ */
+export async function fetchActionView(): Promise<ActionViewResponse> {
+  const unavailable: ActionViewResponse = {
+    verdict: 'NO_TRADE',
+    headline: 'Chưa đủ dữ liệu',
+    reason: 'Action view chưa sẵn sàng từ backend.',
+    caution: null,
+    signal: null,
+    primaryScenario: null,
+    macroFlow: null,
+    volumeQuality: 'NONE',
+    volumeWarning: null,
+    source: '',
+    volumeSource: '',
+    generated_at: '',
+  };
+  try {
+    const res = await fetch('/api/action-view');
+    if (!res.ok) return unavailable;
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) return unavailable;
+    return (await res.json()) as ActionViewResponse;
   } catch {
     return unavailable;
   }

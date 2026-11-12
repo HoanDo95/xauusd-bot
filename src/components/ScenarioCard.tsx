@@ -291,7 +291,10 @@ export const ScenarioCard: React.FC<Props> = ({ data, onRefresh, onSendTelegram 
   };
 
   return (
-    <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-4 flex flex-col gap-4">
+    <div
+      id="scenario-view"
+      className="bg-neutral-900 border border-neutral-800 rounded-xl p-4 flex flex-col gap-4"
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex flex-col gap-1">
           <div className="flex flex-wrap items-center gap-2">

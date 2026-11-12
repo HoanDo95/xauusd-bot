@@ -264,6 +264,29 @@ export interface ScenarioResponse {
   warnings: string[];
 }
 
+/** Action verdict from GET /api/action-view. Never an automatic order. */
+export type ActionVerdict = 'BUY' | 'SELL' | 'WAIT' | 'NO_TRADE';
+
+/**
+ * GET /api/action-view response — a single read-only "Should I enter now?" view.
+ * It only reports the live view + primary scenario + macro/flow context; it never
+ * sends Telegram, inserts a signal, consumes quota or places an order.
+ */
+export interface ActionViewResponse {
+  verdict: ActionVerdict;
+  headline: string;
+  reason: string;
+  caution: 'COUNTER_MACRO' | 'FILTER_BLOCKED' | 'VOLUME_PROXY' | null;
+  signal: Signal | null;
+  primaryScenario: Scenario | null;
+  macroFlow: MacroFlowAlignment | null;
+  volumeQuality: 'PAXG_PROXY' | 'PAXG' | 'NONE' | 'XAUUSD' | 'UNKNOWN';
+  volumeWarning: string | null;
+  source: string;
+  volumeSource: string;
+  generated_at: string;
+}
+
 /** Aggressive taker flow of the latest M15 candle + CVD over the lookback window. */
 export interface VolumeDeltaSnapshot {
   buy_volume: number;
