@@ -394,3 +394,7 @@ docker compose logs -f api   # look for: TwelveData XAU/USD ... / Đã ghép vol
 - `GET /api/live-view` returns a read-only Entry/SL/TP/R:R preview (or
   `no_setup`); it never sends Telegram, stores a signal or consumes quota.
 - The dashboard Live Setup card has the Start/Stop control for `is_active`.
+- Macro/flow alignment (ALIGNED/COUNTER/MIXED/UNKNOWN) is attached to real
+  signals and the Live Setup preview. It is advisory only: no code-level hard
+  macro filter. The AI Risk Officer receives the macro/flow block and may
+  lower confidence or STANDBY.

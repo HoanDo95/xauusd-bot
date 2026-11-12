@@ -207,6 +207,41 @@ conclusion: keep RSI context/AI-only.** If a drawdown-reduction experiment is
 wanted, `htf_h4_d1_rsi_regime_50` / `_regime_cross_50` can be forward-tested with
 the explicit expectation of lower profit and lower PF.
 
+### Macro & Flow (Phase M1/M2, read-only/advisory)
+
+The dashboard has a **Macro & Flow** card that answers the top-down questions
+before a technical setup:
+
+- **Macro context/regime**: FRED DGS10, DGS2, DFII10 real yield, 2s10s curve,
+  broad dollar, VIX, MMF assets.
+- **Capital flows**: Yahoo DXY, gold futures, GLD/IAU (ETF price/volume proxy),
+  TLT, SPY, VIX, GVZ.
+- **COT**: CFTC COMEX gold non-commercial net, weekly change, open interest.
+- **Scorecard**: macro bias, confidence (max 95%), score, direction, driver,
+  flow quality, risk/rate/USD/volatility regimes, and Vietnamese notes.
+
+The card is **read-only**: it never changes signal generation, quota or Telegram
+trade alerts. ETF flow is a price/volume proxy (not issuer holdings); COT is
+weekly and lagged; GVZ/VIX is an options-skew proxy, not full skew.
+
+Phase M2 adds **advisory alignment** to real signals and the Live Setup preview:
+
+```text
+BUY  + macro BULLISH  → ALIGNED
+BUY  + macro BEARISH  → COUNTER
+SELL + macro BEARISH  → ALIGNED
+SELL + macro BULLISH  → COUNTER
+```
+
+- Every real signal carries `macro_flow_alignment` / `macro_flow_note`; Telegram
+  and the signal modal show them.
+- The AI Risk Officer prompt includes the macro/flow block and may lower
+  confidence or choose `STANDBY` when the setup is counter-macro.
+- `GET /api/live-view` returns the same alignment in its `macroFlow` block; the
+  Live Setup card shows an ALIGNED/COUNTER/MIXED/UNKNOWN chip.
+- **No hard macro filter**: alignment is advisory only; it does not block a
+  signal in code. AI veto remains the only macro-related block.
+
 ### Entry execution (dashboard config)
 
 | `entry_mode` | Behaviour |
