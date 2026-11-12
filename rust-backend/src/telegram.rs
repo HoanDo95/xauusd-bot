@@ -1,5 +1,8 @@
 use crate::divergence_alerts::DivergenceAlert;
-use crate::models::{EntryType, Signal, SignalStatus, SignalType, SupportResistanceZone};
+use crate::models::{
+    DailyMacroReport, EconomicEvent, EntryType, ImpactLevel, Signal, SignalStatus, SignalType,
+    SupportResistanceZone,
+};
 use crate::scenarios::{Scenario, ScenarioResponse};
 use crate::session_alerts::SessionBriefing;
 use reqwest::Client;
@@ -566,6 +569,13 @@ impl TelegramNotifier {
         let footer = "\nBot sẽ gửi tín hiệu thật khi đủ điều kiện.\n\
                       Đây là kịch bản tham khảo, không phải entry đã xác nhận.";
 
+        Self::format_scenario_body(scenarios, &header_lines.join("\n"), footer)
+    }
+
+    /// Shared PRIMARY/ALTERNATE/WATCHLIST renderer used by the scanner-start
+    /// summary and the 07:00 daily plan. The header and footer are provided by
+    /// the caller; all scenario fields are escaped here.
+    fn format_scenario_body(scenarios: &ScenarioResponse, header: &str, footer: &str) -> String {
         let primary_index = scenarios
             .scenarios
             .iter()
@@ -595,8 +605,11 @@ impl TelegramNotifier {
             .collect();
 
         let render = |alternate_details: bool, watchlist_limit: usize, truncated: bool| {
-            let mut message = header_lines.join("\n");
-            message.push_str("\n\n");
+            let mut message = String::new();
+            if !header.is_empty() {
+                message.push_str(header);
+                message.push_str("\n\n");
+            }
 
             match primary_index {
                 Some(index) => {
@@ -649,6 +662,135 @@ impl TelegramNotifier {
 
         let minimal = render(false, 0, true);
         hard_truncate_scenario_message(&minimal, footer)
+    }
+
+    /// Định dạng kế hoạch ngày 07:00: macro/news + PRIMARY/ALTERNATE/WATCHLIST.
+    ///
+    /// Read-only/advisory: dùng cùng builder live view + scenarios, không gọi
+    /// Action View endpoint, không quota và không phải trade signal đã xác nhận.
+    pub fn format_daily_plan(
+        live_view: &serde_json::Value,
+        scenarios: &ScenarioResponse,
+        events: &[EconomicEvent],
+        report: &DailyMacroReport,
+    ) -> String {
+        let market = scenarios.market.as_ref();
+        let date = Self::escape_html(&truncate_chars(&report.date, 40));
+        let macro_bias = Self::escape_html(&truncate_chars(report.macro_bias.as_str(), 40));
+        let flow_quality = live_view
+            .get("macroFlow")
+            .and_then(|flow| flow.get("flowQuality"))
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty());
+
+        let mut macro_line = format!("Macro: {} · {}%", macro_bias, report.confidence_score);
+        if let Some(flow_quality) = flow_quality {
+            macro_line.push_str(&format!(
+                " · {}",
+                Self::escape_html(&truncate_chars(flow_quality, 40))
+            ));
+        }
+
+        let mut header_lines = vec![
+            format!("📅 <b>KẾ HOẠCH NGÀY {date}</b> · XAU/USD"),
+            macro_line,
+        ];
+        if let Some(market) = market {
+            header_lines.push(format!(
+                "D1 {} · H4 {} · H1 {} · ATR H4 {:.1}",
+                Self::escape_html(&truncate_chars(&market.d1_bias, 40)),
+                Self::escape_html(&truncate_chars(&market.h4_bias, 40)),
+                Self::escape_html(&truncate_chars(&market.h1_bias, 40)),
+                market.h4_atr
+            ));
+        }
+
+        let red_news = events
+            .iter()
+            .filter(|event| {
+                event.impact == ImpactLevel::High && event.currency.eq_ignore_ascii_case("USD")
+            })
+            .take(4)
+            .map(|event| {
+                format!(
+                    "{} {}",
+                    Self::escape_html(&truncate_chars(&event.title, 48)),
+                    event.scheduled_time.format("%H:%M")
+                )
+            })
+            .collect::<Vec<_>>();
+        let news_line = if red_news.is_empty() {
+            "Tin đỏ USD: không có tin High Impact hôm nay.".to_string()
+        } else {
+            format!("Tin đỏ USD: {} (tối đa 4 tin)", red_news.join(" · "))
+        };
+        header_lines.push(news_line);
+
+        let action = match scenarios
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.role.eq_ignore_ascii_case("PRIMARY"))
+        {
+            Some(scenario) if scenario.valid => "WAIT — chờ trigger của PRIMARY.",
+            Some(_) => "NO_TRADE — kịch bản PRIMARY chưa valid.",
+            None => "NO_TRADE — chưa có kịch bản PRIMARY.",
+        };
+        let footer = format!(
+            "\nAction: {action}\nĐây là kế hoạch tham khảo, không phải trade signal đã xác nhận."
+        );
+
+        Self::format_scenario_body(scenarios, &header_lines.join("\n"), &footer)
+    }
+
+    /// Gửi kế hoạch ngày 07:00 tới Telegram. Token/Chat trống = simulator
+    /// thành công (Ok(1001)). Không đụng tới quota hay danh sách tín hiệu.
+    pub async fn send_daily_plan(
+        &self,
+        live_view: &serde_json::Value,
+        scenarios: &ScenarioResponse,
+        events: &[EconomicEvent],
+        report: &DailyMacroReport,
+    ) -> Result<i64, String> {
+        if self.bot_token.is_empty() || self.chat_id.is_empty() {
+            info!("⚠️ [Telegram Simulator] Daily plan 07:00 (chưa cấu hình token/chat)");
+            return Ok(1001);
+        }
+
+        let message_text = Self::format_daily_plan(live_view, scenarios, events, report);
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
+        let payload = json!({
+            "chat_id": self.chat_id,
+            "text": message_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true
+        });
+
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let body: serde_json::Value =
+                        resp.json().await.map_err(|e| e.without_url().to_string())?;
+                    let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
+                    info!(
+                        "✅ Đã gửi daily plan 07:00 tới Telegram! Message ID: {}",
+                        msg_id
+                    );
+                    Ok(msg_id)
+                } else {
+                    let err_text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Lỗi không xác định".into());
+                    error!("❌ Telegram daily plan API lỗi: {}", err_text);
+                    Err(format!("Telegram API Error: {}", err_text))
+                }
+            }
+            Err(err) => {
+                let err = err.without_url();
+                error!("❌ Không thể gửi daily plan tới Telegram: {}", err);
+                Err(format!("Network Error: {}", err))
+            }
+        }
     }
 
     /// Gửi snapshot kịch bản tham khảo tới Telegram. Token/Chat trống = simulator.
@@ -1756,6 +1898,167 @@ mod tests {
         assert!(message.contains("👀 Watchlist:"));
         assert!(message.contains("…"));
         assert!(message.contains("Bot sẽ gửi tín hiệu thật khi đủ điều kiện."));
+    }
+
+    fn sample_daily_report() -> DailyMacroReport {
+        DailyMacroReport {
+            date: "2026-11-12".to_string(),
+            macro_bias: MacroBias::Bearish,
+            confidence_score: 95,
+            gold_range_forecast: "3960–4020".to_string(),
+            daily_rationale: "DXY mạnh, EMA50/200 nghiêng xuống.".to_string(),
+            high_impact_events_today: vec!["CPI 20:30 UTC".to_string()],
+            recommended_action: "Ưu tiên SELL tại kháng cự.".to_string(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn sample_events() -> Vec<EconomicEvent> {
+        let at = |value: &str| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .expect("valid event time")
+                .with_timezone(&Utc)
+        };
+        vec![
+            EconomicEvent {
+                id: "CPI".to_string(),
+                title: "CPI".to_string(),
+                currency: "USD".to_string(),
+                impact: ImpactLevel::High,
+                scheduled_time: at("2026-11-12T20:30:00Z"),
+                forecast: None,
+                previous: None,
+                actual: None,
+            },
+            EconomicEvent {
+                id: "NFP".to_string(),
+                title: "NFP".to_string(),
+                currency: "USD".to_string(),
+                impact: ImpactLevel::High,
+                scheduled_time: at("2026-11-12T21:30:00Z"),
+                forecast: None,
+                previous: None,
+                actual: None,
+            },
+            EconomicEvent {
+                id: "MED".to_string(),
+                title: "Retail sales".to_string(),
+                currency: "USD".to_string(),
+                impact: ImpactLevel::Medium,
+                scheduled_time: at("2026-11-12T18:00:00Z"),
+                forecast: None,
+                previous: None,
+                actual: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn format_daily_plan_includes_macro_news_scenarios_and_footer() {
+        let message = TelegramNotifier::format_daily_plan(
+            &sample_live_view(),
+            &sample_scenario_response(),
+            &sample_events(),
+            &sample_daily_report(),
+        );
+
+        for expected in [
+            "📅 <b>KẾ HOẠCH NGÀY 2026-11-12</b> · XAU/USD",
+            "Macro: BEARISH · 95% · CONFIRMING",
+            "D1 BEARISH · H4 BEARISH · H1 NEUTRAL · ATR H4 22.5",
+            "Tin đỏ USD: CPI 20:30 · NFP 21:30 (tối đa 4 tin)",
+            "🎯 PRIMARY — Bearish breakdown [ALIGNED] [VALID] · confidence 95",
+            "Entry 3960.00 · SL 3968.00 · TP1 3944.00 · TP2 3936.00 · R:R 1:2.00",
+            "🔁 ALTERNATE — Bullish breakout [COUNTER] [NOT VALID] · confidence 50",
+            "👀 Watchlist: Bullish bounce (not valid) · Bearish rejection (not valid)",
+            "Action: WAIT — chờ trigger của PRIMARY.",
+            "Đây là kế hoạch tham khảo, không phải trade signal đã xác nhận.",
+        ] {
+            assert!(
+                message.contains(expected),
+                "missing daily plan text: {expected}"
+            );
+        }
+        assert!(!message.contains("Retail sales"));
+    }
+
+    #[test]
+    fn format_daily_plan_escapes_dynamic_fields_and_handles_no_primary() {
+        let mut report = sample_daily_report();
+        report.date = "2026<&>".to_string();
+
+        let mut response = sample_scenario_response();
+        response.market.as_mut().expect("market").d1_bias = "<D1>".to_string();
+        response.scenarios[0].name = "Bear <breakdown>".to_string();
+        for scenario in &mut response.scenarios {
+            scenario.role = "WATCHLIST".to_string();
+        }
+
+        let mut events = sample_events();
+        events[0].title = "CPI <&>".to_string();
+
+        let message =
+            TelegramNotifier::format_daily_plan(&sample_live_view(), &response, &events, &report);
+
+        assert!(message.contains("KẾ HOẠCH NGÀY 2026&lt;&amp;&gt;"));
+        assert!(message.contains("D1 &lt;D1&gt;"));
+        assert!(message.contains("CPI &lt;&amp;&gt; 20:30"));
+        assert!(message.contains("Bear &lt;breakdown&gt;"));
+        assert!(message.contains("Action: NO_TRADE — chưa có kịch bản PRIMARY."));
+        assert!(!message.contains("<D1>"));
+        assert!(!message.contains("<breakdown>"));
+    }
+
+    #[test]
+    fn format_daily_plan_caps_long_messages() {
+        let mut response = sample_scenario_response();
+        let mut scenarios = vec![response.scenarios[0].clone(), response.scenarios[1].clone()];
+        scenarios[0].trigger = "x".repeat(300);
+        scenarios[0].invalidation = "y".repeat(300);
+        scenarios[1].trigger = "z".repeat(300);
+        for index in 0..40 {
+            let mut scenario = base_scenario(
+                "long",
+                &format!("Watchlist {index} {}", "w".repeat(80)),
+                "BULLISH",
+            );
+            scenario.trigger = format!("{index} {}", "x".repeat(300));
+            scenario.entry = Some(3997.0);
+            scenario.stop_loss = Some(3990.0);
+            scenario.take_profit_1 = Some(4005.0);
+            scenario.take_profit_2 = Some(4010.0);
+            scenario.risk_reward = Some(1.14);
+            scenario.valid = true;
+            scenarios.push(scenario);
+        }
+        response.scenarios = scenarios;
+
+        let message = TelegramNotifier::format_daily_plan(
+            &sample_live_view(),
+            &response,
+            &sample_events(),
+            &sample_daily_report(),
+        );
+
+        assert!(message.chars().count() <= MAX_SCENARIO_MESSAGE_CHARS);
+        assert!(message.contains("📅 <b>KẾ HOẠCH NGÀY 2026-11-12</b>"));
+        assert!(message.contains("🎯 PRIMARY — Bearish breakdown"));
+        assert!(message.contains("Đây là kế hoạch tham khảo, không phải trade signal đã xác nhận."));
+    }
+
+    #[tokio::test]
+    async fn send_daily_plan_without_token_is_a_network_free_simulator() {
+        let notifier = TelegramNotifier::new(String::new(), String::new());
+        let message_id = notifier
+            .send_daily_plan(
+                &sample_live_view(),
+                &sample_scenario_response(),
+                &sample_events(),
+                &sample_daily_report(),
+            )
+            .await
+            .expect("simulator");
+        assert_eq!(message_id, 1001);
     }
 
     #[tokio::test]

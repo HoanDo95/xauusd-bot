@@ -408,6 +408,10 @@ pub struct BotConfig {
     /// Bật dashboard Macro & Flow read-only (FRED/Yahoo/CFTC). Mặc định true.
     #[serde(default = "default_true")]
     pub macro_flow_enabled: bool,
+    /// Bật gửi kế hoạch ngày 07:00 qua Telegram (read-only, không tiêu hao quota).
+    /// Mặc định true.
+    #[serde(default = "default_true")]
+    pub daily_plan_enabled: bool,
 }
 
 fn default_max_signals_per_day() -> usize {
@@ -557,6 +561,7 @@ impl Default for BotConfig {
             action_trigger_alert_enabled: true,
             action_trigger_cooldown_minutes: default_action_trigger_cooldown(),
             macro_flow_enabled: true,
+            daily_plan_enabled: true,
         }
     }
 }
@@ -1246,6 +1251,29 @@ mod tests {
         }
         .sanitized();
         assert_eq!(valid.action_trigger_cooldown_minutes, 45);
+    }
+
+    #[test]
+    fn daily_plan_defaults_true_and_is_backward_compatible() {
+        let defaults = BotConfig::default();
+        assert!(defaults.daily_plan_enabled);
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        object.remove("daily_plan_enabled");
+
+        let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(
+            config.daily_plan_enabled,
+            "daily plan must default ON for legacy configs"
+        );
+
+        let disabled = BotConfig {
+            daily_plan_enabled: false,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert!(!disabled.daily_plan_enabled);
     }
 }
 

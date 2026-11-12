@@ -50,6 +50,19 @@ function verdictTone(verdict: ActionVerdict): string {
   }
 }
 
+function proximityTone(proximity: string): string {
+  switch ((proximity || '').toUpperCase()) {
+    case 'NEAR':
+      return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40';
+    case 'MID':
+      return 'bg-amber-500/15 text-amber-300 border-amber-500/40';
+    case 'FAR':
+      return 'bg-rose-500/15 text-rose-300 border-rose-500/40';
+    default:
+      return 'bg-neutral-800 text-neutral-400 border-neutral-700';
+  }
+}
+
 function alignmentTone(alignment: string): string {
   switch ((alignment || '').toUpperCase()) {
     case 'ALIGNED':
@@ -119,6 +132,12 @@ export const ActionCard: React.FC<Props> = ({ data }) => {
 
   const signal = data.signal;
   const primary = data.primaryScenario;
+  const proximity = (data.proximity || 'UNKNOWN').toUpperCase();
+  const distanceLabel = price(data.distanceToTrigger);
+  const distanceAtrLabel =
+    typeof data.distanceAtr === 'number' && Number.isFinite(data.distanceAtr)
+      ? `${data.distanceAtr.toFixed(2)} ATR`
+      : '— ATR';
 
   return (
     <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-4 flex flex-col gap-4">
@@ -157,6 +176,21 @@ export const ActionCard: React.FC<Props> = ({ data }) => {
           <h4 className="text-base font-bold text-white leading-snug">{data.headline}</h4>
           <p className="text-xs text-neutral-400 leading-relaxed">{data.reason}</p>
         </div>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <div
+          className={`inline-flex w-fit flex-wrap items-center gap-2 rounded-md border px-2.5 py-1 text-[11px] font-mono font-bold ${proximityTone(
+            proximity
+          )}`}
+        >
+          <span>Cách trigger: {distanceLabel}</span>
+          <span>· {distanceAtrLabel}</span>
+          <span>· {proximity}</span>
+        </div>
+        <p className="text-[10px] text-neutral-500">
+          NEAR = có thể canh; MID/FAR = chờ trigger, không đuổi.
+        </p>
       </div>
 
       {data.caution && (

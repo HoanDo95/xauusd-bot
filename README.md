@@ -30,6 +30,8 @@ A production-oriented XAU/USD signal engine with **100% free market data**, a ha
   stats and outcome Telegram alerts.
 - **Session pre-alerts**: Telegram briefing 1h before London and New York opens
   (DST-aware), no weekend alerts, persisted dedup so a restart does not resend.
+- **Daily Plan 07:00**: read-only Telegram summary with macro/news context and
+  the PRIMARY/ALTERNATE/WATCHLIST view; never consumes quota or inserts a signal.
 - **Sniper quota**: max 1 real signal/day (configurable 1–5), Vietnam trading day
   (`UTC+7`), candle dedup key, session filter 13:00–23:00 GMT+7.
 - **Outcome tracking**: automatically updates `Active → Target1Hit / Target2Hit /
@@ -45,6 +47,27 @@ A production-oriented XAU/USD signal engine with **100% free market data**, a ha
 - **Outcome alerts**: follow-up Telegram messages when TP1, TP2, or SL is hit.
 - **Dashboard**: dark trading UI, live candles, quota status, signal history,
   config, TradingView webhook sandbox.
+
+## Thuật ngữ
+
+- **Sniper Signal Stream** — chỉ hiển thị **trade signal đã xác nhận** (đã qua
+  đủ filter và được ghi vào danh sách tín hiệu). Kịch bản tham khảo không xuất
+  hiện trong stream này.
+- **Action View** — trả lời câu hỏi “có nên vào lệnh bây giờ?” với một trong bốn
+  verdict `BUY` / `SELL` / `WAIT` / `NO_TRADE`. Đây là view read-only, không phải
+  lệnh tự động.
+- **Scenario View** — các kế hoạch tham khảo `PRIMARY` / `ALTERNATE` /
+  `WATCHLIST`, kèm trigger, Entry/SL/TP và R:R. Không phải trade signal.
+- **Trigger** — điều kiện kích hoạt kịch bản, ví dụ `M15 close < 3916.51`
+  (ABOVE/BELOW dùng giá đóng nến, TOUCH dùng biên độ râu nến).
+- **Entry / SL / TP1 / TP2 / R:R** — giá vào, stop loss, hai mục tiêu chốt lời và
+  tỷ lệ lợi nhuận/rủi ro.
+- **Macro / Flow** — bối cảnh vĩ mô (FRED/Yahoo/CFTC) và dòng tiền; chỉ tư vấn,
+  không phải bộ lọc cứng.
+- **Divergence** — phân kỳ RSI giữa giá và động lượng; cảnh báo độc lập, không
+  phải tín hiệu vào lệnh.
+- **Volume proxy** — volume PAXG dùng thay cho volume XAU/USD thật; chỉ nên xem
+  là tương đối.
 
 ## Free data sources (no paid API keys)
 
@@ -302,10 +325,49 @@ scenario and the macro/flow snapshot into one read-only verdict:
   `BINANCE_PAXG → PAXG`, `NONE → NONE`, otherwise `UNKNOWN`. For PAXG/PAXG
   proxy the API also returns: “Volume là proxy PAXG, không phải volume XAUUSD
   thật; chỉ nên xem là tương đối.”
+- Proximity fields: `distanceToTrigger` (USD), `distanceAtr` (H4 ATR units) and
+  `proximity` (`NEAR` ≤ 0.5 ATR, `MID` ≤ 1.5 ATR, `FAR` > 1.5 ATR, `UNKNOWN`
+  when price/trigger/ATR is missing). The card shows
+  `Cách trigger: $25.46 · 0.85 ATR · MID` with green/amber/rose tones and the
+  note “NEAR = có thể canh; MID/FAR = chờ trigger, không đuổi.”
+- The **Sniper Signal Stream** empty state reuses Action View + the PRIMARY
+  scenario to show what to wait for instead of a dead panel. It states that the
+  stream only lists confirmed trade signals and points to Action View / Scenario
+  View for reference plans.
 - The endpoint is **read-only**: no Telegram, no signal insertion, no Sniper
   quota, no AI review and no auto-trading. It never blocks a real signal beyond
   the existing scanner filters; it only reports them. The card is labelled
   “View hành động — không phải lệnh tự động; bot không tự vào lệnh.”
+
+### Daily Plan 07:00 (Telegram, read-only)
+
+Once a day at **07:00 server local time**, after the news sync and macro report
+update, the scheduler sends a read-only daily plan to Telegram when
+`daily_plan_enabled` is true (default):
+
+```text
+📅 KẾ HOẠCH NGÀY 2026-11-12 · XAU/USD
+Macro: BEARISH · 95% · CONFIRMING
+D1 BEARISH · H4 BEARISH · H1 BEARISH · ATR H4 30.0
+Tin đỏ USD: CPI 20:30 · NFP 21:30 (tối đa 4 tin)
+
+🎯 PRIMARY — …
+🔁 ALTERNATE — …
+👀 Watchlist: …
+
+Action: WAIT — chờ trigger của PRIMARY.
+Đây là kế hoạch tham khảo, không phải trade signal đã xác nhận.
+```
+
+- Uses the `DailyMacroReport` already computed at 07:00 (date, macro bias,
+  confidence, high-impact USD events) plus the current live view and scenarios.
+- Reuses the same PRIMARY/ALTERNATE/WATCHLIST body as the Start-to-Telegram
+  summary, escaped HTML and capped at 3,500 characters.
+- **Read-only/advisory**: no quota consumption, no signal insertion, no scanner
+  state change, no AI review and no auto-trading.
+- Toggle: `daily_plan_enabled` (default true) in **Sniper & Risk Config**.
+  `/api/health` exposes `dailyPlanEnabled`. With an empty Telegram token/chat the
+  simulator returns `Ok(1001)` and logs that no message was sent.
 
 ### Action Trigger alerts (Phase C7)
 
@@ -493,6 +555,8 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
 | `POST` | `/api/simulate-setup` | Simulated signal (never consumes live quota) |
 | `POST` | `/api/ai/review-signal` | Manual AI Risk Officer review (no Telegram, no quota) |
 | `GET` | `/api/scenarios` | Four ranked reference scenarios (`PRIMARY`/`ALTERNATE`/`WATCHLIST`); no quota |
+| `GET` | `/api/live-view` | Read-only setup preview (Entry/SL/TP/R:R) or `no_setup`; no quota |
+| `GET` | `/api/action-view` | Read-only BUY/SELL/WAIT/NO_TRADE verdict + PRIMARY proximity fields; no quota |
 | `POST` | `/api/scanner/start` | Enable scanner + send scenario summary (no signal/quota) |
 | `POST` | `/api/scanner/stop` | Pause scanner (does not close open signals or reset quota) |
 | `POST` | `/api/scenarios/telegram` | Re-send the reference scenario snapshot (no quota) |

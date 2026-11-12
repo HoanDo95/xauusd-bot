@@ -92,6 +92,8 @@ export interface HealthResponse {
   divergenceAlertEnabled?: boolean;
   /** PRIMARY-scenario trigger Telegram alert state (default true). */
   actionTriggerAlertEnabled?: boolean;
+  /** 07:00 Daily Plan Telegram state (default true). */
+  dailyPlanEnabled?: boolean;
   /** True only when the live feed is fresh and not a fallback seed. */
   feedOk?: boolean;
   /** Age of the last scanner tick in seconds (null before the first scan). */

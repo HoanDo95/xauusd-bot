@@ -48,6 +48,69 @@ fn volume_warning(quality: &str) -> Option<&'static str> {
     matches!(quality, "PAXG" | "PAXG_PROXY").then_some(VOLUME_PROXY_WARNING)
 }
 
+/// Distance-to-trigger proximity bucket used by the Action View card.
+fn proximity_label(distance_atr: Option<f64>) -> &'static str {
+    match distance_atr {
+        Some(value) if value.is_finite() && value <= 0.5 => "NEAR",
+        Some(value) if value.is_finite() && value <= 1.5 => "MID",
+        Some(value) if value.is_finite() => "FAR",
+        _ => "UNKNOWN",
+    }
+}
+
+fn json_number(value: &Value, key: &str) -> Option<f64> {
+    value
+        .get(key)
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+}
+
+/// Price/trigger/ATR distance fields for `/api/action-view`.
+///
+/// Current price priority: live signal entry → live-view last close → scenario
+/// price. Trigger priority: PRIMARY trigger price → live signal entry. ATR is
+/// the H4 ATR from the scenario market block.
+fn proximity_fields(
+    live_view: &Value,
+    scenarios: &ScenarioResponse,
+    signal: Option<&Signal>,
+    primary: Option<&Scenario>,
+) -> (Option<f64>, Option<f64>, &'static str) {
+    let price = signal
+        .map(|signal| signal.entry_price)
+        .filter(|value| value.is_finite())
+        .or_else(|| json_number(live_view, "last_close"))
+        .or_else(|| scenarios.price.filter(|value| value.is_finite()));
+    let trigger = primary
+        .and_then(|scenario| scenario.trigger_price)
+        .filter(|value| value.is_finite())
+        .or_else(|| {
+            signal
+                .map(|signal| signal.entry_price)
+                .filter(|value| value.is_finite())
+        });
+    let atr = scenarios
+        .market
+        .as_ref()
+        .map(|market| market.h4_atr)
+        .filter(|value| value.is_finite() && *value > 0.0);
+
+    let distance_to_trigger = match (price, trigger) {
+        (Some(price), Some(trigger)) => Some((price - trigger).abs()),
+        _ => None,
+    };
+    let distance_atr = match (distance_to_trigger, atr) {
+        (Some(distance), Some(atr)) => Some(distance / atr),
+        _ => None,
+    };
+
+    (
+        distance_to_trigger,
+        distance_atr,
+        proximity_label(distance_atr),
+    )
+}
+
 fn generated_at(live_view: &Value) -> String {
     live_view
         .get("generated_at")
@@ -301,6 +364,9 @@ pub(super) fn build_action_view(
         }
     }
 
+    let (distance_to_trigger, distance_atr, proximity) =
+        proximity_fields(live_view, scenarios, signal.as_ref(), primary.as_ref());
+
     json!({
         "verdict": verdict,
         "headline": headline,
@@ -308,6 +374,9 @@ pub(super) fn build_action_view(
         "caution": caution,
         "signal": signal,
         "primaryScenario": primary,
+        "distanceToTrigger": distance_to_trigger,
+        "distanceAtr": distance_atr,
+        "proximity": proximity,
         "macroFlow": macro_flow_payload,
         "volumeQuality": quality,
         "volumeWarning": warning,
@@ -323,6 +392,7 @@ mod tests {
     use super::*;
     use crate::macro_flow::MacroFlowScorecard;
     use crate::models::{EntryType, SignalStatus, SignalType, Timeframe};
+    use crate::scenarios::ScenarioMarket;
 
     fn sample_signal(signal_type: SignalType) -> Signal {
         Signal {
@@ -454,6 +524,21 @@ mod tests {
             market: None,
             scenarios,
             warnings: Vec::new(),
+        }
+    }
+
+    fn scenario_market(h4_atr: f64) -> ScenarioMarket {
+        ScenarioMarket {
+            h4_bias: "BEARISH".to_string(),
+            h1_bias: "BEARISH".to_string(),
+            d1_bias: "BEARISH".to_string(),
+            h4_atr,
+            nearest_support: Some(2670.0),
+            nearest_resistance: Some(2700.0),
+            rsi_m15: Some(45.0),
+            rsi_state: "Neutral".to_string(),
+            macro_bias: "BEARISH".to_string(),
+            macro_confidence: 95,
         }
     }
 
@@ -664,6 +749,85 @@ mod tests {
     }
 
     #[test]
+    fn proximity_label_uses_near_mid_far_thresholds() {
+        assert_eq!(proximity_label(None), "UNKNOWN");
+        assert_eq!(proximity_label(Some(0.0)), "NEAR");
+        assert_eq!(proximity_label(Some(0.5)), "NEAR");
+        assert_eq!(proximity_label(Some(0.5001)), "MID");
+        assert_eq!(proximity_label(Some(1.5)), "MID");
+        assert_eq!(proximity_label(Some(1.5001)), "FAR");
+        assert_eq!(proximity_label(Some(f64::NAN)), "UNKNOWN");
+        assert_eq!(proximity_label(Some(f64::INFINITY)), "UNKNOWN");
+    }
+
+    #[test]
+    fn action_view_reports_distance_to_primary_trigger_in_atr_units() {
+        let mut live_view = no_setup_view();
+        live_view["last_close"] = json!(2721.00);
+
+        let mut scenarios = scenario_response(vec![scenario(
+            "bullish_breakout",
+            "PRIMARY",
+            true,
+            "ALIGNED",
+        )]);
+        scenarios.market = Some(scenario_market(20.0));
+
+        let action = build(&live_view, &scenarios, None);
+
+        assert_eq!(action["distanceToTrigger"], 20.0);
+        assert_eq!(action["distanceAtr"], 1.0);
+        assert_eq!(action["proximity"], "MID");
+    }
+
+    #[test]
+    fn action_view_distance_is_unknown_without_atr_or_trigger() {
+        let mut live_view = no_setup_view();
+        live_view["last_close"] = json!(2721.00);
+
+        let scenarios = scenario_response(vec![scenario(
+            "bullish_breakout",
+            "PRIMARY",
+            true,
+            "ALIGNED",
+        )]);
+        let action = build(&live_view, &scenarios, None);
+        assert_eq!(action["distanceToTrigger"], 20.0);
+        assert!(action["distanceAtr"].is_null());
+        assert_eq!(action["proximity"], "UNKNOWN");
+
+        let mut without_trigger = scenario_response(vec![scenario(
+            "bullish_breakout",
+            "PRIMARY",
+            true,
+            "ALIGNED",
+        )]);
+        without_trigger.scenarios[0].trigger_price = None;
+        without_trigger.scenarios[0].entry = None;
+        without_trigger.market = Some(scenario_market(20.0));
+        let action = build(&live_view, &without_trigger, None);
+        assert!(action["distanceToTrigger"].is_null());
+        assert!(action["distanceAtr"].is_null());
+        assert_eq!(action["proximity"], "UNKNOWN");
+    }
+
+    #[test]
+    fn setup_action_uses_signal_entry_as_trigger_distance_reference() {
+        let mut scenarios = scenario_response(Vec::new());
+        scenarios.market = Some(scenario_market(20.0));
+
+        let action = build(
+            &setup_view(SignalType::Buy, true, true, true, None),
+            &scenarios,
+            None,
+        );
+
+        assert_eq!(action["distanceToTrigger"], 0.0);
+        assert_eq!(action["distanceAtr"], 0.0);
+        assert_eq!(action["proximity"], "NEAR");
+    }
+
+    #[test]
     fn action_view_contains_the_documented_keys() {
         let action = build(
             &setup_view(SignalType::Buy, true, true, true, None),
@@ -678,6 +842,9 @@ mod tests {
             "caution",
             "signal",
             "primaryScenario",
+            "distanceToTrigger",
+            "distanceAtr",
+            "proximity",
             "macroFlow",
             "volumeQuality",
             "volumeWarning",

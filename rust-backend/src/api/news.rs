@@ -1,4 +1,4 @@
-use super::{persist_state, AppState};
+use super::{current_live_view, current_scenarios, persist_state, AppState};
 use crate::news_filter::ImpactLevel;
 use crate::scheduler::DailyScheduler;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
@@ -110,4 +110,47 @@ pub(super) async fn trigger_daily_macro_cron(State(state): State<AppState>) -> i
             "events_synced": events.len()
         })),
     )
+}
+
+/// POST /api/daily-plan/telegram — gửi lại kế hoạch ngày 07:00 theo yêu cầu.
+/// Read-only: không quota, không chèn signal, không đổi scanner.
+pub(super) async fn send_daily_plan_telegram(State(state): State<AppState>) -> impl IntoResponse {
+    let report = state.daily_report.read().await.clone();
+    let Some(report) = report else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "status": "unavailable",
+                "message": "Daily macro report chưa sẵn sàng. Gọi /api/cron/trigger-daily-macro trước."
+            })),
+        );
+    };
+
+    let live_view = current_live_view(&state).await;
+    let scenarios = current_scenarios(&state).await;
+    let events = state.news_filter.read().await.calendar_events.clone();
+    let telegram = state.telegram.read().await.clone();
+
+    match telegram
+        .send_daily_plan(&live_view, &scenarios, &events, &report)
+        .await
+    {
+        Ok(message_id) => (
+            StatusCode::OK,
+            Json(json!({
+                "status": "sent",
+                "messageId": message_id
+            })),
+        ),
+        Err(err) => {
+            warn!("⚠️ Gửi daily plan Telegram thất bại: {}", err);
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "error",
+                    "message": "Không gửi được daily plan. Kiểm tra token/chat ID và log server."
+                })),
+            )
+        }
+    }
 }

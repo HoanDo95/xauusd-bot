@@ -434,7 +434,15 @@ docker compose logs -f api   # look for: TwelveData XAU/USD ... / Đã ghép vol
   insertion/persistence, no AI review, no Sniper quota consumption and no
   auto-trading. It reuses the existing live-view/scenario builders and reports
   their filters; it does not add a hard macro filter or change analyzer logic.
+- Proximity fields: `distanceToTrigger` (USD), `distanceAtr` (H4 ATR units) and
+  `proximity` (`NEAR` ≤ 0.5 ATR, `MID` ≤ 1.5 ATR, `FAR` > 1.5 ATR, `UNKNOWN`).
+  Current price priority is live signal entry → last close → scenario price;
+  trigger priority is PRIMARY `trigger_price` → signal entry. The dashboard shows
+  `Cách trigger: $25.46 · 0.85 ATR · MID` with a “chờ trigger, không đuổi” note.
 - The dashboard Action View card polls the endpoint on load and every 30 seconds.
+- When the **Sniper Signal Stream** is empty, it shows “Chưa có trade signal đã
+  xác nhận” plus the Action View verdict and PRIMARY trigger/levels instead of a
+  dead panel. The stream itself only lists confirmed trade signals.
 
 ## 16d. Action Trigger alerts
 
@@ -457,3 +465,20 @@ docker compose logs -f api   # look for: TwelveData XAU/USD ... / Đã ghép vol
   trade state, calls AI review or auto-trades. `/api/health` exposes
   `actionTriggerAlertEnabled`; `/api/action-view` exposes
   `triggerAlertEnabled`.
+
+## 16e. Daily Plan 07:00 (Telegram, read-only)
+
+- At **07:00 server local time**, after the ForexFactory sync and the daily macro
+  report update/persist, the scheduler sends one daily plan to Telegram when
+  `daily_plan_enabled` is true (default). Toggle it in **Sniper & Risk Config**;
+  `/api/health` exposes `dailyPlanEnabled`.
+- The message contains the report date, macro bias/confidence/flow quality, D1/H4/H1
+  bias + H4 ATR, up to four high-impact USD events, the same
+  PRIMARY/ALTERNATE/WATCHLIST body as the Start-to-Telegram summary, and an
+  `Action: WAIT/NO_TRADE` advisory footer. HTML is escaped and capped at 3,500
+  characters.
+- **Read-only/advisory**: it does not consume the Sniper quota, insert or persist a
+  signal, change scanner state, call AI review or auto-trade. It is not a
+  confirmed trade signal.
+- If the Telegram token/chat is empty, the simulator returns `Ok(1001)` and logs
+  that no message was sent; the scheduler continues normally.

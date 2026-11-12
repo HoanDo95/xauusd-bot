@@ -599,6 +599,24 @@ export const ConfigPanel: React.FC<Props> = ({
             tham gia tạo tín hiệu, bộ lọc, quota hay Telegram.
           </p>
 
+          <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+            <input
+              type="checkbox"
+              checked={formData.daily_plan_enabled ?? true}
+              onChange={(e) =>
+                setFormData({ ...formData, daily_plan_enabled: e.target.checked })
+              }
+              className="accent-sky-500 w-4 h-4 rounded cursor-pointer"
+            />
+            <span className="font-semibold text-white">
+              Bật kế hoạch ngày 07:00 qua Telegram
+            </span>
+          </label>
+          <p className="text-[11px] text-neutral-500 leading-relaxed -mt-2">
+            Gửi macro/news + PRIMARY/ALTERNATE/WATCHLIST mỗi ngày lúc 07:00 (giờ server). Chỉ đọc:
+            không tiêu hao quota, không chèn tín hiệu và không tự vào lệnh.
+          </p>
+
           {/* Volume Delta / CVD (optional, default OFF) */}
           <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/5 p-4 flex flex-col gap-4">
             <div className="flex flex-wrap items-start justify-between gap-3">

@@ -599,10 +599,31 @@ pub fn spawn_daily_scheduler(state: AppState, scheduler: DailyScheduler) {
             );
             {
                 let mut rep = state.daily_report.write().await;
-                *rep = Some(report);
+                *rep = Some(report.clone());
             }
             if let Err(err) = persist_state(&state).await {
                 warn!("⚠️ Không lưu được Daily Macro report: {}", err);
+            }
+
+            // Kế hoạch ngày 07:00: read-only/advisory, không tiêu hao quota,
+            // không chèn signal và không đổi trạng thái scanner.
+            let config = state.config.read().await.clone();
+            if config.daily_plan_enabled {
+                let live_view = crate::api::current_live_view(&state).await;
+                let scenarios = crate::api::current_scenarios(&state).await;
+                let telegram = state.telegram.read().await.clone();
+                match telegram
+                    .send_daily_plan(&live_view, &scenarios, &events, &report)
+                    .await
+                {
+                    Ok(message_id) => info!(
+                        "📅 [Daily Scheduler 07:00 AM] Đã gửi kế hoạch ngày tới Telegram (message_id={}).",
+                        message_id
+                    ),
+                    Err(err) => warn!("⚠️ Không gửi được daily plan Telegram: {}", err),
+                }
+            } else {
+                info!("📅 [Daily Scheduler 07:00 AM] Daily plan Telegram đang tắt.");
             }
             info!("✅ [Daily Scheduler 07:00 AM] Đã cập nhật lịch tin & xu hướng EMA.");
         }

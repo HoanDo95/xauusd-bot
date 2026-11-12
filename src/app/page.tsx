@@ -10,6 +10,7 @@ import {
   MacroFlowResponse,
   MarketContext,
   NewsCalendarData,
+  Scenario,
   ScenarioResponse,
   Signal,
   SupportResistanceZone,
@@ -111,7 +112,46 @@ const DEFAULT_CONFIG: BotConfig = {
   action_trigger_alert_enabled: true,
   action_trigger_cooldown_minutes: 30,
   macro_flow_enabled: true,
+  daily_plan_enabled: true,
 };
+
+function scenarioTriggerLabel(scenario: Scenario): string {
+  const triggerPrice = scenario.trigger_price;
+  if (typeof triggerPrice !== 'number' || !Number.isFinite(triggerPrice)) {
+    return scenario.trigger;
+  }
+  const value = triggerPrice.toFixed(2);
+  switch ((scenario.trigger_direction || '').toUpperCase()) {
+    case 'ABOVE':
+      return `M15 close > ${value}`;
+    case 'BELOW':
+      return `M15 close < ${value}`;
+    case 'TOUCH':
+      return `M15 touch ${value}`;
+    default:
+      return `M15 ${value}`;
+  }
+}
+
+function scenarioLevelsLabel(scenario: Scenario): string {
+  const parts: string[] = [];
+  if (typeof scenario.entry === 'number' && Number.isFinite(scenario.entry)) {
+    parts.push(`Entry ${scenario.entry.toFixed(2)}`);
+  }
+  if (typeof scenario.stop_loss === 'number' && Number.isFinite(scenario.stop_loss)) {
+    parts.push(`SL ${scenario.stop_loss.toFixed(2)}`);
+  }
+  if (typeof scenario.take_profit_1 === 'number' && Number.isFinite(scenario.take_profit_1)) {
+    parts.push(`TP1 ${scenario.take_profit_1.toFixed(2)}`);
+  }
+  if (typeof scenario.take_profit_2 === 'number' && Number.isFinite(scenario.take_profit_2)) {
+    parts.push(`TP2 ${scenario.take_profit_2.toFixed(2)}`);
+  }
+  if (typeof scenario.risk_reward === 'number' && Number.isFinite(scenario.risk_reward)) {
+    parts.push(`R:R ${scenario.risk_reward.toFixed(1)}`);
+  }
+  return parts.join(' · ');
+}
 
 export default function DashboardPage() {
   const [currentTab, setCurrentTab] = useState<DashboardTab>('monitor');
@@ -480,6 +520,11 @@ export default function DashboardPage() {
   };
 
   const quotaReached = signalsToday >= maxSignalsPerDay;
+  const emptyPrimary =
+    actionView?.primaryScenario ??
+    scenarios?.scenarios.find((scenario) => scenario.role === 'PRIMARY') ??
+    null;
+  const emptyPrimaryLevels = emptyPrimary ? scenarioLevelsLabel(emptyPrimary) : '';
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col font-sans">
@@ -603,8 +648,66 @@ export default function DashboardPage() {
 
                 <div className="flex flex-col gap-3 max-h-[480px] overflow-y-auto pr-1">
                   {signals.length === 0 ? (
-                    <div className="p-8 text-center text-xs text-neutral-500 bg-neutral-900 border border-neutral-800 rounded-xl">
-                      Chưa có tín hiệu nào. Dùng các nút <span className="text-amber-400 font-mono">[SIMULATION]</span> phía trên để test nến Pinbar tại vùng hỗ trợ/kháng cự mà không tốn quota.
+                    <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-4 flex flex-col gap-3">
+                      <p className="text-xs font-semibold text-neutral-300">
+                        Chưa có trade signal đã xác nhận.
+                      </p>
+
+                      {actionView ? (
+                        <div className="flex flex-col gap-2">
+                          <p className="text-xs font-mono text-neutral-400">
+                            Action View:{' '}
+                            <span
+                              className={`font-bold ${
+                                actionView.verdict === 'BUY'
+                                  ? 'text-emerald-300'
+                                  : actionView.verdict === 'SELL'
+                                    ? 'text-rose-300'
+                                    : actionView.verdict === 'WAIT'
+                                      ? 'text-amber-300'
+                                      : 'text-neutral-300'
+                              }`}
+                            >
+                              {actionView.verdict}
+                            </span>{' '}
+                            — {actionView.headline}
+                          </p>
+
+                          {emptyPrimary ? (
+                            <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3 flex flex-col gap-1.5">
+                              <p className="text-[11px] font-bold text-white">
+                                PRIMARY: {emptyPrimary.name}
+                              </p>
+                              <p className="text-[10px] font-mono text-neutral-400">
+                                Trigger: {scenarioTriggerLabel(emptyPrimary)}
+                              </p>
+                              {emptyPrimaryLevels && (
+                                <p className="text-[10px] font-mono text-neutral-300">
+                                  {emptyPrimaryLevels}
+                                </p>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="text-[10px] font-mono text-neutral-500">
+                              Chưa có kịch bản PRIMARY để tham khảo.
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-neutral-500 font-mono">
+                          Đang tải Action View...
+                        </p>
+                      )}
+
+                      <p className="text-[10px] text-neutral-500 leading-relaxed">
+                        Sniper Signal Stream chỉ hiển thị trade signal đã xác nhận; kịch bản tham
+                        khảo nằm ở Action View / Scenario View.
+                      </p>
+                      <p className="text-[10px] text-neutral-600">
+                        Dùng các nút{' '}
+                        <span className="text-amber-400 font-mono">[SIMULATION]</span> phía trên để
+                        test nến Pinbar tại vùng hỗ trợ/kháng cự mà không tốn quota.
+                      </p>
                     </div>
                   ) : (
                     signals.map((sig) => (

@@ -44,7 +44,9 @@ use health::health_check;
 use live::get_live_view;
 use macro_flow::get_macro_flow;
 use market::{get_htf_candles, get_market_context, get_recent_candles};
-use news::{get_latest_macro_bias, get_news_calendar, trigger_daily_macro_cron};
+use news::{
+    get_latest_macro_bias, get_news_calendar, send_daily_plan_telegram, trigger_daily_macro_cron,
+};
 use scanner::{send_scenario_telegram, start_scanner, stop_scanner};
 use scenarios::get_scenarios;
 use signals::{get_all_signals, get_stats};
@@ -164,6 +166,8 @@ pub fn create_router(state: AppState) -> Router {
             "/api/cron/trigger-daily-macro",
             post(trigger_daily_macro_cron),
         )
+        // Gửi lại kế hoạch ngày 07:00 theo yêu cầu (read-only, không quota)
+        .route("/api/daily-plan/telegram", post(send_daily_plan_telegram))
         // Endpoint giả lập setup (is_simulated = true, không tiêu hao quota thật)
         .route("/api/simulate-setup", post(simulate_setup))
         // Review thử tín hiệu bằng AI Risk Officer (không gửi Telegram, không tiêu hao quota)

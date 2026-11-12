@@ -285,6 +285,12 @@ export interface ActionViewResponse {
   caution: 'COUNTER_MACRO' | 'FILTER_BLOCKED' | 'VOLUME_PROXY' | null;
   signal: Signal | null;
   primaryScenario: Scenario | null;
+  /** Absolute USD distance from current price to the PRIMARY trigger (null when unknown). */
+  distanceToTrigger?: number | null;
+  /** distanceToTrigger divided by H4 ATR (null when price/trigger/ATR is missing). */
+  distanceAtr?: number | null;
+  /** NEAR <= 0.5 ATR, MID <= 1.5 ATR, FAR > 1.5 ATR, UNKNOWN when missing. */
+  proximity?: 'NEAR' | 'MID' | 'FAR' | 'UNKNOWN' | string;
   macroFlow: MacroFlowAlignment | null;
   volumeQuality: 'PAXG_PROXY' | 'PAXG' | 'NONE' | 'XAUUSD' | 'UNKNOWN';
   volumeWarning: string | null;
@@ -544,6 +550,8 @@ export interface BotConfig {
   action_trigger_cooldown_minutes?: number;
   /** Read-only Macro & Flow dashboard (FRED/Yahoo/CFTC). Default true; never affects signals. */
   macro_flow_enabled?: boolean;
+  /** Send the read-only 07:00 daily plan to Telegram. Default true; no quota impact. */
+  daily_plan_enabled?: boolean;
 }
 
 export interface DailyMacroReport {
