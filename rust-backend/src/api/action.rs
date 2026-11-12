@@ -275,7 +275,25 @@ pub(super) fn build_action_view(
                 .map(|value| value.eq_ignore_ascii_case("UNKNOWN"))
                 .unwrap_or(true);
             if is_unknown {
+                let bias = flow
+                    .get("bias")
+                    .and_then(Value::as_str)
+                    .unwrap_or("UNKNOWN")
+                    .to_string();
+                let confidence = flow.get("confidence").and_then(Value::as_u64).unwrap_or(0);
+                let flow_quality = flow
+                    .get("flowQuality")
+                    .and_then(Value::as_str)
+                    .unwrap_or("UNKNOWN")
+                    .to_string();
                 flow.insert("alignment".to_string(), json!(primary.macro_alignment));
+                flow.insert(
+                    "note".to_string(),
+                    json!(format!(
+                        "Macro {} ({}%) · flow {} — kịch bản chính {} là {}.",
+                        bias, confidence, flow_quality, primary.name, primary.macro_alignment
+                    )),
+                );
             }
         }
     }
