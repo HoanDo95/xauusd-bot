@@ -262,7 +262,23 @@ pub(super) fn build_action_view(
         caution = Some("VOLUME_PROXY");
     }
 
-    let macro_flow_payload = macro_flow_view(live_view, signal_type, macro_flow);
+    let mut macro_flow_payload = macro_flow_view(live_view, signal_type, macro_flow);
+
+    // When there is no confirmed signal, the live-view alignment is UNKNOWN.
+    // Prefer the primary scenario's alignment so the action card is coherent
+    // with its COUNTER_MACRO/ALIGNED caution.
+    if let Some(primary) = primary.as_ref() {
+        if let Some(flow) = macro_flow_payload.as_mut().and_then(Value::as_object_mut) {
+            let is_unknown = flow
+                .get("alignment")
+                .and_then(Value::as_str)
+                .map(|value| value.eq_ignore_ascii_case("UNKNOWN"))
+                .unwrap_or(true);
+            if is_unknown {
+                flow.insert("alignment".to_string(), json!(primary.macro_alignment));
+            }
+        }
+    }
 
     json!({
         "verdict": verdict,
