@@ -82,24 +82,31 @@ pub async fn apply_spot_basis(
     Some((spot_price, basis))
 }
 
-/// Migration: build cũ tự động đổi `data_source` sang TWELVEDATA khi có key.
-/// TwelveData `time_series` không có volume nên OHLCV phải quay lại Binance PAXG;
-/// TwelveData chỉ còn là giá spot tham chiếu.
-pub fn migrate_ohlcv_source_to_binance(config: &mut BotConfig) {
-    if config.data_source.eq_ignore_ascii_case("TWELVEDATA") {
-        warn!(
-            "⚠️ data_source=TWELVEDATA từ cấu hình cũ không có volume — chuyển OHLCV sang BINANCE_PAXG (TwelveData chỉ dùng spot basis)."
-        );
-        config.data_source = "BINANCE_PAXG".to_string();
+/// Chuẩn hóa `data_source` từ cấu hình cũ: chỉ map giá trị rỗng/không hợp lệ
+/// về BINANCE_PAXG; giữ nguyên TWELVEDATA do user chọn (Phase C1).
+pub fn normalize_data_source(config: &mut BotConfig) {
+    config.data_source = match config.data_source.trim().to_uppercase().as_str() {
+        "TWELVEDATA" => "TWELVEDATA",
+        _ => "BINANCE_PAXG",
     }
+    .to_string();
 }
 
-/// Nhãn nguồn giá cho panel "view toàn cảnh" (HTF luôn lấy từ Binance PAXG).
+/// Nhãn nguồn giá cho panel "view toàn cảnh" khi HTF lấy từ Binance PAXG.
 fn htf_price_source(spot_basis: Option<f64>) -> String {
     if spot_basis.is_some() {
         "BINANCE_PAXG+TWELVEDATA_SPOT".to_string()
     } else {
         "BINANCE_PAXG".to_string()
+    }
+}
+
+/// Nhãn nguồn giá HTF khi dùng TwelveData; volume proxy chỉ có khi Binance khớp timestamp.
+fn twelve_htf_price_source(volume_proxy_matched: bool) -> &'static str {
+    if volume_proxy_matched {
+        "TWELVEDATA_XAUUSD+PAXG_VOLUME"
+    } else {
+        "TWELVEDATA_XAUUSD"
     }
 }
 
@@ -114,20 +121,36 @@ pub fn htf_shift_amount(spot_basis: Option<f64>, broker_price_offset: f64) -> f6
 /// Kèm theo nến H4/D1 (đã căn basis) để dashboard vẽ "view toàn cảnh".
 pub async fn fetch_market_context(
     market_feed: &MarketDataFeed,
+    data_source: &str,
     spot_basis: Option<f64>,
     broker_price_offset: f64,
 ) -> Option<(MarketContext, Vec<Candle>, Vec<Candle>)> {
-    let (mut h4, mut d1, mut h1) = tokio::join!(
-        market_feed.fetch_htf_candles(Timeframe::H4, 300),
-        market_feed.fetch_daily_htf_candles(300),
-        market_feed.fetch_htf_candles(Timeframe::H1, 300),
+    let use_twelve = data_source.trim().eq_ignore_ascii_case("TWELVEDATA");
+    let ((mut h4, h4_source), (mut d1, d1_source), (mut h1, h1_source)) = tokio::join!(
+        market_feed.fetch_htf_candles_with_source(Timeframe::H4, 300, data_source),
+        market_feed.fetch_daily_htf_candles_with_source(300, data_source),
+        market_feed.fetch_htf_candles_with_source(Timeframe::H1, 300, data_source),
     );
 
-    let shift = htf_shift_amount(spot_basis, broker_price_offset);
-    if shift.is_finite() && shift != 0.0 {
-        shift_candles_prices(&mut h4, shift);
-        shift_candles_prices(&mut d1, shift);
-        shift_candles_prices(&mut h1, shift);
+    // TwelveData đã là giá XAU/USD spot nên chỉ cộng broker offset thủ công;
+    // Binance vẫn dùng spot basis (nếu có) như trước.
+    let binance_shift = htf_shift_amount(spot_basis, broker_price_offset);
+    let twelve_shift = broker_price_offset;
+    let shift_for = |source_label: &str| {
+        if source_label.starts_with("TWELVEDATA") {
+            twelve_shift
+        } else {
+            binance_shift
+        }
+    };
+    for (candles, shift) in [
+        (&mut h4, shift_for(&h4_source)),
+        (&mut d1, shift_for(&d1_source)),
+        (&mut h1, shift_for(&h1_source)),
+    ] {
+        if shift.is_finite() && shift != 0.0 {
+            shift_candles_prices(candles, shift);
+        }
     }
 
     if h4.is_empty() || d1.is_empty() {
@@ -142,8 +165,20 @@ pub async fn fetch_market_context(
         warn!("⚠️ [HTF Context] Không có nến H1, panel H1 sẽ trống.");
     }
 
+    let twelve_context = use_twelve && h4_source.starts_with("TWELVEDATA");
+    let volume_proxy_matched = twelve_context
+        && [&h4_source, &d1_source, &h1_source]
+            .iter()
+            .any(|source| source.contains("+PAXG_VOLUME"));
+    let price_source = if twelve_context {
+        twelve_htf_price_source(volume_proxy_matched).to_string()
+    } else {
+        htf_price_source(spot_basis)
+    };
+    let context_spot_basis = if twelve_context { None } else { spot_basis };
+
     Some((
-        build_market_context(&d1, &h4, &h1, &htf_price_source(spot_basis), spot_basis),
+        build_market_context(&d1, &h4, &h1, &price_source, context_spot_basis),
         h4,
         d1,
     ))
@@ -174,6 +209,7 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     config.broker_price_offset,
                 )
                 .await;
+            *state.active_volume_source.write().await = snapshot.volume_source.clone();
 
             // 6.1b Căn PAXG về spot XAU/USD trước khi tracker/analyzer nhìn thấy giá.
             let applied_spot =
@@ -482,9 +518,13 @@ pub fn spawn_htf_context(state: AppState) {
             tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
             let config = state.config.read().await.clone();
             let spot_basis = *state.spot_basis.read().await;
-            if let Some((context, h4, d1)) =
-                fetch_market_context(&state.market_feed, spot_basis, config.broker_price_offset)
-                    .await
+            if let Some((context, h4, d1)) = fetch_market_context(
+                &state.market_feed,
+                &config.data_source,
+                spot_basis,
+                config.broker_price_offset,
+            )
+            .await
             {
                 *state.market_context.write().await = Some(context);
                 *state.htf_h4_candles.write().await = h4;
@@ -585,6 +625,7 @@ mod tests {
             }],
             source: "BINANCE_PAXG".to_string(),
             live_price,
+            volume_source: "BINANCE_PAXG".to_string(),
         }
     }
 
@@ -652,16 +693,41 @@ mod tests {
     }
 
     #[test]
-    fn legacy_twelvedata_ohlcv_config_migrates_to_binance() {
-        let mut config = BotConfig {
-            data_source: "TWELVEDATA".to_string(),
+    fn htf_price_source_labels_cover_binance_and_twelvedata_modes() {
+        assert_eq!(htf_price_source(None), "BINANCE_PAXG");
+        assert_eq!(htf_price_source(Some(5.07)), "BINANCE_PAXG+TWELVEDATA_SPOT");
+        assert_eq!(
+            twelve_htf_price_source(true),
+            "TWELVEDATA_XAUUSD+PAXG_VOLUME"
+        );
+        assert_eq!(twelve_htf_price_source(false), "TWELVEDATA_XAUUSD");
+    }
+
+    #[test]
+    fn data_source_normalization_preserves_twelvedata() {
+        let mut twelve = BotConfig {
+            data_source: "  twelvedata ".to_string(),
             ..BotConfig::default()
         };
-        migrate_ohlcv_source_to_binance(&mut config);
-        assert_eq!(config.data_source, "BINANCE_PAXG");
+        normalize_data_source(&mut twelve);
+        assert_eq!(twelve.data_source, "TWELVEDATA");
 
         let mut already_binance = BotConfig::default();
-        migrate_ohlcv_source_to_binance(&mut already_binance);
+        normalize_data_source(&mut already_binance);
         assert_eq!(already_binance.data_source, "BINANCE_PAXG");
+
+        let mut unknown = BotConfig {
+            data_source: "garbage".to_string(),
+            ..BotConfig::default()
+        };
+        normalize_data_source(&mut unknown);
+        assert_eq!(unknown.data_source, "BINANCE_PAXG");
+
+        let mut empty = BotConfig {
+            data_source: String::new(),
+            ..BotConfig::default()
+        };
+        normalize_data_source(&mut empty);
+        assert_eq!(empty.data_source, "BINANCE_PAXG");
     }
 }

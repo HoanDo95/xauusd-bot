@@ -254,6 +254,9 @@ pub struct BotConfig {
     pub gold_sl_buffer_points: f64,
     /// Hệ số Volume đột biến so với đường trung bình MA (Mặc định: 1.5x)
     pub volume_surge_multiplier: f64,
+    /// Bật bộ lọc Volume Absorption. Mặc định true; tắt khi nguồn không có volume.
+    #[serde(default = "default_true")]
+    pub volume_filter_enabled: bool,
     /// Tỷ lệ tối thiểu giữa râu nến từ chối và thân nến (Mặc định: 2.0x)
     pub rejection_wick_ratio: f64,
     /// Số nến nhìn lại để tìm đỉnh đáy hỗ trợ/kháng cự (Lookback)
@@ -462,6 +465,7 @@ impl Default for BotConfig {
             min_risk_reward: 2.0,
             gold_sl_buffer_points: 8.5,
             volume_surge_multiplier: 1.5,
+            volume_filter_enabled: true,
             rejection_wick_ratio: 2.0,
             lookback_period: 30,
             volume_ma_period: 20,
@@ -527,6 +531,7 @@ impl BotConfig {
 
         self.min_risk_reward = finite_or(self.min_risk_reward, 2.0).clamp(1.5, 5.0);
         self.gold_sl_buffer_points = finite_or(self.gold_sl_buffer_points, 8.5).clamp(5.0, 25.0);
+        // volume_filter_enabled is a boolean toggle; false is a valid explicit choice.
         self.volume_surge_multiplier = finite_or(self.volume_surge_multiplier, 1.5).clamp(1.1, 3.5);
         self.rejection_wick_ratio = finite_or(self.rejection_wick_ratio, 2.0).clamp(1.5, 4.0);
         self.lookback_period = self.lookback_period.clamp(15, 100);
@@ -643,6 +648,26 @@ mod tests {
         assert_eq!(config.gold_sl_buffer_points, 20.0);
         assert_eq!(config.min_risk_reward, 2.0);
         assert_eq!(config.max_signals_per_day, 1);
+    }
+
+    #[test]
+    fn volume_filter_defaults_true_and_is_backward_compatible() {
+        let defaults = BotConfig::default();
+        assert!(defaults.volume_filter_enabled);
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        object.remove("volume_filter_enabled");
+
+        let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(config.volume_filter_enabled);
+
+        let disabled = BotConfig {
+            volume_filter_enabled: false,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert!(!disabled.volume_filter_enabled);
     }
 
     #[test]

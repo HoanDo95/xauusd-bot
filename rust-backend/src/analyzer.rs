@@ -286,8 +286,13 @@ impl GoldMarketAnalyzer {
             1.0
         };
 
-        // Lọc nhiễu: Bỏ qua nếu khối lượng không đủ hấp thụ dòng tiền
-        let is_volume_valid = volume_surge_ratio >= config.volume_surge_multiplier;
+        // Lọc nhiễu: Bỏ qua nếu khối lượng không đủ hấp thụ dòng tiền.
+        // Nguồn không có volume (TwelveData không proxy được PAXG) có thể tắt filter.
+        let is_volume_valid = if config.volume_filter_enabled {
+            volume_surge_ratio >= config.volume_surge_multiplier
+        } else {
+            true
+        };
 
         // Bước B: Quét vùng hỗ trợ / kháng cự động
         let (supports, resistances) = Self::detect_dynamic_sr_zones(
@@ -950,6 +955,29 @@ mod tests {
             GoldMarketAnalyzer::analyze_market(&candles, &buy_config(10.0)).is_none(),
             "tiny range candle must be ignored"
         );
+    }
+
+    #[test]
+    fn test_volume_filter_disabled_allows_zero_volume_signal() {
+        let mut candles = zigzag_candles(60);
+        let signal_ts = BASE_TS + 60 * STEP_MS;
+        // Cùng mẫu Pinbar nhưng volume = 0 (nguồn không có volume).
+        candles.push(candle(signal_ts, 2674.0, 2675.6, 2669.5, 2675.0, 0.0));
+
+        let enabled = buy_config(10.0);
+        assert!(
+            GoldMarketAnalyzer::analyze_market(&candles, &enabled).is_none(),
+            "volume filter ON must reject zero-volume candle"
+        );
+
+        let disabled = BotConfig {
+            volume_filter_enabled: false,
+            ..buy_config(10.0)
+        };
+        let signal = GoldMarketAnalyzer::analyze_market(&candles, &disabled)
+            .expect("volume filter OFF must allow the setup");
+        assert_eq!(signal.signal_type, SignalType::Buy);
+        assert_eq!(signal.volume_surge_ratio, 0.0);
     }
 
     #[test]

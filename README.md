@@ -11,6 +11,9 @@ A production-oriented XAU/USD signal engine with **100% free market data**, a ha
 ## What it does
 
 - **Rust engine** (`rust-backend/`): Tokio + Axum, scans closed M15/H1 candles 24/7.
+- **Selectable data source**: Binance `PAXGUSDT` (default, native volume) or
+  TwelveData XAU/USD OHLC with a Binance PAXG volume proxy; RSI is computed
+  locally from the selected closes.
 - **Dynamic S/R zones**: swing-high/low clustering, not fixed lines.
 - **Pinbar + volume absorption**: rejection wick + volume ≥ 1.5× MA20.
 - **EMA50/200 trend filter**: `BULLISH`, `BEARISH`, `NEUTRAL`, or `AUTO`.
@@ -44,7 +47,8 @@ A production-oriented XAU/USD signal engine with **100% free market data**, a ha
 
 | Data | Source | Key |
 |---|---|---|
-| Gold OHLCV + volume | Binance `PAXGUSDT` public API | none |
+| Gold OHLCV + volume (default) | Binance `PAXGUSDT` public API | none |
+| Gold OHLC + volume proxy | TwelveData `time_series` XAU/USD + Binance `PAXGUSDT` volume | optional `TWELVEDATA_API_KEY` |
 | Spot `XAU/USD` reference (basis only) | TwelveData free `/price`, fallback `gold-api.com` | optional |
 | US high-impact calendar | ForexFactory public JSON | none |
 | Trend | EMA50/200 computed locally | none |
@@ -54,9 +58,9 @@ A production-oriented XAU/USD signal engine with **100% free market data**, a ha
 
 ### PAXG → XAU/USD spot basis calibration
 
-Binance `PAXGUSDT` is the OHLCV + volume source, but PAXG can trade at a
+By default, Binance `PAXGUSDT` is the OHLCV + volume source, but PAXG can trade at a
 **$5–$11 premium/discount** versus spot XAU/USD. With
-`use_auto_spot_basis` enabled (default true), each scan:
+`use_auto_spot_basis` enabled (default true), each Binance-mode scan:
 
 1. Fetches the spot reference from TwelveData
    `https://api.twelvedata.com/price?symbol=XAU/USD&apikey=...` when
@@ -71,13 +75,22 @@ Binance `PAXGUSDT` is the OHLCV + volume source, but PAXG can trade at a
    `/api/candles`.
 
 The spot quote is cached for **300 seconds** (~288 calls/day, safely inside the
-TwelveData free tier of 800/day). TwelveData `time_series` is deliberately
-**not** used for OHLCV because it has no volume. On startup, a legacy persisted
-`data_source = "TWELVEDATA"` (from the old auto-switch) is migrated back to
-`BINANCE_PAXG`. The manual `broker_price_offset` remains supported and is
-applied before the auto basis; turn `use_auto_spot_basis` off to use only the
-manual offset. If both spot providers fail, the engine keeps Binance PAXG
-candles with the manual offset and reports `spotBasis: null`.
+TwelveData free tier of 800/day). In `BINANCE_PAXG` mode, TwelveData
+`time_series` is only a fallback for the signal-timeframe feed when Binance
+fails. In `TWELVEDATA` mode, OHLC comes from `time_series`
+(`15min` / `1h` / `4h` / `1day`, `timezone=UTC`, `order=ASC`) and volume is
+merged from Binance PAXG by matching candle timestamps; RSI is computed locally
+from the TwelveData closes. TwelveData responses are cached per timeframe
+(M15 300s, H1/H4 900s, D1 3600s), keeping usage at roughly 500 requests/day on
+the free tier. If the proxy has no matching timestamps, the feed reports
+`volumeSource = "NONE"`; turn off `volume_filter_enabled` in the dashboard if
+you want signals without volume. A persisted `data_source` is preserved on
+startup; only empty/unknown values fall back to `BINANCE_PAXG`. The manual
+`broker_price_offset` remains supported and is applied before the auto basis;
+turn `use_auto_spot_basis` off to use only the manual offset. If both spot
+providers fail, the engine keeps Binance PAXG candles with the manual offset
+and reports `spotBasis: null`. Defaults remain `data_source = "BINANCE_PAXG"`
+and `volume_filter_enabled = true`.
 
 ### Optional AI macro report
 
@@ -317,8 +330,8 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `GET` | `/api/health` | Health, live price, feed source, spot basis/price source, daily quota, kill switch |
-| `GET` | `/api/candles` | Live + last closed price, S/R zones, EMA50/200, trend, `dataSource`, `spotPrice`, `spotBasis`, `priceSource` |
+| `GET` | `/api/health` | Health, live price, feed/volume source, spot basis/price source, daily quota, kill switch |
+| `GET` | `/api/candles` | Live + last closed price, S/R zones, EMA50/200, trend, `dataSource`, `volumeSource`, `spotPrice`, `spotBasis`, `priceSource` |
 | `GET` | `/api/context` | Read-only D1/H4/H1 context + `rsi_m15`/`rsi_h1`/`rsi_h4` (204 until HTF ready) |
 | `GET` | `/api/signals` | Signal history + performance stats |
 | `GET` | `/api/stats` | Win rate, avg R, net R, profit factor (real signals only) |

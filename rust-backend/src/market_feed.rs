@@ -1,9 +1,18 @@
 use crate::models::{Candle, Timeframe};
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use reqwest::Client;
 use serde_json::Value;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tracing::{info, warn};
+
+/// Nhãn nguồn volume ổn định cho dashboard/health.
+pub const VOLUME_SOURCE_BINANCE_PAXG: &str = "BINANCE_PAXG";
+pub const VOLUME_SOURCE_BINANCE_PAXG_PROXY: &str = "BINANCE_PAXG_PROXY";
+pub const VOLUME_SOURCE_NONE: &str = "NONE";
+
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// Ảnh chụp dữ liệu thị trường tại một thời điểm: nến đã đóng + giá live + nguồn.
 #[derive(Debug, Clone)]
@@ -14,6 +23,8 @@ pub struct MarketFeedSnapshot {
     pub source: String,
     /// Giá live từ cây nến đang chạy (nếu có).
     pub live_price: Option<f64>,
+    /// "BINANCE_PAXG" | "BINANCE_PAXG_PROXY" | "NONE".
+    pub volume_source: String,
 }
 
 impl MarketFeedSnapshot {
@@ -22,18 +33,20 @@ impl MarketFeedSnapshot {
             candles: MarketDataFeed::generate_fallback_gold_candles(limit, timeframe),
             source: "FALLBACK_SEED".to_string(),
             live_price: None,
+            volume_source: VOLUME_SOURCE_NONE.to_string(),
         }
     }
 }
 
 /// Nguồn dữ liệu OHLCV Vàng miễn phí 24/7.
-/// - Ưu tiên TwelveData `XAU/USD` nếu có `TWELVEDATA_API_KEY`.
+/// - `data_source=TWELVEDATA`: OHLC từ TwelveData `XAU/USD` + volume proxy PAXG.
 /// - Mặc định dùng Binance Public API `PAXGUSDT` (không cần API key).
 /// - Offline: fallback về bộ sinh nến mẫu an toàn.
 #[derive(Debug, Clone)]
 pub struct MarketDataFeed {
     client: Client,
     twelve_data_api_key: Option<String>,
+    twelve_cache: Arc<tokio::sync::Mutex<HashMap<String, (Instant, MarketFeedSnapshot)>>>,
 }
 
 impl MarketDataFeed {
@@ -51,6 +64,7 @@ impl MarketDataFeed {
         Self {
             client,
             twelve_data_api_key,
+            twelve_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -63,6 +77,25 @@ impl MarketDataFeed {
 
     pub fn has_twelve_data_key(&self) -> bool {
         self.twelve_data_api_key.is_some()
+    }
+
+    async fn cached_twelve_snapshot(&self, label: &str) -> Option<MarketFeedSnapshot> {
+        let cache = self.twelve_cache.lock().await;
+        cache.get(label).and_then(|(fetched_at, snapshot)| {
+            if fetched_at.elapsed() < twelve_cache_ttl(label) && !snapshot.candles.is_empty() {
+                Some(snapshot.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    async fn store_twelve_snapshot(&self, label: &str, snapshot: &MarketFeedSnapshot) {
+        if snapshot.candles.is_empty() {
+            return;
+        }
+        let mut cache = self.twelve_cache.lock().await;
+        cache.insert(label.to_string(), (Instant::now(), snapshot.clone()));
     }
 
     /// Lấy giá spot XAU/USD tham chiếu (không volume) để tự động căn basis PAXG.
@@ -159,23 +192,128 @@ impl MarketDataFeed {
             .candles
     }
 
-    /// Nến HTF đã đóng cửa cho bối cảnh D1/H4/H1 — chỉ Binance PAXGUSDT.
-    /// Không fallback seed: lỗi mạng trả về rỗng để caller giữ context cũ.
+    /// Nến HTF đã đóng cửa cho bối cảnh D1/H4/H1 — Binance PAXGUSDT.
+    /// Wrapper tương thích cho caller cũ.
     pub async fn fetch_htf_candles(&self, timeframe: Timeframe, limit: usize) -> Vec<Candle> {
-        let interval = binance_interval(timeframe);
-        self.fetch_binance_closed_candles(interval, timeframe, limit)
+        self.fetch_htf_candles_with_source(timeframe, limit, "BINANCE_PAXG")
             .await
-            .unwrap_or_default()
+            .0
     }
 
-    /// Nến ngày (1d) từ Binance PAXGUSDT cho bối cảnh D1.
-    ///
-    /// `models::Timeframe` chưa có biến thể D1 (để không đụng tới backtest), nên nến
+    /// Nến HTF theo nguồn đã chọn. TwelveData trả OHLC; volume được ghép từ
+    /// Binance PAXG nếu timestamp khớp. Trả `(candles, price_source)`.
+    pub async fn fetch_htf_candles_with_source(
+        &self,
+        timeframe: Timeframe,
+        limit: usize,
+        source: &str,
+    ) -> (Vec<Candle>, String) {
+        let use_twelve = source.trim().eq_ignore_ascii_case("TWELVEDATA");
+        if use_twelve && self.has_twelve_data_key() {
+            let (twelve, binance) = tokio::join!(
+                self.fetch_twelve_snapshot(timeframe, limit),
+                self.fetch_binance_closed_candles(binance_interval(timeframe), timeframe, limit),
+            );
+            let binance = binance.ok();
+            if let Some(mut snapshot) = twelve {
+                let price_source =
+                    Self::twelve_htf_price_source(&mut snapshot.candles, binance.as_deref());
+                return (snapshot.candles, price_source);
+            }
+            warn!(
+                "⚠️ TwelveData HTF {} không khả dụng, chuyển sang Binance PAXGUSDT.",
+                timeframe
+            );
+            return (
+                binance.unwrap_or_default(),
+                VOLUME_SOURCE_BINANCE_PAXG.to_string(),
+            );
+        }
+
+        (
+            self.fetch_binance_closed_candles(binance_interval(timeframe), timeframe, limit)
+                .await
+                .unwrap_or_default(),
+            VOLUME_SOURCE_BINANCE_PAXG.to_string(),
+        )
+    }
+
+    /// Nến ngày (1d) từ nguồn đã chọn. `models::Timeframe` chưa có D1 nên nến
     /// được gắn tag H4 — chỉ dùng nội bộ để tính context, không phát tín hiệu.
     pub async fn fetch_daily_htf_candles(&self, limit: usize) -> Vec<Candle> {
-        self.fetch_binance_closed_candles("1d", Timeframe::H4, limit)
+        self.fetch_daily_htf_candles_with_source(limit, "BINANCE_PAXG")
             .await
-            .unwrap_or_default()
+            .0
+    }
+
+    pub async fn fetch_daily_htf_candles_with_source(
+        &self,
+        limit: usize,
+        source: &str,
+    ) -> (Vec<Candle>, String) {
+        let use_twelve = source.trim().eq_ignore_ascii_case("TWELVEDATA");
+        if use_twelve && self.has_twelve_data_key() {
+            let (twelve, binance) = tokio::join!(
+                self.fetch_twelve_daily_snapshot(limit),
+                self.fetch_binance_closed_candles("1d", Timeframe::H4, limit),
+            );
+            let binance = binance.ok();
+            if let Some(mut snapshot) = twelve {
+                let price_source =
+                    Self::twelve_htf_price_source(&mut snapshot.candles, binance.as_deref());
+                return (snapshot.candles, price_source);
+            }
+            warn!("⚠️ TwelveData D1 không khả dụng, chuyển sang Binance PAXGUSDT.");
+            return (
+                binance.unwrap_or_default(),
+                VOLUME_SOURCE_BINANCE_PAXG.to_string(),
+            );
+        }
+
+        (
+            self.fetch_binance_closed_candles("1d", Timeframe::H4, limit)
+                .await
+                .unwrap_or_default(),
+            VOLUME_SOURCE_BINANCE_PAXG.to_string(),
+        )
+    }
+
+    fn twelve_htf_price_source(
+        candles: &mut [Candle],
+        volume_candles: Option<&[Candle]>,
+    ) -> String {
+        let matched = volume_candles
+            .map(|volume_candles| Self::merge_volume_proxy(candles, volume_candles))
+            .unwrap_or(false);
+        if matched {
+            "TWELVEDATA_XAUUSD+PAXG_VOLUME".to_string()
+        } else {
+            "TWELVEDATA_XAUUSD".to_string()
+        }
+    }
+
+    /// Ghép volume/taker-buy từ Binance PAXG vào nến TwelveData theo timestamp.
+    /// Trả `true` nếu có ít nhất một cây nến khớp.
+    fn merge_volume_proxy(price_candles: &mut [Candle], volume_candles: &[Candle]) -> bool {
+        if price_candles.is_empty() || volume_candles.is_empty() {
+            return false;
+        }
+
+        let volume_by_timestamp: HashMap<i64, (f64, f64)> = volume_candles
+            .iter()
+            .map(|candle| (candle.timestamp, (candle.volume, candle.taker_buy_volume)))
+            .collect();
+
+        let mut matched = 0usize;
+        for candle in price_candles {
+            if let Some((volume, taker_buy_volume)) = volume_by_timestamp.get(&candle.timestamp) {
+                candle.volume = *volume;
+                candle.taker_buy_volume = *taker_buy_volume;
+                matched += 1;
+            }
+        }
+
+        matched > 0
     }
 
     async fn fetch_binance_closed_candles(
@@ -239,12 +377,38 @@ impl MarketDataFeed {
         let has_twelve = self.twelve_data_api_key.is_some();
 
         let mut snapshot = if prefer_twelve && has_twelve {
-            let twelve = self.fetch_twelve_snapshot(timeframe, limit).await;
-            if twelve.is_some() {
-                twelve
-            } else {
-                warn!("⚠️ TwelveData không khả dụng, chuyển sang Binance PAXGUSDT.");
-                self.fetch_binance_snapshot(timeframe, limit).await
+            // TwelveData chỉ có OHLC; lấy Binance song song để làm volume proxy.
+            let (twelve, binance) = tokio::join!(
+                self.fetch_twelve_snapshot(timeframe, limit),
+                self.fetch_binance_snapshot(timeframe, limit),
+            );
+            match twelve {
+                Some(mut twelve) => {
+                    let matched = binance
+                        .as_ref()
+                        .map(|binance| {
+                            Self::merge_volume_proxy(&mut twelve.candles, &binance.candles)
+                        })
+                        .unwrap_or(false);
+                    twelve.volume_source = if matched {
+                        VOLUME_SOURCE_BINANCE_PAXG_PROXY.to_string()
+                    } else {
+                        VOLUME_SOURCE_NONE.to_string()
+                    };
+                    if matched {
+                        info!(
+                            "🔊 [MarketFeed] Đã ghép volume Binance PAXG vào {} nến TwelveData.",
+                            twelve.candles.len()
+                        );
+                    } else {
+                        warn!("⚠️ TwelveData không khớp timestamp với Binance PAXG — volume = 0.");
+                    }
+                    Some(twelve)
+                }
+                None => {
+                    warn!("⚠️ TwelveData không khả dụng, chuyển sang Binance PAXGUSDT.");
+                    binance
+                }
             }
         } else {
             let binance = self.fetch_binance_snapshot(timeframe, limit).await;
@@ -294,14 +458,48 @@ impl MarketDataFeed {
         limit: usize,
     ) -> Option<MarketFeedSnapshot> {
         let api_key = self.twelve_data_api_key.as_deref()?;
+        let cache_label = twelve_cache_label(timeframe);
+        if let Some(cached) = self.cached_twelve_snapshot(cache_label).await {
+            return Some(cached);
+        }
+
         match self.fetch_twelve_data(timeframe, limit, api_key).await {
-            Ok(snapshot) if !snapshot.candles.is_empty() => Some(snapshot),
+            Ok(snapshot) if !snapshot.candles.is_empty() => {
+                self.store_twelve_snapshot(cache_label, &snapshot).await;
+                Some(snapshot)
+            }
             Ok(_) => {
                 warn!("⚠️ TwelveData trả về rỗng.");
                 None
             }
             Err(err) => {
                 warn!("⚠️ TwelveData lỗi ({}).", err);
+                None
+            }
+        }
+    }
+
+    async fn fetch_twelve_daily_snapshot(&self, limit: usize) -> Option<MarketFeedSnapshot> {
+        let api_key = self.twelve_data_api_key.as_deref()?;
+        let cache_label = "D1";
+        if let Some(cached) = self.cached_twelve_snapshot(cache_label).await {
+            return Some(cached);
+        }
+
+        match self
+            .fetch_twelve_data_interval("1day", Timeframe::H4, DAY_MS, limit, api_key)
+            .await
+        {
+            Ok(snapshot) if !snapshot.candles.is_empty() => {
+                self.store_twelve_snapshot(cache_label, &snapshot).await;
+                Some(snapshot)
+            }
+            Ok(_) => {
+                warn!("⚠️ TwelveData D1 trả về rỗng.");
+                None
+            }
+            Err(err) => {
+                warn!("⚠️ TwelveData D1 lỗi ({}).", err);
                 None
             }
         }
@@ -378,6 +576,7 @@ impl MarketDataFeed {
             candles,
             source: "BINANCE_PAXG".to_string(),
             live_price,
+            volume_source: VOLUME_SOURCE_BINANCE_PAXG.to_string(),
         })
     }
 
@@ -387,13 +586,26 @@ impl MarketDataFeed {
         limit: usize,
         api_key: &str,
     ) -> Result<MarketFeedSnapshot, String> {
-        let interval = match timeframe {
-            Timeframe::M15 => "15min",
-            Timeframe::H1 => "1h",
-            Timeframe::H4 => "4h",
-        };
+        self.fetch_twelve_data_interval(
+            twelve_interval(timeframe),
+            timeframe,
+            timeframe_millis(timeframe),
+            limit,
+            api_key,
+        )
+        .await
+    }
+
+    async fn fetch_twelve_data_interval(
+        &self,
+        interval: &str,
+        timeframe_tag: Timeframe,
+        step_ms: i64,
+        limit: usize,
+        api_key: &str,
+    ) -> Result<MarketFeedSnapshot, String> {
         let url = format!(
-            "https://api.twelvedata.com/time_series?symbol=XAU/USD&interval={}&outputsize={}&apikey={}",
+            "https://api.twelvedata.com/time_series?symbol=XAU/USD&interval={}&outputsize={}&timezone=UTC&order=ASC&apikey={}",
             interval,
             limit + 1,
             api_key
@@ -419,16 +631,17 @@ impl MarketDataFeed {
             return Err(format!("TwelveData API error: {}", message));
         }
 
-        let (candles, live_price) = Self::parse_twelve_data_snapshot_with_now(
+        let (candles, live_price) = Self::parse_twelve_data_snapshot_with_step(
             &payload,
-            timeframe,
+            timeframe_tag,
+            step_ms,
             Utc::now().timestamp_millis(),
             limit,
         );
 
         info!(
-            "📡 [MarketFeed] TwelveData XAU/USD {}: {} nến đã đóng cửa, live={:?}.",
-            timeframe,
+            "📡 [MarketFeed] TwelveData XAU/USD interval={}: {} nến đã đóng cửa, live={:?}.",
+            interval,
             candles.len(),
             live_price
         );
@@ -436,6 +649,7 @@ impl MarketDataFeed {
             candles,
             source: "TWELVEDATA".to_string(),
             live_price,
+            volume_source: VOLUME_SOURCE_NONE.to_string(),
         })
     }
 
@@ -533,9 +747,27 @@ impl MarketDataFeed {
     }
 
     /// Parse TwelveData: trả về nến đã đóng + close của cây đang chạy làm live price.
+    #[cfg(test)]
     pub(crate) fn parse_twelve_data_snapshot_with_now(
         payload: &Value,
         timeframe: Timeframe,
+        now_ms: i64,
+        limit: usize,
+    ) -> (Vec<Candle>, Option<f64>) {
+        Self::parse_twelve_data_snapshot_with_step(
+            payload,
+            timeframe,
+            timeframe_millis(timeframe),
+            now_ms,
+            limit,
+        )
+    }
+
+    /// Parser dùng chung cho intraday và D1 (`step_ms` = 24 giờ).
+    pub(crate) fn parse_twelve_data_snapshot_with_step(
+        payload: &Value,
+        timeframe: Timeframe,
+        step_ms: i64,
         now_ms: i64,
         limit: usize,
     ) -> (Vec<Candle>, Option<f64>) {
@@ -543,7 +775,6 @@ impl MarketDataFeed {
             return (Vec::new(), None);
         };
 
-        let step_ms = timeframe_millis(timeframe);
         let mut candles = Vec::with_capacity(rows.len());
         let mut live_price: Option<f64> = None;
 
@@ -560,15 +791,21 @@ impl MarketDataFeed {
                 value_to_f64(row.get("high").unwrap_or(&Value::Null)),
                 value_to_f64(row.get("low").unwrap_or(&Value::Null)),
                 value_to_f64(row.get("close").unwrap_or(&Value::Null)),
-                value_to_f64(row.get("volume").unwrap_or(&Value::Null)),
             );
-            let (Some(open), Some(high), Some(low), Some(close), Some(volume)) = parsed else {
+            let (Some(open), Some(high), Some(low), Some(close)) = parsed else {
                 continue;
             };
 
-            if !is_finite_ohlcv(open, high, low, close, volume) {
+            if !is_finite_ohlc(open, high, low, close) {
                 continue;
             }
+
+            // TwelveData time_series không có volume: thiếu/không hợp lệ -> 0.0.
+            let volume = row
+                .get("volume")
+                .and_then(value_to_f64)
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .unwrap_or(0.0);
 
             // Cây nến chưa đóng cửa: thời điểm đóng = open + step > now.
             if timestamp + step_ms > now_ms {
@@ -665,6 +902,33 @@ fn binance_interval(timeframe: Timeframe) -> &'static str {
     }
 }
 
+fn twelve_interval(timeframe: Timeframe) -> &'static str {
+    match timeframe {
+        Timeframe::M15 => "15min",
+        Timeframe::H1 => "1h",
+        Timeframe::H4 => "4h",
+    }
+}
+
+fn twelve_cache_label(timeframe: Timeframe) -> &'static str {
+    match timeframe {
+        Timeframe::M15 => "M15",
+        Timeframe::H1 => "H1",
+        Timeframe::H4 => "H4",
+    }
+}
+
+/// TTL cache TwelveData theo khung: M15 5 phút, H1/H4 15 phút, D1 1 giờ.
+/// Tổng usage ~504 request/ngày, an toàn cho free tier 800/ngày.
+fn twelve_cache_ttl(label: &str) -> Duration {
+    match label.trim().to_uppercase().as_str() {
+        "M15" => Duration::from_secs(300),
+        "H1" | "H4" => Duration::from_secs(900),
+        "D1" => Duration::from_secs(3600),
+        _ => Duration::from_secs(300),
+    }
+}
+
 fn value_to_f64(value: &Value) -> Option<f64> {
     value
         .as_f64()
@@ -685,6 +949,13 @@ fn is_finite_ohlcv(open: f64, high: f64, low: f64, close: f64, volume: f64) -> b
         && volume >= 0.0
 }
 
+fn is_finite_ohlc(open: f64, high: f64, low: f64, close: f64) -> bool {
+    [open, high, low, close]
+        .iter()
+        .all(|value| value.is_finite())
+        && high >= low
+}
+
 fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
@@ -697,7 +968,14 @@ fn parse_twelve_data_datetime(value: &str) -> Option<i64> {
 
     let naive = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
         .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M"))
-        .ok()?;
+        .ok();
+    if let Some(naive) = naive {
+        return Some(Utc.from_utc_datetime(&naive).timestamp_millis());
+    }
+
+    // D1 time_series trả ngày thuần "YYYY-MM-DD" (UTC).
+    let date = NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()?;
+    let naive = date.and_hms_opt(0, 0, 0)?;
     Some(Utc.from_utc_datetime(&naive).timestamp_millis())
 }
 
@@ -705,6 +983,19 @@ fn parse_twelve_data_datetime(value: &str) -> Option<i64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn test_candle(timestamp: i64, volume: f64, taker_buy_volume: f64) -> Candle {
+        Candle {
+            timestamp,
+            open: 2000.0,
+            high: 2001.0,
+            low: 1999.0,
+            close: 2000.5,
+            volume,
+            taker_buy_volume,
+            timeframe: Timeframe::M15,
+        }
+    }
 
     #[test]
     fn test_parse_binance_klines_and_strip_unclosed_candle() {
@@ -834,6 +1125,152 @@ mod tests {
         assert_eq!(candles.len(), 1);
         assert_eq!(candles[0].timestamp, open_1200);
         assert!((candles[0].close - 2010.0).abs() < 1e-9);
+        assert!((candles[0].volume - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_parse_twelve_data_accepts_missing_volume() {
+        let payload = json!({
+            "values": [
+                {
+                    "datetime": "2026-11-09 12:00:00",
+                    "open": "2000.0",
+                    "high": "2012.0",
+                    "low": "1995.0",
+                    "close": "2010.0"
+                }
+            ]
+        });
+
+        let open_1200 = Utc
+            .with_ymd_and_hms(2026, 11, 9, 12, 0, 0)
+            .single()
+            .expect("valid datetime")
+            .timestamp_millis();
+        let candles = MarketDataFeed::parse_twelve_data_values_with_now(
+            &payload,
+            Timeframe::M15,
+            open_1200 + 15 * 60 * 1000 + 1,
+            100,
+        );
+
+        assert_eq!(candles.len(), 1);
+        assert_eq!(candles[0].volume, 0.0);
+        assert_eq!(candles[0].taker_buy_volume, 0.0);
+    }
+
+    #[test]
+    fn test_parse_twelve_data_keeps_present_volume() {
+        let payload = json!({
+            "values": [
+                {
+                    "datetime": "2026-11-09 12:00:00",
+                    "open": "2000.0",
+                    "high": "2012.0",
+                    "low": "1995.0",
+                    "close": "2010.0",
+                    "volume": "123.45"
+                }
+            ]
+        });
+
+        let open_1200 = Utc
+            .with_ymd_and_hms(2026, 11, 9, 12, 0, 0)
+            .single()
+            .expect("valid datetime")
+            .timestamp_millis();
+        let candles = MarketDataFeed::parse_twelve_data_values_with_now(
+            &payload,
+            Timeframe::M15,
+            open_1200 + 15 * 60 * 1000 + 1,
+            100,
+        );
+
+        assert_eq!(candles.len(), 1);
+        assert!((candles[0].volume - 123.45).abs() < 1e-9);
+        assert_eq!(candles[0].taker_buy_volume, 0.0);
+    }
+
+    #[test]
+    fn test_parse_twelve_data_daily_uses_24h_step_and_date_only() {
+        let payload = json!({
+            "values": [
+                {
+                    "datetime": "2026-11-10",
+                    "open": "2010.0",
+                    "high": "2020.0",
+                    "low": "2005.0",
+                    "close": "2015.0"
+                },
+                {
+                    "datetime": "2026-11-09",
+                    "open": "2000.0",
+                    "high": "2012.0",
+                    "low": "1995.0",
+                    "close": "2010.0"
+                }
+            ]
+        });
+
+        let now = Utc
+            .with_ymd_and_hms(2026, 11, 10, 12, 0, 0)
+            .single()
+            .expect("valid datetime")
+            .timestamp_millis();
+        let (candles, live_price) = MarketDataFeed::parse_twelve_data_snapshot_with_step(
+            &payload,
+            Timeframe::H4,
+            DAY_MS,
+            now,
+            100,
+        );
+
+        assert_eq!(candles.len(), 1);
+        assert_eq!(
+            candles[0].timestamp,
+            Utc.with_ymd_and_hms(2026, 11, 9, 0, 0, 0)
+                .single()
+                .expect("valid datetime")
+                .timestamp_millis()
+        );
+        assert_eq!(candles[0].volume, 0.0);
+        assert_eq!(live_price, Some(2015.0));
+    }
+
+    #[test]
+    fn test_twelve_cache_ttl_matches_free_tier_budget() {
+        assert_eq!(twelve_cache_ttl("M15"), Duration::from_secs(300));
+        assert_eq!(twelve_cache_ttl("H1"), Duration::from_secs(900));
+        assert_eq!(twelve_cache_ttl("H4"), Duration::from_secs(900));
+        assert_eq!(twelve_cache_ttl("D1"), Duration::from_secs(3600));
+        assert_eq!(twelve_cache_ttl("unknown"), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn test_merge_volume_proxy_matches_by_timestamp() {
+        let mut price_candles = vec![test_candle(1, 0.0, 0.0), test_candle(2, 0.0, 0.0)];
+        let volume_candles = vec![test_candle(2, 150.0, 75.0), test_candle(3, 999.0, 0.0)];
+
+        assert!(MarketDataFeed::merge_volume_proxy(
+            &mut price_candles,
+            &volume_candles
+        ));
+        assert_eq!(price_candles[0].volume, 0.0);
+        assert_eq!(price_candles[1].volume, 150.0);
+        assert_eq!(price_candles[1].taker_buy_volume, 75.0);
+    }
+
+    #[test]
+    fn test_merge_volume_proxy_returns_false_without_matching_timestamp() {
+        let mut price_candles = vec![test_candle(1, 10.0, 5.0)];
+        let volume_candles = vec![test_candle(2, 150.0, 75.0)];
+
+        assert!(!MarketDataFeed::merge_volume_proxy(
+            &mut price_candles,
+            &volume_candles
+        ));
+        assert_eq!(price_candles[0].volume, 10.0);
+        assert_eq!(price_candles[0].taker_buy_volume, 5.0);
     }
 
     #[test]
@@ -939,6 +1376,7 @@ mod tests {
             }],
             source: "TWELVEDATA".to_string(),
             live_price: Some(2003.33),
+            volume_source: VOLUME_SOURCE_NONE.to_string(),
         };
 
         MarketDataFeed::apply_broker_offset(&mut snapshot, 2.37);
@@ -997,6 +1435,7 @@ mod tests {
             }],
             source: "BINANCE_PAXG".to_string(),
             live_price: Some(2003.33),
+            volume_source: VOLUME_SOURCE_BINANCE_PAXG.to_string(),
         };
 
         MarketDataFeed::shift_snapshot_prices(&mut snapshot, 5.07);
@@ -1024,6 +1463,7 @@ mod tests {
             }],
             source: "BINANCE_PAXG".to_string(),
             live_price: Some(2000.5),
+            volume_source: VOLUME_SOURCE_BINANCE_PAXG.to_string(),
         };
 
         for basis in [0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
@@ -1042,6 +1482,14 @@ mod tests {
         assert_eq!(snapshot.source, "FALLBACK_SEED");
         assert_eq!(snapshot.candles.len(), 10);
         assert_eq!(snapshot.live_price, None);
+        assert_eq!(snapshot.volume_source, VOLUME_SOURCE_NONE);
+    }
+
+    #[test]
+    fn test_volume_source_labels_match_dashboard_contract() {
+        assert_eq!(VOLUME_SOURCE_BINANCE_PAXG, "BINANCE_PAXG");
+        assert_eq!(VOLUME_SOURCE_BINANCE_PAXG_PROXY, "BINANCE_PAXG_PROXY");
+        assert_eq!(VOLUME_SOURCE_NONE, "NONE");
     }
 
     #[test]

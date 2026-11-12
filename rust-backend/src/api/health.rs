@@ -36,6 +36,7 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
     let signals = state.signals.read().await.clone();
     let live_price = *state.live_price.read().await;
     let active_data_source = state.active_data_source.read().await.clone();
+    let active_volume_source = state.active_volume_source.read().await.clone();
     let spot_price = *state.spot_price.read().await;
     let spot_basis = *state.spot_basis.read().await;
     let last_scan_at = *state.last_scan_at.read().await;
@@ -91,6 +92,7 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "volumeDeltaFilterEnabled": config.volume_delta_filter_enabled,
         "rsiFilterEnabled": config.rsi_filter_enabled,
         "dataSource": active_data_source,
+        "volumeSource": active_volume_source,
         "priceSource": price_source,
         "spotPrice": spot_price,
         "spotBasis": spot_basis,

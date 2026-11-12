@@ -11,14 +11,19 @@ interface Props {
   config: BotConfig;
   signalsToday: number;
   dataSource?: string;
+  volumeSource?: string;
   trendBias?: TrendBias;
   ema50?: number;
   spotPrice?: number | null;
   spotBasis?: number | null;
 }
 
-function feedLabel(dataSource?: string): string {
-  if (dataSource === 'TWELVEDATA') return 'TwelveData XAU/USD (Free)';
+function feedLabel(dataSource?: string, volumeSource?: string): string {
+  if (dataSource === 'TWELVEDATA') {
+    if (volumeSource === 'BINANCE_PAXG_PROXY') return 'TwelveData XAU/USD + PAXG volume';
+    if (volumeSource === 'NONE') return 'TwelveData XAU/USD (no volume)';
+    return 'TwelveData XAU/USD (Free)';
+  }
   if (dataSource === 'FALLBACK_SEED' || dataSource === 'OFFLINE') {
     return 'Offline Fallback (Seed)';
   }
@@ -33,6 +38,7 @@ export const MetricCards: React.FC<Props> = ({
   config,
   signalsToday,
   dataSource,
+  volumeSource,
   trendBias,
   ema50,
   spotPrice,
@@ -102,7 +108,9 @@ export const MetricCards: React.FC<Props> = ({
 
         <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl border border-sky-500/40 bg-sky-500/10 text-sky-300 text-xs font-mono font-semibold shadow-sm shadow-sky-500/5">
           <span className="text-base leading-none">📡</span>
-          <span>Live Feed: {feedLabel(dataSource ?? config.data_source)}</span>
+          <span>
+            Live Feed: {feedLabel(dataSource ?? config.data_source, volumeSource)}
+          </span>
         </div>
 
         {typeof ema50 === 'number' && ema50 > 0 && (
@@ -161,7 +169,7 @@ export const MetricCards: React.FC<Props> = ({
             </span>
           </div>
           <div className="text-xs text-neutral-500 mt-1">
-            Sniper scanner · M15 & H1 · {feedLabel(dataSource ?? config.data_source)}
+            Sniper scanner · M15 & H1 · {feedLabel(dataSource ?? config.data_source, volumeSource)}
           </div>
         </div>
 

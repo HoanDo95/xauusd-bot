@@ -24,6 +24,7 @@ pub(super) async fn get_recent_candles(State(state): State<AppState>) -> impl In
     let live_price = *state.live_price.read().await;
     let current_price = live_price.unwrap_or(last_closed_price);
     let active_data_source = state.active_data_source.read().await.clone();
+    let active_volume_source = state.active_volume_source.read().await.clone();
     let spot_price = *state.spot_price.read().await;
     let spot_basis = *state.spot_basis.read().await;
     let price_source = price_source_label(&active_data_source, spot_basis);
@@ -40,6 +41,7 @@ pub(super) async fn get_recent_candles(State(state): State<AppState>) -> impl In
         "currentPrice": current_price,
         "lastClosedPrice": last_closed_price,
         "dataSource": active_data_source,
+        "volumeSource": active_volume_source,
         "priceSource": price_source,
         "spotPrice": spot_price,
         "spotBasis": spot_basis,

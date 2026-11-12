@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if config.webhook_passphrase.trim().is_empty() {
         config.webhook_passphrase = env_webhook_passphrase;
     }
-    worker::migrate_ohlcv_source_to_binance(&mut config);
+    worker::normalize_data_source(&mut config);
 
     if config.telegram_bot_token.trim().is_empty() {
         warn!("🔐 Telegram token chưa cấu hình — dashboard sẽ không gửi được alert.");
@@ -69,8 +69,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // 3. OHLCV + volume luôn lấy từ Binance PAXGUSDT. TwelveData chỉ là giá spot
-    // tham chiếu để tự động căn basis PAXG → XAU/USD (time_series không có volume).
+    // 3. OHLCV theo `data_source`: Binance PAXGUSDT (mặc định, có volume) hoặc
+    // TwelveData XAU/USD + volume proxy PAXG. Spot /price chỉ dùng để căn basis PAXG.
     let market_feed = MarketDataFeed::new();
     let mut cached_spot: Option<(f64, Instant)> = None;
 
@@ -116,10 +116,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         initial_live_price
     );
 
-    // 3b. Bối cảnh đa khung D1/H4/H1 (read-only) — căn basis spot như nến tín hiệu.
-    let initial_htf =
-        worker::fetch_market_context(&market_feed, initial_spot_basis, config.broker_price_offset)
-            .await;
+    // 3b. Bối cảnh đa khung D1/H4/H1 (read-only) — cùng nguồn với nến tín hiệu.
+    let initial_htf = worker::fetch_market_context(
+        &market_feed,
+        &config.data_source,
+        initial_spot_basis,
+        config.broker_price_offset,
+    )
+    .await;
     let (initial_market_context, initial_h4_candles, initial_d1_candles) = match initial_htf {
         Some((context, h4, d1)) => (Some(context), h4, d1),
         None => (None, Vec::new(), Vec::new()),
@@ -162,6 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         market_feed: Arc::new(market_feed),
         live_price: Arc::new(RwLock::new(initial_live_price)),
         active_data_source: Arc::new(RwLock::new(initial_data_source)),
+        active_volume_source: Arc::new(RwLock::new("BINANCE_PAXG".to_string())),
         spot_price: Arc::new(RwLock::new(initial_spot_price)),
         spot_basis: Arc::new(RwLock::new(initial_spot_basis)),
         sent_session_alerts: Arc::new(RwLock::new(persisted.sent_session_alerts)),

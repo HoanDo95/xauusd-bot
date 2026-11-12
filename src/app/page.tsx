@@ -42,6 +42,7 @@ const DEFAULT_CONFIG: BotConfig = {
   min_risk_reward: 2.0,
   gold_sl_buffer_points: 10.0,
   volume_surge_multiplier: 1.5,
+  volume_filter_enabled: true,
   rejection_wick_ratio: 2.0,
   lookback_period: 25,
   volume_ma_period: 20,
@@ -97,6 +98,7 @@ export default function DashboardPage() {
   const [ema50, setEma50] = useState<number>(0);
   const [trendBias, setTrendBias] = useState<TrendBias>('NEUTRAL');
   const [dataSource, setDataSource] = useState<string>('BINANCE_PAXG');
+  const [volumeSource, setVolumeSource] = useState<string>('BINANCE_PAXG');
   const [spotPrice, setSpotPrice] = useState<number | null>(null);
   const [spotBasis, setSpotBasis] = useState<number | null>(null);
 
@@ -127,6 +129,7 @@ export default function DashboardPage() {
         if (typeof data.ema50 === 'number') setEma50(data.ema50);
         if (data.trendBias) setTrendBias(data.trendBias);
         if (data.dataSource) setDataSource(data.dataSource);
+        if (data.volumeSource) setVolumeSource(data.volumeSource);
         setSpotPrice(typeof data.spotPrice === 'number' ? data.spotPrice : null);
         setSpotBasis(typeof data.spotBasis === 'number' ? data.spotBasis : null);
         setVolumeDelta(data.volumeDelta ?? null);
@@ -319,6 +322,7 @@ export default function DashboardPage() {
           config={config}
           signalsToday={signalsToday}
           dataSource={dataSource}
+          volumeSource={volumeSource}
           trendBias={trendBias}
           ema50={ema50}
           spotPrice={spotPrice}

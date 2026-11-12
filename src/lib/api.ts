@@ -46,6 +46,7 @@ export interface HealthResponse {
   dailyQuotaReached: boolean;
   dataSource: string;
   dataSourceLabel: string;
+  volumeSource?: string;
   priceSource?: string;
   spotPrice?: number | null;
   spotBasis?: number | null;

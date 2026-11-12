@@ -84,6 +84,7 @@ export interface CandlesResponse {
   ema200?: number;
   trendBias?: TrendBias;
   dataSource?: string;
+  volumeSource?: string;
   priceSource?: string;
   spotPrice?: number | null;
   spotBasis?: number | null;
@@ -216,6 +217,8 @@ export interface BotConfig {
   /** Stop-loss buffer in gold dollars. New range: 5.0 – 25.0 (8–10 on M15, 15–20 on H1). */
   gold_sl_buffer_points: number;
   volume_surge_multiplier: number;
+  /** Volume Absorption filter. Default true; turn off when the feed has no volume. */
+  volume_filter_enabled: boolean;
   rejection_wick_ratio: number;
   lookback_period: number;
   volume_ma_period: number;

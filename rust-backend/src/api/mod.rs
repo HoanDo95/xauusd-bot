@@ -53,6 +53,8 @@ pub struct AppState {
     pub live_price: Arc<RwLock<Option<f64>>>,
     /// Nguồn dữ liệu thực tế đang hoạt động: TWELVEDATA / BINANCE_PAXG / FALLBACK_SEED.
     pub active_data_source: Arc<RwLock<String>>,
+    /// Nguồn volume thực tế: BINANCE_PAXG / BINANCE_PAXG_PROXY / NONE.
+    pub active_volume_source: Arc<RwLock<String>>,
     /// Giá spot XAU/USD tham chiếu gần nhất (TwelveData/gold-api.com, cache 300s).
     pub spot_price: Arc<RwLock<Option<f64>>>,
     /// Basis PAXG → spot đang áp dụng; None = chỉ dùng broker_price_offset thủ công.

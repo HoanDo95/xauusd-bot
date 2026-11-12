@@ -240,6 +240,19 @@ export const ConfigPanel: React.FC<Props> = ({
                 <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">x MA</span>
               </div>
               <span className="text-[11px] text-neutral-500">Lọc nhiễu thanh khoản yếu, tối thiểu 1.5x</span>
+              <label className="flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={formData.volume_filter_enabled ?? true}
+                  onChange={(e) =>
+                    setFormData({ ...formData, volume_filter_enabled: e.target.checked })
+                  }
+                  className="accent-amber-500 w-4 h-4 rounded cursor-pointer mt-0.5"
+                />
+                <span className="text-[11px] text-neutral-300 leading-snug">
+                  Bật lọc Volume Absorption (tắt nếu nguồn không có volume)
+                </span>
+              </label>
             </div>
 
             {/* Rejection Wick Ratio */}
@@ -358,11 +371,12 @@ export const ConfigPanel: React.FC<Props> = ({
               </label>
               <div className="w-full bg-sky-500/10 border border-sky-500/30 rounded-lg px-3 py-2 text-xs font-mono text-sky-300">
                 {formData.data_source === 'TWELVEDATA'
-                  ? '📡 TwelveData XAU/USD (manual OHLCV)'
+                  ? '📡 TwelveData XAU/USD + Binance PAXG volume proxy'
                   : '📡 Binance PAXG/USDT (OHLCV + Volume)'}
               </div>
               <span className="text-[11px] text-neutral-500">
-                OHLCV + volume khuyến nghị Binance; TwelveData không có volume nên chỉ dùng giá spot.
+                TwelveData XAU/USD cung cấp OHLC; volume lấy từ Binance PAXG proxy. Nếu proxy lỗi,
+                tắt bộ lọc Volume Absorption bên trên.
               </span>
             </div>
 
