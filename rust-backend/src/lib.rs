@@ -1,5 +1,6 @@
 pub mod analyzer;
 pub mod api;
+pub mod divergence_alerts;
 pub mod market_context;
 pub mod market_feed;
 pub mod models;

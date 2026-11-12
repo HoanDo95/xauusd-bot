@@ -375,6 +375,21 @@ pub struct BotConfig {
     /// Chế độ lọc: "EXTREME", "DIVERGENCE" hoặc "BOTH" (mặc định).
     #[serde(default = "default_rsi_mode")]
     pub rsi_mode: String,
+    /// Bật cảnh báo phân kỳ RSI độc lập (không phải tín hiệu vào lệnh, không tiêu hao quota).
+    #[serde(default = "default_true")]
+    pub divergence_alert_enabled: bool,
+    /// Bật cảnh báo phân kỳ RSI trên khung M15.
+    #[serde(default = "default_true")]
+    pub divergence_alert_m15: bool,
+    /// Bật cảnh báo phân kỳ RSI trên khung H1.
+    #[serde(default = "default_true")]
+    pub divergence_alert_h1: bool,
+    /// Bật cảnh báo phân kỳ RSI trên khung H4.
+    #[serde(default = "default_true")]
+    pub divergence_alert_h4: bool,
+    /// Số phút tối thiểu giữa hai cảnh báo cùng khung + cùng hướng (5..=1440, mặc định 60).
+    #[serde(default = "default_divergence_alert_cooldown")]
+    pub divergence_alert_cooldown_minutes: i64,
 }
 
 fn default_max_signals_per_day() -> usize {
@@ -457,6 +472,10 @@ fn default_rsi_mode() -> String {
     "BOTH".to_string()
 }
 
+fn default_divergence_alert_cooldown() -> i64 {
+    60
+}
+
 impl Default for BotConfig {
     fn default() -> Self {
         Self {
@@ -508,6 +527,11 @@ impl Default for BotConfig {
             rsi_divergence_lookback: default_rsi_divergence_lookback(),
             rsi_pivot_k: default_rsi_pivot_k(),
             rsi_mode: default_rsi_mode(),
+            divergence_alert_enabled: true,
+            divergence_alert_m15: true,
+            divergence_alert_h1: true,
+            divergence_alert_h4: true,
+            divergence_alert_cooldown_minutes: default_divergence_alert_cooldown(),
         }
     }
 }
@@ -595,6 +619,9 @@ impl BotConfig {
             _ => "BOTH",
         }
         .to_string();
+        // Boolean toggles keep their explicit value; only the cooldown is clamped.
+        self.divergence_alert_cooldown_minutes =
+            self.divergence_alert_cooldown_minutes.clamp(5, 1440);
 
         self.telegram_bot_token = self.telegram_bot_token.trim().to_string();
         self.telegram_chat_id = self.telegram_chat_id.trim().to_string();
@@ -1062,6 +1089,63 @@ mod tests {
         .sanitized();
         assert_eq!(non_finite.rsi_overbought, 70.0);
         assert_eq!(non_finite.rsi_oversold, 30.0);
+    }
+
+    #[test]
+    fn divergence_alert_defaults_true_and_are_backward_compatible() {
+        let defaults = BotConfig::default();
+        assert!(defaults.divergence_alert_enabled);
+        assert!(defaults.divergence_alert_m15);
+        assert!(defaults.divergence_alert_h1);
+        assert!(defaults.divergence_alert_h4);
+        assert_eq!(defaults.divergence_alert_cooldown_minutes, 60);
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        for key in [
+            "divergence_alert_enabled",
+            "divergence_alert_m15",
+            "divergence_alert_h1",
+            "divergence_alert_h4",
+            "divergence_alert_cooldown_minutes",
+        ] {
+            object.remove(key);
+        }
+
+        let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(config.divergence_alert_enabled, "alerts must default ON");
+        assert!(config.divergence_alert_m15);
+        assert!(config.divergence_alert_h1);
+        assert!(config.divergence_alert_h4);
+        assert_eq!(config.divergence_alert_cooldown_minutes, 60);
+    }
+
+    #[test]
+    fn sanitize_divergence_alert_cooldown_clamps_but_keeps_booleans() {
+        let too_low = BotConfig {
+            divergence_alert_enabled: false,
+            divergence_alert_m15: false,
+            divergence_alert_cooldown_minutes: 0,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert!(!too_low.divergence_alert_enabled);
+        assert!(!too_low.divergence_alert_m15);
+        assert_eq!(too_low.divergence_alert_cooldown_minutes, 5);
+
+        let too_high = BotConfig {
+            divergence_alert_cooldown_minutes: 99_999,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(too_high.divergence_alert_cooldown_minutes, 1440);
+
+        let valid = BotConfig {
+            divergence_alert_cooldown_minutes: 120,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(valid.divergence_alert_cooldown_minutes, 120);
     }
 }
 

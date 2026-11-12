@@ -35,6 +35,9 @@ pub struct TimeframeContext {
     pub nearest_support: Option<f64>,
     pub nearest_resistance: Option<f64>,
     pub candles: usize,
+    /// Timestamp (ms) của cây nến đóng cửa gần nhất; 0 khi chưa có nến.
+    #[serde(default)]
+    pub last_candle_timestamp: i64,
 }
 
 /// Toàn bộ bối cảnh đa khung D1/H4/H1 tại một thời điểm.
@@ -110,10 +113,12 @@ pub fn build_timeframe_context(timeframe: &str, candles: &[Candle]) -> Timeframe
             nearest_support: None,
             nearest_resistance: None,
             candles: 0,
+            last_candle_timestamp: 0,
         };
     }
 
     let close = candles.last().map(|candle| candle.close).unwrap_or(0.0);
+    let last_candle_timestamp = candles.last().map(|candle| candle.timestamp).unwrap_or(0);
     let ema50 = GoldMarketAnalyzer::calculate_ema(candles, 50);
     let ema200 = GoldMarketAnalyzer::calculate_ema(candles, 200);
     let bias = if close > ema50 && ema50 > ema200 {
@@ -137,6 +142,7 @@ pub fn build_timeframe_context(timeframe: &str, candles: &[Candle]) -> Timeframe
         nearest_support,
         nearest_resistance,
         candles: candles.len(),
+        last_candle_timestamp,
     }
 }
 
@@ -416,6 +422,7 @@ mod tests {
             nearest_support: Some(2380.0),
             nearest_resistance: Some(2420.0),
             candles: 200,
+            last_candle_timestamp: BASE_TS,
         }
     }
 
@@ -447,6 +454,7 @@ mod tests {
         assert_eq!(context.nearest_support, None);
         assert_eq!(context.nearest_resistance, None);
         assert_eq!(context.candles, 0);
+        assert_eq!(context.last_candle_timestamp, 0);
     }
 
     #[test]
@@ -458,6 +466,17 @@ mod tests {
         assert!(context.ema50 > context.ema200);
         assert!(context.close > context.ema50);
         assert_eq!(context.candles, 220);
+    }
+
+    #[test]
+    fn timeframe_context_tracks_last_closed_candle_timestamp() {
+        let candles = trend_candles(30, 2000.0, 1.0);
+        let expected = candles.last().expect("last candle").timestamp;
+
+        let context = build_timeframe_context("H1", &candles);
+
+        assert_eq!(context.last_candle_timestamp, expected);
+        assert_eq!(context.last_candle_timestamp, BASE_TS + 29 * STEP_MS);
     }
 
     #[test]
@@ -643,6 +662,7 @@ mod tests {
             "nearest_support",
             "nearest_resistance",
             "candles",
+            "last_candle_timestamp",
         ] {
             assert!(
                 payload["d1"].get(key).is_some(),
@@ -652,6 +672,27 @@ mod tests {
         }
         assert_eq!(payload["h4"]["bias"], "NEUTRAL");
         assert_eq!(payload["d1"]["candles"], 0);
+        assert_eq!(payload["d1"]["last_candle_timestamp"], 0);
+    }
+
+    #[test]
+    fn legacy_timeframe_context_without_timestamp_deserializes_to_zero() {
+        let legacy = serde_json::json!({
+            "timeframe": "H4",
+            "bias": "NEUTRAL",
+            "close": 2400.0,
+            "ema50": 2380.0,
+            "ema200": 2360.0,
+            "channel_position": 0.5,
+            "atr14": 10.0,
+            "nearest_support": null,
+            "nearest_resistance": null,
+            "candles": 200
+        });
+
+        let context: TimeframeContext =
+            serde_json::from_value(legacy).expect("legacy context without timestamp");
+        assert_eq!(context.last_candle_timestamp, 0);
     }
 
     #[test]

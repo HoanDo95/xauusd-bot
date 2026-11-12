@@ -177,6 +177,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         persist_lock: Arc::new(tokio::sync::Mutex::new(())),
         last_scan_at: Arc::new(RwLock::new(None)),
         spot_basis_at: Arc::new(RwLock::new(initial_spot_basis.map(|_| chrono::Utc::now()))),
+        divergence_alerts: Arc::new(RwLock::new(Vec::new())),
+        divergence_last_sent: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
 
     // 6. Background Scanner 24/7 — quét mỗi 60 giây
@@ -190,6 +192,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 8. Session Pre-Alert Worker — briefing thông tin trước phiên Âu/Mỹ, mỗi 30 giây.
     worker::spawn_session_alerts(state.clone());
+
+    // 8b. Divergence Alerts Worker — cảnh báo phân kỳ RSI M15/H1/H4, mỗi 60 giây.
+    // Độc lập hoàn toàn với tín hiệu/quota; không lưu vào `signals`.
+    gold_signal_bot::divergence_alerts::spawn_divergence_worker(state.clone());
 
     // 9. CORS + Router
     // Same-origin dashboard không cần CORS; chỉ mở cho các origin được cấu hình.

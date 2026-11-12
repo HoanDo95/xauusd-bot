@@ -1,3 +1,4 @@
+use crate::divergence_alerts::DivergenceAlert;
 use crate::market_context::{htf_allows_signal, MarketContext};
 use crate::market_feed::MarketDataFeed;
 use crate::models::{BotConfig, Candle, DailyMacroReport, Signal};
@@ -12,13 +13,17 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tracing::warn;
 
 mod ai;
 mod config;
+mod divergence;
 mod health;
+mod live;
 mod market;
 mod news;
 mod signals;
@@ -28,7 +33,9 @@ mod webhooks;
 
 use ai::ai_review_signal;
 use config::{calculate_lot, get_config, update_config};
+use divergence::get_divergence_alerts;
 use health::health_check;
+use live::get_live_view;
 use market::{get_htf_candles, get_market_context, get_recent_candles};
 use news::{get_latest_macro_bias, get_news_calendar, trigger_daily_macro_cron};
 use signals::{get_all_signals, get_stats};
@@ -78,6 +85,10 @@ pub struct AppState {
     pub last_scan_at: Arc<RwLock<Option<chrono::DateTime<chrono::Utc>>>>,
     /// Thời điểm áp dụng spot basis hợp lệ gần nhất.
     pub spot_basis_at: Arc<RwLock<Option<chrono::DateTime<chrono::Utc>>>>,
+    /// Cảnh báo phân kỳ RSI gần nhất (tối đa 50, chỉ giữ trong RAM).
+    pub divergence_alerts: Arc<RwLock<Vec<DivergenceAlert>>>,
+    /// Cooldown gửi cảnh báo theo khóa "{timeframe}:{direction}" (chỉ trong RAM).
+    pub divergence_last_sent: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
 }
 
 /// Ghi snapshot Config + Signals + DailyReport + session alert dedup xuống đĩa
@@ -136,6 +147,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/simulate-setup", post(simulate_setup))
         // Review thử tín hiệu bằng AI Risk Officer (không gửi Telegram, không tiêu hao quota)
         .route("/api/ai/review-signal", post(ai_review_signal))
+        // Cảnh báo phân kỳ RSI độc lập (advisory, không phải entry, không tiêu hao quota)
+        .route("/api/divergence-alerts", get(get_divergence_alerts))
+        // Preview read-only: không gửi Telegram, không lưu tín hiệu, không tiêu hao quota
+        .route("/api/live-view", get(get_live_view))
         .with_state(state)
 }
 

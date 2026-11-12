@@ -1,3 +1,4 @@
+use crate::divergence_alerts::DivergenceAlert;
 use crate::models::{EntryType, Signal, SignalStatus, SignalType, SupportResistanceZone};
 use crate::session_alerts::SessionBriefing;
 use reqwest::Client;
@@ -200,6 +201,71 @@ impl TelegramNotifier {
             Err(err) => {
                 let err = err.without_url();
                 error!("❌ Không thể kết nối tới Telegram API: {}", err);
+                Err(format!("Network Error: {}", err))
+            }
+        }
+    }
+
+    /// Định dạng cảnh báo phân kỳ RSI — advisory, không chứa entry/SL/TP.
+    pub fn format_divergence_message(alert: &DivergenceAlert) -> String {
+        let direction = Self::escape_html(&alert.direction.trim().to_uppercase());
+        let timeframe = Self::escape_html(&alert.timeframe);
+        let symbol = Self::escape_html(&alert.symbol);
+        let note = Self::escape_html(&alert.note);
+
+        format!(
+            "⚠️ <b>CẢNH BÁO PHÂN KỲ {}</b> · {}\n\
+             {} · Giá {:.2}\n\
+             RSI(14): {:.1}\n\
+             {}\n\
+             Đây là cảnh báo động lượng, KHÔNG phải điểm entry.",
+            direction, timeframe, symbol, alert.price, alert.rsi, note
+        )
+    }
+
+    /// Gửi cảnh báo phân kỳ RSI. Token/Chat trống = simulator thành công (Ok(1001)).
+    /// Hàm này không đụng tới quota hay danh sách tín hiệu giao dịch.
+    pub async fn send_divergence_alert(&self, alert: &DivergenceAlert) -> Result<i64, String> {
+        if self.bot_token.is_empty() || self.chat_id.is_empty() {
+            info!(
+                "⚠️ [Telegram Simulator] Divergence alert {} {} (chưa cấu hình token)",
+                alert.timeframe, alert.direction
+            );
+            return Ok(1001);
+        }
+
+        let message_text = Self::format_divergence_message(alert);
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
+        let payload = json!({
+            "chat_id": self.chat_id,
+            "text": message_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true
+        });
+
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let body: serde_json::Value =
+                        resp.json().await.map_err(|e| e.without_url().to_string())?;
+                    let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
+                    info!(
+                        "✅ Đã gửi cảnh báo phân kỳ {} {} tới Telegram! Message ID: {}",
+                        alert.timeframe, alert.direction, msg_id
+                    );
+                    Ok(msg_id)
+                } else {
+                    let err_text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Lỗi không xác định".into());
+                    error!("❌ Telegram divergence API lỗi: {}", err_text);
+                    Err(format!("Telegram API Error: {}", err_text))
+                }
+            }
+            Err(err) => {
+                let err = err.without_url();
+                error!("❌ Không thể gửi cảnh báo phân kỳ tới Telegram: {}", err);
                 Err(format!("Network Error: {}", err))
             }
         }
@@ -739,5 +805,52 @@ mod tests {
 
         let message = TelegramNotifier::format_session_alert(&briefing);
         assert!(message.contains("Không có tin đỏ trong 12h tới"));
+    }
+
+    fn sample_divergence_alert() -> DivergenceAlert {
+        DivergenceAlert {
+            id: "DIV-H4-Bearish-1".to_string(),
+            symbol: "XAU/USD".to_string(),
+            timeframe: "H4".to_string(),
+            direction: "Bearish".to_string(),
+            price: 2412.34,
+            rsi: 68.2,
+            candle_timestamp: 1_700_000_000_000,
+            detected_at: Utc::now(),
+            note: "Giá tạo đỉnh cao hơn nhưng RSI tạo đỉnh thấp hơn.".to_string(),
+        }
+    }
+
+    #[test]
+    fn format_divergence_message_is_advisory_and_has_no_entry_levels() {
+        let message = TelegramNotifier::format_divergence_message(&sample_divergence_alert());
+
+        assert!(message.contains("CẢNH BÁO PHÂN KỲ BEARISH"));
+        assert!(message.contains("· H4"));
+        assert!(message.contains("XAU/USD · Giá 2412.34"));
+        assert!(message.contains("RSI(14): 68.2"));
+        assert!(message.contains("Giá tạo đỉnh cao hơn nhưng RSI tạo đỉnh thấp hơn."));
+        assert!(message.contains("KHÔNG phải điểm entry"));
+        assert!(!message.contains("Entry ("));
+        assert!(!message.contains("Stop Loss"));
+        assert!(!message.contains("Take Profit"));
+    }
+
+    #[test]
+    fn format_divergence_message_escapes_dynamic_fields() {
+        let mut alert = sample_divergence_alert();
+        alert.symbol = "XAU<USD>&".to_string();
+        alert.timeframe = "H4<script>".to_string();
+        alert.direction = "Bear<ish>".to_string();
+        alert.note = "a < b & c > d".to_string();
+
+        let message = TelegramNotifier::format_divergence_message(&alert);
+
+        assert!(message.contains("BEAR&lt;ISH&gt;"));
+        assert!(message.contains("H4&lt;script&gt;"));
+        assert!(message.contains("XAU&lt;USD&gt;&amp;"));
+        assert!(message.contains("a &lt; b &amp; c &gt; d"));
+        assert!(!message.contains("<script>"));
+        assert!(!message.contains("Bear<ish>"));
     }
 }

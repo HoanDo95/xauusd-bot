@@ -38,6 +38,8 @@ export interface TimeframeContext {
   nearest_support: number | null;
   nearest_resistance: number | null;
   candles: number;
+  /** Timestamp (ms) of the latest closed candle in this timeframe. */
+  last_candle_timestamp?: number;
 }
 
 /** Point-in-time Wilder RSI + divergence label. */
@@ -60,6 +62,72 @@ export interface MarketContext {
   rsi_h1?: RsiSnapshot | null;
   /** H4 RSI context (fixed 70/30 semantics). */
   rsi_h4?: RsiSnapshot | null;
+}
+
+/**
+ * Standalone RSI divergence alert. Advisory momentum warning only:
+ * it never contains entry/SL/TP and never consumes the Sniper quota.
+ */
+export interface DivergenceAlert {
+  id: string;
+  symbol: string;
+  timeframe: 'M15' | 'H1' | 'H4' | string;
+  direction: 'Bullish' | 'Bearish' | string;
+  price: number;
+  rsi: number;
+  /** Timestamp (ms) of the HTF/M15 candle the alert refers to. */
+  candle_timestamp: number;
+  detected_at: string;
+  /** Short Vietnamese explanation. */
+  note: string;
+}
+
+/** GET /api/divergence-alerts response. */
+export interface DivergenceAlertsResponse {
+  enabled: boolean;
+  timeframes: string[];
+  /** Newest first, capped at 50 by the backend. */
+  alerts: DivergenceAlert[];
+}
+
+/**
+ * Filter checks evaluated by GET /api/live-view. Display-only: the preview never
+ * applies them, so a setup can still show a blocked filter that the scanner would skip.
+ */
+export interface LiveViewFilters {
+  htf_ok: boolean;
+  htf_reason: string;
+  rsi_ok: boolean;
+  rsi_reason: string;
+  delta_ok: boolean;
+  delta_reason: string;
+  /** Config flag only — the preview never calls the AI review. */
+  ai_review_enabled: boolean;
+  rsi_value?: number | null;
+  rsi_state?: string | null;
+  rsi_divergence?: string | null;
+  delta_ratio?: number | null;
+  cvd?: number | null;
+}
+
+/**
+ * GET /api/live-view response. Read-only preview: never sends Telegram, stores a
+ * signal, or consumes the daily Sniper quota.
+ */
+export interface LiveViewResponse {
+  status: 'setup' | 'no_setup' | 'no_data';
+  signal?: Signal;
+  filters?: LiveViewFilters;
+  message?: string;
+  /** Present for no_data: number of candles currently buffered. */
+  candles?: number;
+  /** Present for no_setup: timestamp (ms) of the last closed candle. */
+  candle_timestamp?: number;
+  /** Present for no_setup: close price of the last closed candle. */
+  last_close?: number;
+  source?: string;
+  volumeSource?: string;
+  generated_at?: string;
 }
 
 /** Aggressive taker flow of the latest M15 candle + CVD over the lookback window. */
@@ -288,6 +356,16 @@ export interface BotConfig {
   rsi_pivot_k?: number;
   /** EXTREME | DIVERGENCE | BOTH. */
   rsi_mode?: 'EXTREME' | 'DIVERGENCE' | 'BOTH';
+  /** Standalone RSI divergence alerts. Default true; independent of trade signals/quota. */
+  divergence_alert_enabled?: boolean;
+  /** Alert on M15 divergence (default true). */
+  divergence_alert_m15?: boolean;
+  /** Alert on H1 divergence (default true). */
+  divergence_alert_h1?: boolean;
+  /** Alert on H4 divergence (default true). */
+  divergence_alert_h4?: boolean;
+  /** Minimum minutes between alerts for the same timeframe + direction (5–1440, default 60). */
+  divergence_alert_cooldown_minutes?: number;
 }
 
 export interface DailyMacroReport {

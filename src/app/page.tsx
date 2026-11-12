@@ -4,6 +4,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   BotConfig,
   Candle,
+  DivergenceAlertsResponse,
+  LiveViewResponse,
   MarketContext,
   NewsCalendarData,
   Signal,
@@ -14,6 +16,8 @@ import {
 import {
   fetchCandles,
   fetchConfig,
+  fetchDivergenceAlerts,
+  fetchLiveView,
   fetchMarketContext,
   fetchNewsCalendar,
   fetchSignals,
@@ -26,6 +30,8 @@ import {
 import { Header, type DashboardTab } from '../components/Header';
 import { MetricCards } from '../components/MetricCards';
 import { MacroContextCard } from '../components/MacroContextCard';
+import { LiveSetupCard } from '../components/LiveSetupCard';
+import { DivergenceAlertsCard } from '../components/DivergenceAlertsCard';
 import { HtfChartCard } from '../components/HtfChartCard';
 import { CandlestickChart } from '../components/CandlestickChart';
 import { SimulateToolbar } from '../components/SimulateToolbar';
@@ -85,6 +91,11 @@ const DEFAULT_CONFIG: BotConfig = {
   rsi_divergence_lookback: 40,
   rsi_pivot_k: 2,
   rsi_mode: 'BOTH',
+  divergence_alert_enabled: true,
+  divergence_alert_m15: true,
+  divergence_alert_h1: true,
+  divergence_alert_h4: true,
+  divergence_alert_cooldown_minutes: 60,
 };
 
 export default function DashboardPage() {
@@ -111,9 +122,17 @@ export default function DashboardPage() {
   const [newsData, setNewsData] = useState<NewsCalendarData | null>(null);
   const [marketContext, setMarketContext] = useState<MarketContext | null>(null);
   const [volumeDelta, setVolumeDelta] = useState<VolumeDeltaSnapshot | null>(null);
+  const [divergenceAlerts, setDivergenceAlerts] = useState<DivergenceAlertsResponse>({
+    enabled: false,
+    timeframes: [],
+    alerts: [],
+  });
+  const [liveView, setLiveView] = useState<LiveViewResponse | null>(null);
 
   const [config, setConfig] = useState<BotConfig>(DEFAULT_CONFIG);
+  const [isConfigLoaded, setIsConfigLoaded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isTogglingScanner, setIsTogglingScanner] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   // Fetch live closed candles, dynamic S/R and EMA trend.
@@ -163,6 +182,8 @@ export default function DashboardPage() {
       if (data.max_signals_per_day) setMaxSignalsPerDay(data.max_signals_per_day);
     } catch (err) {
       console.error('Lỗi tải cấu hình:', err);
+    } finally {
+      setIsConfigLoaded(true);
     }
   }, []);
 
@@ -190,6 +211,26 @@ export default function DashboardPage() {
     }
   }, []);
 
+  // Fetch standalone RSI divergence alerts (advisory; no quota impact).
+  const loadDivergenceAlerts = useCallback(async () => {
+    try {
+      const data = await fetchDivergenceAlerts();
+      setDivergenceAlerts(data);
+    } catch (err) {
+      console.error('Lỗi tải cảnh báo phân kỳ RSI:', err);
+    }
+  }, []);
+
+  // Fetch the read-only live setup preview (never sends Telegram or spends quota).
+  const loadLiveView = useCallback(async () => {
+    try {
+      const data = await fetchLiveView();
+      setLiveView(data);
+    } catch (err) {
+      console.error('Lỗi tải live view:', err);
+    }
+  }, []);
+
   useEffect(() => {
     void loadCandles();
     void loadSignals();
@@ -207,6 +248,29 @@ export default function DashboardPage() {
 
     return () => clearInterval(timer);
   }, [loadCandles, loadSignals, loadConfig, loadNewsCalendar, loadMarketContext]);
+
+  // Divergence alerts refresh every 30 seconds, independent of trade signals.
+  useEffect(() => {
+    void loadDivergenceAlerts();
+    const timer = setInterval(() => {
+      void loadDivergenceAlerts();
+    }, 30_000);
+
+    return () => clearInterval(timer);
+  }, [loadDivergenceAlerts]);
+
+  // Live setup preview polls every 30s only while the scanner is active.
+  // Pausing stops the polling; the endpoint itself stays read-only and callable.
+  useEffect(() => {
+    if (!isConfigLoaded || !config.is_active) return;
+
+    void loadLiveView();
+    const timer = setInterval(() => {
+      void loadLiveView();
+    }, 30_000);
+
+    return () => clearInterval(timer);
+  }, [isConfigLoaded, config.is_active, loadLiveView]);
 
   // Handle a manual simulation (never consumes the daily Sniper quota).
   const handleSimulate = async (type: SimulateSetupType) => {
@@ -246,6 +310,31 @@ export default function DashboardPage() {
       await Promise.all([loadSignals(), loadNewsCalendar()]);
     } catch (err) {
       console.error('Lỗi lưu cấu hình:', err);
+    }
+  };
+
+  // Start/Stop the scanner via the existing `is_active` config flag.
+  // The backend scanner skips signal generation while paused; this only toggles
+  // the flag and refreshes the read-only live view.
+  const handleToggleScanner = async () => {
+    const nextActive = !config.is_active;
+    setIsTogglingScanner(true);
+    try {
+      const data = await saveConfig({ ...config, is_active: nextActive });
+      const savedConfig = data.config || { ...config, is_active: nextActive };
+      setConfig({ ...DEFAULT_CONFIG, ...savedConfig });
+      if (savedConfig.timeframe) setSelectedTimeframe(savedConfig.timeframe);
+      if (savedConfig.max_signals_per_day) {
+        setMaxSignalsPerDay(savedConfig.max_signals_per_day);
+      }
+      setStatusMessage(nextActive ? 'Scanner đã bật' : 'Scanner đã tắt');
+      await loadLiveView();
+    } catch (err) {
+      setStatusMessage(
+        `Lỗi bật/tắt scanner: ${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      setIsTogglingScanner(false);
     }
   };
 
@@ -332,8 +421,29 @@ export default function DashboardPage() {
         {/* Tab 1: Live Trading Desk & Candlestick Monitor */}
         {currentTab === 'monitor' && (
           <div className="flex flex-col gap-6">
+            {/* Live setup preview + Start/Stop scanner (read-only, quota-free) */}
+            <LiveSetupCard
+              config={config}
+              liveView={liveView}
+              isTogglingScanner={isTogglingScanner}
+              onToggleScanner={() => {
+                void handleToggleScanner();
+              }}
+              onRefresh={() => {
+                void loadLiveView();
+              }}
+            />
+
             {/* Read-only D1/H4/H1 "view toàn cảnh" context */}
             <MacroContextCard context={marketContext} volumeDelta={volumeDelta} />
+
+            {/* Standalone RSI divergence alerts — advisory, never an entry */}
+            <DivergenceAlertsCard
+              context={marketContext}
+              enabled={divergenceAlerts.enabled}
+              timeframes={divergenceAlerts.timeframes}
+              alerts={divergenceAlerts.alerts}
+            />
 
             {/* Closed H4 candles — context only, never an entry trigger */}
             <HtfChartCard />

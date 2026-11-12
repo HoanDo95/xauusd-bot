@@ -4,7 +4,9 @@ import type {
   Candle,
   CandlesResponse,
   DailyMacroReport,
+  DivergenceAlertsResponse,
   EconomicEvent,
+  LiveViewResponse,
   MacroBias,
   MarketContext,
   NewsCalendarData,
@@ -62,6 +64,8 @@ export interface HealthResponse {
   volumeDeltaFilterEnabled?: boolean;
   /** Optional hard RSI gate state (default false). */
   rsiFilterEnabled?: boolean;
+  /** Standalone RSI divergence alert worker state (default true). */
+  divergenceAlertEnabled?: boolean;
   /** True only when the live feed is fresh and not a fallback seed. */
   feedOk?: boolean;
   /** Age of the last scanner tick in seconds (null before the first scan). */
@@ -182,6 +186,50 @@ export async function fetchHtfCandles(
     timeframe: payload.timeframe || timeframe,
     candles: Array.isArray(payload.candles) ? payload.candles : [],
   };
+}
+
+/**
+ * GET /api/divergence-alerts — standalone RSI divergence warnings.
+ * The Express dev fallback has no endpoint; resolve to a safe empty payload.
+ */
+export async function fetchDivergenceAlerts(): Promise<DivergenceAlertsResponse> {
+  const empty: DivergenceAlertsResponse = { enabled: false, timeframes: [], alerts: [] };
+  try {
+    const res = await fetch('/api/divergence-alerts');
+    if (!res.ok) return empty;
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) return empty;
+    const payload = (await res.json()) as Partial<DivergenceAlertsResponse>;
+    return {
+      enabled: payload.enabled === true,
+      timeframes: Array.isArray(payload.timeframes) ? payload.timeframes : [],
+      alerts: Array.isArray(payload.alerts) ? payload.alerts : [],
+    };
+  } catch {
+    return empty;
+  }
+}
+
+/**
+ * GET /api/live-view — read-only preview of the current scanner setup.
+ * Never sends Telegram, stores a signal, or consumes the daily quota.
+ * The Express dev fallback has no endpoint; resolve to a safe no-data payload.
+ */
+export async function fetchLiveView(): Promise<LiveViewResponse> {
+  const unavailable: LiveViewResponse = {
+    status: 'no_data',
+    message: 'Live view chưa sẵn sàng từ backend.',
+    candles: 0,
+  };
+  try {
+    const res = await fetch('/api/live-view');
+    if (!res.ok) return unavailable;
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) return unavailable;
+    return (await res.json()) as LiveViewResponse;
+  } catch {
+    return unavailable;
+  }
 }
 
 /** GET /api/signals — signal history plus today's Sniper quota counters. */
