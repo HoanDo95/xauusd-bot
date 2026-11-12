@@ -6,6 +6,7 @@ import {
   Candle,
   DivergenceAlertsResponse,
   LiveViewResponse,
+  MacroFlowResponse,
   MarketContext,
   NewsCalendarData,
   Signal,
@@ -18,6 +19,7 @@ import {
   fetchConfig,
   fetchDivergenceAlerts,
   fetchLiveView,
+  fetchMacroFlow,
   fetchMarketContext,
   fetchNewsCalendar,
   fetchSignals,
@@ -30,6 +32,7 @@ import {
 import { Header, type DashboardTab } from '../components/Header';
 import { MetricCards } from '../components/MetricCards';
 import { MacroContextCard } from '../components/MacroContextCard';
+import { MacroFlowCard } from '../components/MacroFlowCard';
 import { LiveSetupCard } from '../components/LiveSetupCard';
 import { DivergenceAlertsCard } from '../components/DivergenceAlertsCard';
 import { HtfChartCard } from '../components/HtfChartCard';
@@ -96,6 +99,7 @@ const DEFAULT_CONFIG: BotConfig = {
   divergence_alert_h1: true,
   divergence_alert_h4: true,
   divergence_alert_cooldown_minutes: 60,
+  macro_flow_enabled: true,
 };
 
 export default function DashboardPage() {
@@ -128,6 +132,7 @@ export default function DashboardPage() {
     alerts: [],
   });
   const [liveView, setLiveView] = useState<LiveViewResponse | null>(null);
+  const [macroFlow, setMacroFlow] = useState<MacroFlowResponse | null>(null);
 
   const [config, setConfig] = useState<BotConfig>(DEFAULT_CONFIG);
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
@@ -231,6 +236,16 @@ export default function DashboardPage() {
     }
   }, []);
 
+  // Fetch the read-only macro/flow snapshot (FRED/Yahoo/CFTC; no quota impact).
+  const loadMacroFlow = useCallback(async () => {
+    try {
+      const data = await fetchMacroFlow();
+      setMacroFlow(data);
+    } catch (err) {
+      console.error('Lỗi tải Macro & Flow:', err);
+    }
+  }, []);
+
   useEffect(() => {
     void loadCandles();
     void loadSignals();
@@ -271,6 +286,16 @@ export default function DashboardPage() {
 
     return () => clearInterval(timer);
   }, [isConfigLoaded, config.is_active, loadLiveView]);
+
+  // Macro & Flow is independent of the scanner; refresh once a minute.
+  useEffect(() => {
+    void loadMacroFlow();
+    const timer = setInterval(() => {
+      void loadMacroFlow();
+    }, 60_000);
+
+    return () => clearInterval(timer);
+  }, [loadMacroFlow]);
 
   // Handle a manual simulation (never consumes the daily Sniper quota).
   const handleSimulate = async (type: SimulateSetupType) => {
@@ -433,6 +458,9 @@ export default function DashboardPage() {
                 void loadLiveView();
               }}
             />
+
+            {/* Read-only macro/flow context (FRED/Yahoo/CFTC) */}
+            <MacroFlowCard data={macroFlow} enabled={config.macro_flow_enabled ?? true} />
 
             {/* Read-only D1/H4/H1 "view toàn cảnh" context */}
             <MacroContextCard context={marketContext} volumeDelta={volumeDelta} />

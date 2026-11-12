@@ -390,6 +390,9 @@ pub struct BotConfig {
     /// Số phút tối thiểu giữa hai cảnh báo cùng khung + cùng hướng (5..=1440, mặc định 60).
     #[serde(default = "default_divergence_alert_cooldown")]
     pub divergence_alert_cooldown_minutes: i64,
+    /// Bật dashboard Macro & Flow read-only (FRED/Yahoo/CFTC). Mặc định true.
+    #[serde(default = "default_true")]
+    pub macro_flow_enabled: bool,
 }
 
 fn default_max_signals_per_day() -> usize {
@@ -532,6 +535,7 @@ impl Default for BotConfig {
             divergence_alert_h1: true,
             divergence_alert_h4: true,
             divergence_alert_cooldown_minutes: default_divergence_alert_cooldown(),
+            macro_flow_enabled: true,
         }
     }
 }
@@ -1118,6 +1122,28 @@ mod tests {
         assert!(config.divergence_alert_h1);
         assert!(config.divergence_alert_h4);
         assert_eq!(config.divergence_alert_cooldown_minutes, 60);
+    }
+
+    #[test]
+    fn macro_flow_defaults_true_and_is_backward_compatible() {
+        let defaults = BotConfig::default();
+        assert!(defaults.macro_flow_enabled);
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        value
+            .as_object_mut()
+            .expect("config object")
+            .remove("macro_flow_enabled");
+
+        let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(config.macro_flow_enabled, "macro flow must default ON");
+
+        let disabled = BotConfig {
+            macro_flow_enabled: false,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert!(!disabled.macro_flow_enabled);
     }
 
     #[test]

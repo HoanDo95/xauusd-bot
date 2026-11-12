@@ -1,5 +1,6 @@
 use axum::http::HeaderValue;
 use gold_signal_bot::api::{create_router, AppState};
+use gold_signal_bot::macro_flow;
 use gold_signal_bot::market_feed::MarketDataFeed;
 use gold_signal_bot::news_filter::{NewsFilterConfig, NewsFilterService};
 use gold_signal_bot::scheduler::DailyScheduler;
@@ -179,6 +180,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         spot_basis_at: Arc::new(RwLock::new(initial_spot_basis.map(|_| chrono::Utc::now()))),
         divergence_alerts: Arc::new(RwLock::new(Vec::new())),
         divergence_last_sent: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        macro_flow: Arc::new(RwLock::new(None)),
+        macro_flow_updated_at: Arc::new(RwLock::new(None)),
     };
 
     // 6. Background Scanner 24/7 — quét mỗi 60 giây
@@ -196,6 +199,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 8b. Divergence Alerts Worker — cảnh báo phân kỳ RSI M15/H1/H4, mỗi 60 giây.
     // Độc lập hoàn toàn với tín hiệu/quota; không lưu vào `signals`.
     gold_signal_bot::divergence_alerts::spawn_divergence_worker(state.clone());
+
+    // 8c. Macro & Flow Worker — FRED/Yahoo/CFTC read-only, refresh mỗi 15 phút.
+    macro_flow::spawn_macro_flow_worker(state.clone());
 
     // 9. CORS + Router
     // Same-origin dashboard không cần CORS; chỉ mở cho các origin được cấu hình.

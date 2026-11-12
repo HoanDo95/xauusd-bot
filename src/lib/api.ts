@@ -8,6 +8,7 @@ import type {
   EconomicEvent,
   LiveViewResponse,
   MacroBias,
+  MacroFlowResponse,
   MarketContext,
   NewsCalendarData,
   Signal,
@@ -207,6 +208,27 @@ export async function fetchDivergenceAlerts(): Promise<DivergenceAlertsResponse>
     };
   } catch {
     return empty;
+  }
+}
+
+/**
+ * GET /api/macro-flow — read-only macro/flow snapshot.
+ * The Express dev fallback has no endpoint; resolve to a safe loading state.
+ */
+export async function fetchMacroFlow(): Promise<MacroFlowResponse> {
+  try {
+    const res = await fetch('/api/macro-flow');
+    if (!res.ok) return { status: 'loading' };
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) return { status: 'loading' };
+    const payload = (await res.json()) as Partial<MacroFlowResponse>;
+    if (payload.status === 'ok' && payload.snapshot) {
+      return { status: 'ok', snapshot: payload.snapshot };
+    }
+    if (payload.status === 'disabled') return { status: 'disabled' };
+    return { status: 'loading' };
+  } catch {
+    return { status: 'loading' };
   }
 }
 

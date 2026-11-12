@@ -90,6 +90,66 @@ export interface DivergenceAlertsResponse {
   alerts: DivergenceAlert[];
 }
 
+/** One read-only macro/flow metric from FRED or Yahoo Finance. */
+export interface MacroMetric {
+  key: string;
+  label: string;
+  value: number | null;
+  unit: string;
+  change_1d: number | null;
+  change_5d: number | null;
+  change_5d_pct: number | null;
+  volume_ratio_20d: number | null;
+  date: string | null;
+  source: string;
+  note: string;
+}
+
+/** CFTC legacy futures-only COMEX gold positioning snapshot. */
+export interface CotSnapshot {
+  report_date: string;
+  open_interest: number;
+  noncommercial_long: number;
+  noncommercial_short: number;
+  noncommercial_net: number;
+  noncommercial_net_change: number;
+  net_pct_oi: number;
+  open_interest_change: number;
+}
+
+/** Transparent macro/flow scorecard; context only, never an entry. */
+export interface MacroFlowScorecard {
+  macro_bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL' | string;
+  confidence: number;
+  score: number;
+  direction: 'UP' | 'DOWN' | 'MIXED' | string;
+  driver: string;
+  flow_quality: 'CONFIRMING' | 'DIVERGING' | 'MIXED' | 'INSUFFICIENT' | string;
+  risk_regime: 'RISK_ON' | 'RISK_OFF' | 'NEUTRAL' | string;
+  rate_regime: 'EASING' | 'TIGHTENING' | 'NEUTRAL' | string;
+  usd_regime: 'STRONG' | 'WEAK' | 'NEUTRAL' | string;
+  vol_regime: 'HIGH' | 'NORMAL' | 'LOW' | string;
+  notes: string[];
+}
+
+/** GET /api/macro-flow snapshot (read-only). */
+export interface MacroFlowSnapshot {
+  updated_at: string;
+  fred_ok: boolean;
+  yahoo_ok: boolean;
+  cot_ok: boolean;
+  metrics: MacroMetric[];
+  cot: CotSnapshot | null;
+  scorecard: MacroFlowScorecard;
+  warnings: string[];
+  sources: string[];
+}
+
+export interface MacroFlowResponse {
+  status: 'ok' | 'loading' | 'disabled';
+  snapshot?: MacroFlowSnapshot;
+}
+
 /**
  * Filter checks evaluated by GET /api/live-view. Display-only: the preview never
  * applies them, so a setup can still show a blocked filter that the scanner would skip.
@@ -366,6 +426,8 @@ export interface BotConfig {
   divergence_alert_h4?: boolean;
   /** Minimum minutes between alerts for the same timeframe + direction (5–1440, default 60). */
   divergence_alert_cooldown_minutes?: number;
+  /** Read-only Macro & Flow dashboard (FRED/Yahoo/CFTC). Default true; never affects signals. */
+  macro_flow_enabled?: boolean;
 }
 
 export interface DailyMacroReport {

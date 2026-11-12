@@ -41,6 +41,8 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
     let spot_basis = *state.spot_basis.read().await;
     let last_scan_at = *state.last_scan_at.read().await;
     let spot_basis_at = *state.spot_basis_at.read().await;
+    let macro_flow = state.macro_flow.read().await.clone();
+    let macro_flow_updated_at = *state.macro_flow_updated_at.read().await;
     let price_source = price_source_label(&active_data_source, spot_basis);
     let now = Utc::now();
 
@@ -69,6 +71,16 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         .and(spot_basis_at)
         .map(|at| (now - at).num_seconds().max(0));
     let feed_ok = feed_is_ok(&active_data_source, last_scan_at, now);
+    let macro_flow_ok = macro_flow.is_some()
+        && macro_flow_updated_at
+            .map(|at| (now - at).num_seconds() <= 30 * 60)
+            .unwrap_or(false);
+    let macro_flow_bias = macro_flow
+        .as_ref()
+        .map(|snapshot| snapshot.scorecard.macro_bias.clone());
+    let macro_flow_confidence = macro_flow
+        .as_ref()
+        .map(|snapshot| snapshot.scorecard.confidence);
     let status = if feed_ok { "healthy" } else { "degraded" };
 
     Json(json!({
@@ -92,6 +104,11 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "volumeDeltaFilterEnabled": config.volume_delta_filter_enabled,
         "rsiFilterEnabled": config.rsi_filter_enabled,
         "divergenceAlertEnabled": config.divergence_alert_enabled,
+        "macroFlowEnabled": config.macro_flow_enabled,
+        "macroFlowOk": macro_flow_ok,
+        "macroFlowUpdatedAt": macro_flow_updated_at.map(|at| at.to_rfc3339()),
+        "macroFlowBias": macro_flow_bias,
+        "macroFlowConfidence": macro_flow_confidence,
         "dataSource": active_data_source,
         "volumeSource": active_volume_source,
         "priceSource": price_source,

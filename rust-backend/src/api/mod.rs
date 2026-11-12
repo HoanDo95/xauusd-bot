@@ -1,4 +1,5 @@
 use crate::divergence_alerts::DivergenceAlert;
+use crate::macro_flow::MacroFlowSnapshot;
 use crate::market_context::{htf_allows_signal, MarketContext};
 use crate::market_feed::MarketDataFeed;
 use crate::models::{BotConfig, Candle, DailyMacroReport, Signal};
@@ -24,6 +25,7 @@ mod config;
 mod divergence;
 mod health;
 mod live;
+mod macro_flow;
 mod market;
 mod news;
 mod signals;
@@ -36,6 +38,7 @@ use config::{calculate_lot, get_config, update_config};
 use divergence::get_divergence_alerts;
 use health::health_check;
 use live::get_live_view;
+use macro_flow::get_macro_flow;
 use market::{get_htf_candles, get_market_context, get_recent_candles};
 use news::{get_latest_macro_bias, get_news_calendar, trigger_daily_macro_cron};
 use signals::{get_all_signals, get_stats};
@@ -89,6 +92,10 @@ pub struct AppState {
     pub divergence_alerts: Arc<RwLock<Vec<DivergenceAlert>>>,
     /// Cooldown gửi cảnh báo theo khóa "{timeframe}:{direction}" (chỉ trong RAM).
     pub divergence_last_sent: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
+    /// Snapshot Macro & Flow read-only (FRED/Yahoo/CFTC), không tham gia tín hiệu.
+    pub macro_flow: Arc<RwLock<Option<MacroFlowSnapshot>>>,
+    /// Thời điểm snapshot Macro & Flow được làm mới gần nhất.
+    pub macro_flow_updated_at: Arc<RwLock<Option<DateTime<Utc>>>>,
 }
 
 /// Ghi snapshot Config + Signals + DailyReport + session alert dedup xuống đĩa
@@ -151,6 +158,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/divergence-alerts", get(get_divergence_alerts))
         // Preview read-only: không gửi Telegram, không lưu tín hiệu, không tiêu hao quota
         .route("/api/live-view", get(get_live_view))
+        // Macro & Flow read-only: bối cảnh vĩ mô/dòng tiền, không phải entry
+        .route("/api/macro-flow", get(get_macro_flow))
         .with_state(state)
 }
 
