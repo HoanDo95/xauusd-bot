@@ -130,6 +130,12 @@ interface BotConfig {
   early_entry_enabled: boolean;
   /** Minimum scenario confidence (50–100) for early approval. Default 90. */
   early_entry_min_confidence: number;
+  /** Block breakout/breakdown entries after an exhausted daily move. Default true. */
+  anti_chase_filter_enabled: boolean;
+  /** Daily change percent that activates anti-chase. Default -2.0. */
+  anti_chase_daily_change_pct: number;
+  /** RSI H1 extreme that activates anti-chase. Default 25.0. */
+  anti_chase_rsi_h1: number;
   /** Optional Volume Delta/CVD gate. Default false — no behavior change. */
   volume_delta_filter_enabled: boolean;
   volume_delta_mode: 'ALIGN' | 'DIVERGENCE' | 'BOTH';
@@ -282,6 +288,9 @@ const DEFAULT_CONFIG: BotConfig = {
   ai_signal_review_fail_open: true,
   early_entry_enabled: true,
   early_entry_min_confidence: 90,
+  anti_chase_filter_enabled: true,
+  anti_chase_daily_change_pct: -2.0,
+  anti_chase_rsi_h1: 25.0,
   volume_delta_filter_enabled: false,
   volume_delta_mode: 'BOTH',
   volume_delta_lookback: 20,
@@ -470,6 +479,23 @@ function normalizeConfig(input: Partial<BotConfig>): BotConfig {
       ),
       50,
       100
+    ),
+    anti_chase_filter_enabled: booleanOr(
+      input.anti_chase_filter_enabled,
+      base.anti_chase_filter_enabled
+    ),
+    anti_chase_daily_change_pct: clamp(
+      numeric(
+        input.anti_chase_daily_change_pct,
+        base.anti_chase_daily_change_pct
+      ),
+      -10,
+      -0.5
+    ),
+    anti_chase_rsi_h1: clamp(
+      numeric(input.anti_chase_rsi_h1, base.anti_chase_rsi_h1),
+      10,
+      40
     ),
     volume_delta_filter_enabled: booleanOr(
       input.volume_delta_filter_enabled,

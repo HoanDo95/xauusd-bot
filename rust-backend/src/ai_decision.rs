@@ -98,7 +98,13 @@ fn format_scenario_block(scenarios: Option<&ScenarioResponse>) -> String {
         );
     }
 
-    response
+    let daily_change = response
+        .market
+        .as_ref()
+        .and_then(|market| market.daily_change_pct)
+        .map(|value| format!("daily_change={value:+.2}%"))
+        .unwrap_or_else(|| "daily_change=n/a".to_string());
+    let scenarios = response
         .scenarios
         .iter()
         .map(|scenario| {
@@ -122,7 +128,8 @@ fn format_scenario_block(scenarios: Option<&ScenarioResponse>) -> String {
             )
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    format!("{daily_change}\n{scenarios}")
 }
 
 fn format_macro_metric(snapshot: &MacroFlowSnapshot, key: &str, decimals: usize) -> String {
@@ -224,8 +231,8 @@ fn format_delta_block(delta: Option<&DeltaSnapshot>, volume_source: &str) -> Str
     format!(
         "Volume Delta/CVD: delta={:.2} delta_ratio={:.2} cvd={:.2} cvd_change={:.2} \
         (buy_volume={:.2}, sell_volume={:.2})\n\
-        Volume source: {} — PAXG proxy caveat: this is not true XAU/USD volume; \
-        treat it as relative flow only, never as absolute institutional volume.",
+        Volume source: {} — PAXG proxy caveat: this is not true XAU/USD volume. \
+        Weight it below 10%, treat it as relative flow only, and never use it as the main reason for BUY/SELL.",
         delta.delta,
         delta.delta_ratio,
         delta.cvd,
@@ -344,7 +351,7 @@ pub(crate) fn build_decision_prompt(
     delta: Option<&DeltaSnapshot>,
     events: &[EconomicEvent],
     now: DateTime<Utc>,
-    early_entry_min_confidence: u8,
+    config: &BotConfig,
 ) -> String {
     let vn_now = now + Duration::hours(7);
     let session_label = if (13..=23).contains(&vn_now.hour()) {
@@ -365,13 +372,18 @@ pub(crate) fn build_decision_prompt(
     let scenario_block = format_scenario_block(scenarios);
     let candidate_block = format_candidate_block(candidate);
     let events_text = format_upcoming_events(events, now);
+    let early_entry_min_confidence = config.early_entry_min_confidence;
+    let anti_chase_daily_change_pct = config.anti_chase_daily_change_pct;
+    let anti_chase_rsi_h1 = config.anti_chase_rsi_h1;
+    let anti_chase_bullish_change_pct = -config.anti_chase_daily_change_pct;
+    let anti_chase_bullish_rsi_h1 = 100.0 - config.anti_chase_rsi_h1;
 
     format!(
         "You are the Chief Market Analyst (AI) for XAU/USD. You are the PRIMARY decision layer: \
         decide BUY, SELL or STANDBY after reviewing the full collected brief below. \
         Deterministic code retains every hard safety rule.\n\n\
         Current price: {price} | price_source={price_source} | volume_source={volume_source}\n\
-        Volume caveat: Binance PAXG volume is a proxy, not true XAU/USD volume; use it as relative flow only.\n\n\
+        Volume caveat: Binance PAXG volume is a weak proxy, not true XAU/USD volume. Weight it below 10%; never use it as the main reason for BUY/SELL. If volume is the main reason, choose STANDBY.\n\n\
         D1/H4/H1 context (read-only):\n{context_block}\n\n\
         {macro_block}\n\n\
         RSI context (Wilder, closed candles):\n{rsi_block}\n\n\
@@ -385,6 +397,9 @@ pub(crate) fn build_decision_prompt(
         - The AI never sets live SL/TP and must not invent prices. Choose a provided candidate/scenario or STANDBY.\n\
         - A valid PRIMARY/ALTERNATE scenario with confidence >= {early_entry_min_confidence}% is actionable even if its M15 trigger has not printed yet. Do not demand 100% confirmation; 90% confluence is enough when the structure and macro/HTF context agree.\n\
         - For an early entry, approve the scenario and use its provided entry/SL/TP levels. The entry is a pending order at the scenario trigger, not a market chase.\n\
+        - Anti-chase: if daily change <= {anti_chase_daily_change_pct:.2}% and (RSI H1 < {anti_chase_rsi_h1:.1} or M15 Bullish divergence), do not approve a bearish breakout/breakdown; prefer the pullback/rejection scenario or STANDBY. Mirror for bullish: daily change >= {anti_chase_bullish_change_pct:.2}% and (RSI H1 > {anti_chase_bullish_rsi_h1:.1} or M15 Bearish divergence).\n\
+        - Confidence cap: a scenario may reach >=90% only when macro/D1/H4 agree, RSI H1 is 30-65, and there is no opposite M15 divergence. Otherwise treat the setup as 85/75/65 and do not claim 90%+.\n\
+        - Scenario confidence is a confluence/readiness score, not a win probability. Do not describe it as a probability of profit.\n\
         - If the candidate and scenarios disagree, prefer STANDBY unless one setup clearly has better structure and R:R.\n\
         - If data is missing, contradictory, or the setup is counter-macro without exceptional confluence, prefer STANDBY.\n\
         - STANDBY only when no valid scenario reaches the threshold, the setup is invalid, or a hard invalidation/conflicting event is present.\n\
@@ -547,15 +562,7 @@ pub async fn review_market_decision(
 
     let now = Utc::now();
     let prompt = build_decision_prompt(
-        candidate,
-        context,
-        macro_flow,
-        scenarios,
-        rsi,
-        delta,
-        events,
-        now,
-        config.early_entry_min_confidence,
+        candidate, context, macro_flow, scenarios, rsi, delta, events, now, config,
     );
     let content = post_ai_chat_completion(
         &settings,
@@ -759,6 +766,9 @@ mod tests {
                 rsi_state: "Neutral".to_string(),
                 macro_bias: "BEARISH".to_string(),
                 macro_confidence: 95,
+                daily_change_pct: None,
+                rsi_h1: None,
+                rsi_h4: None,
             }),
             scenarios: vec![
                 scenario("PRIMARY", true),
@@ -845,7 +855,7 @@ mod tests {
             Some(&delta),
             &events,
             now,
-            90,
+            &BotConfig::default(),
         );
 
         assert!(prompt.contains("Chief Market Analyst"));
@@ -870,6 +880,10 @@ mod tests {
         assert!(prompt.contains("Hard rules enforced by code"));
         assert!(prompt.contains("confidence >= 90%"));
         assert!(prompt.contains("pending order"));
+        assert!(prompt.contains("Anti-chase"));
+        assert!(prompt.contains("Confidence cap"));
+        assert!(prompt.contains("Weight it below 10%"));
+        assert!(prompt.contains("confluence/readiness score"));
         assert!(prompt.contains("\"selected_scenario\""));
         assert!(prompt.contains("\"macro_flow_alignment\""));
     }
@@ -880,7 +894,17 @@ mod tests {
             .with_ymd_and_hms(2026, 11, 12, 2, 0, 0)
             .single()
             .expect("valid timestamp");
-        let prompt = build_decision_prompt(None, None, None, None, None, None, &[], now, 90);
+        let prompt = build_decision_prompt(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            now,
+            &BotConfig::default(),
+        );
 
         assert!(prompt.contains("Current price: n/a"));
         assert!(prompt.contains("D1/H4/H1 context unavailable"));
@@ -1015,6 +1039,7 @@ mod tests {
             timeframe: "H4".to_string(),
             bias: "BULLISH".to_string(),
             close: 2700.0,
+            prev_close: 2690.0,
             ema50: 2680.0,
             ema200: 2650.0,
             channel_position: 0.8,

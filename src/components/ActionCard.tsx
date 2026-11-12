@@ -501,7 +501,7 @@ export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
               {primary.valid ? 'VALID' : 'NOT VALID'}
             </span>
             <span className="text-[10px] font-mono text-neutral-500">
-              Confidence {primary.confidence}%
+              Confluence {primary.confidence}%
             </span>
           </div>
 

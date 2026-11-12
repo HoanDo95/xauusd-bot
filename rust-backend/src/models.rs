@@ -361,6 +361,16 @@ pub struct BotConfig {
     /// Entry vẫn là mức trigger của scenario (lệnh chờ), không phải market entry.
     #[serde(default = "default_early_entry_min_confidence")]
     pub early_entry_min_confidence: u8,
+    /// Chặn breakout/breakdown khi giá đã chạy quá biên độ ngày và RSI H1
+    /// quá cực đoan (anti-chase). Mặc định BẬT.
+    #[serde(default = "default_true")]
+    pub anti_chase_filter_enabled: bool,
+    /// Daily change % để kích hoạt anti-chase (mặc định -2.0, clamp -10..=-0.5).
+    #[serde(default = "default_anti_chase_daily_change_pct")]
+    pub anti_chase_daily_change_pct: f64,
+    /// RSI H1 cực đoan để kích hoạt anti-chase (mặc định 25.0, clamp 10..=40).
+    #[serde(default = "default_anti_chase_rsi_h1")]
+    pub anti_chase_rsi_h1: f64,
     /// Bật bộ lọc Volume Delta/CVD trước khi phát tín hiệu thật. Mặc định TẮT.
     #[serde(default)]
     pub volume_delta_filter_enabled: bool,
@@ -479,6 +489,14 @@ fn default_early_entry_min_confidence() -> u8 {
     90
 }
 
+fn default_anti_chase_daily_change_pct() -> f64 {
+    -2.0
+}
+
+fn default_anti_chase_rsi_h1() -> f64 {
+    25.0
+}
+
 fn default_volume_delta_mode() -> String {
     "BOTH".to_string()
 }
@@ -570,6 +588,9 @@ impl Default for BotConfig {
             ai_signal_review_fail_open: true,
             early_entry_enabled: true,
             early_entry_min_confidence: default_early_entry_min_confidence(),
+            anti_chase_filter_enabled: true,
+            anti_chase_daily_change_pct: default_anti_chase_daily_change_pct(),
+            anti_chase_rsi_h1: default_anti_chase_rsi_h1(),
             volume_delta_filter_enabled: false,
             volume_delta_mode: default_volume_delta_mode(),
             volume_delta_lookback: default_volume_delta_lookback(),
@@ -659,6 +680,9 @@ impl BotConfig {
         self.ai_signal_review_min_confidence =
             finite_or(self.ai_signal_review_min_confidence, 0.75).clamp(0.5, 1.0);
         self.early_entry_min_confidence = self.early_entry_min_confidence.clamp(50, 100);
+        self.anti_chase_daily_change_pct =
+            finite_or(self.anti_chase_daily_change_pct, -2.0).clamp(-10.0, -0.5);
+        self.anti_chase_rsi_h1 = finite_or(self.anti_chase_rsi_h1, 25.0).clamp(10.0, 40.0);
 
         self.volume_delta_mode = match self.volume_delta_mode.trim().to_uppercase().as_str() {
             "ALIGN" => "ALIGN",
@@ -1003,6 +1027,34 @@ mod tests {
         }
         .sanitized();
         assert_eq!(clamped_high.early_entry_min_confidence, 100);
+    }
+
+    #[test]
+    fn anti_chase_defaults_and_sanitizes() {
+        let defaults = BotConfig::default();
+        assert!(defaults.anti_chase_filter_enabled);
+        assert_eq!(defaults.anti_chase_daily_change_pct, -2.0);
+        assert_eq!(defaults.anti_chase_rsi_h1, 25.0);
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        object.remove("anti_chase_filter_enabled");
+        object.remove("anti_chase_daily_change_pct");
+        object.remove("anti_chase_rsi_h1");
+
+        let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(config.anti_chase_filter_enabled);
+        assert_eq!(config.anti_chase_daily_change_pct, -2.0);
+        assert_eq!(config.anti_chase_rsi_h1, 25.0);
+
+        let clamped = BotConfig {
+            anti_chase_daily_change_pct: -99.0,
+            anti_chase_rsi_h1: 99.0,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(clamped.anti_chase_daily_change_pct, -10.0);
+        assert_eq!(clamped.anti_chase_rsi_h1, 40.0);
     }
 
     #[test]

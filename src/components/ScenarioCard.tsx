@@ -121,7 +121,7 @@ const MarketStrip: React.FC<{ market: ScenarioMarket; currentPrice: number | nul
   market,
   currentPrice,
 }) => (
-  <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 bg-neutral-950/60 border border-neutral-800 rounded-lg p-3 font-mono">
+  <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3 bg-neutral-950/60 border border-neutral-800 rounded-lg p-3 font-mono">
     <Metric label="Giá hiện tại" value={price(currentPrice)} />
     <div className="flex flex-col gap-1">
       <span className="text-[10px] uppercase tracking-wider text-neutral-500">D1 / H4 / H1</span>
@@ -132,6 +132,15 @@ const MarketStrip: React.FC<{ market: ScenarioMarket; currentPrice: number | nul
       </div>
     </div>
     <Metric label="ATR" value={`$${market.h4_atr.toFixed(2)}`} />
+    <Metric
+      label="Daily change"
+      value={
+        typeof market.daily_change_pct === 'number'
+          ? `${market.daily_change_pct >= 0 ? '+' : ''}${market.daily_change_pct.toFixed(2)}%`
+          : '—'
+      }
+      hint="vs prev D1 close"
+    />
     <div className="flex flex-col gap-0.5">
       <span className="text-[10px] uppercase tracking-wider text-neutral-500">S/R gần</span>
       <span className="text-[11px] font-bold tabular-nums text-emerald-400">
@@ -145,6 +154,13 @@ const MarketStrip: React.FC<{ market: ScenarioMarket; currentPrice: number | nul
       label="RSI M15"
       value={typeof market.rsi_m15 === 'number' ? market.rsi_m15.toFixed(1) : '—'}
       hint={market.rsi_state || '—'}
+    />
+    <Metric
+      label="RSI H1 / H4"
+      value={`${
+        typeof market.rsi_h1 === 'number' ? market.rsi_h1.toFixed(1) : '—'
+      } / ${typeof market.rsi_h4 === 'number' ? market.rsi_h4.toFixed(1) : '—'}`}
+      hint="H1 / H4 context"
     />
     <Metric
       label="Macro"
@@ -236,7 +252,7 @@ const ScenarioTile: React.FC<{ scenario: Scenario; role: ScenarioRole }> = ({
 
       <div className="flex flex-col gap-1">
         <div className="flex items-center justify-between text-[9px] font-mono text-neutral-500">
-          <span>Confidence</span>
+          <span>Confluence</span>
           <span className="text-neutral-300">{confidence}%</span>
         </div>
         <div className="h-1.5 w-full rounded-full bg-neutral-800 overflow-hidden">
@@ -310,7 +326,7 @@ export const ScenarioCard: React.FC<Props> = ({ data, onRefresh, onSendTelegram 
           </div>
           <p className="text-[11px] text-neutral-500">
             PRIMARY là kịch bản ưu tiên, ALTERNATE là kịch bản đối chiếu, WATCHLIST là các kịch
-            bản phụ. Xếp hạng minh bạch từ confidence, VALID, macro/flow, H4 bias, R:R và khoảng
+            bản phụ. Xếp hạng minh bạch từ confluence, VALID, macro/flow, H4 bias, R:R và khoảng
             cách giá. Không phải entry đã xác nhận.
           </p>
         </div>

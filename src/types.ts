@@ -254,6 +254,9 @@ export interface ScenarioMarket {
   nearest_resistance: number | null;
   rsi_m15: number | null;
   rsi_state: string;
+  rsi_h1?: number | null;
+  rsi_h4?: number | null;
+  daily_change_pct?: number | null;
   macro_bias: string;
   macro_confidence: number;
 }
@@ -566,6 +569,12 @@ export interface BotConfig {
   early_entry_enabled?: boolean;
   /** Minimum scenario confidence (50–100) for early approval. Default 90. */
   early_entry_min_confidence?: number;
+  /** Block breakout/breakdown entries after an exhausted daily move. Default true. */
+  anti_chase_filter_enabled?: boolean;
+  /** Daily change percent that activates anti-chase. Default -2.0. */
+  anti_chase_daily_change_pct?: number;
+  /** RSI H1 extreme that activates anti-chase. Default 25.0. */
+  anti_chase_rsi_h1?: number;
   /** Optional Volume Delta/CVD gate. Default OFF — no behavior change when false. */
   volume_delta_filter_enabled: boolean;
   /** ALIGN = aggressive flow on trade side; DIVERGENCE = price/CVD divergence; BOTH = OR. */

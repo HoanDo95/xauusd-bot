@@ -321,13 +321,28 @@ in **Sniper & Risk Config**, not in env.
   (default `90`) can become a pending signal after AI approval. Entry stays at
   the scenario trigger (`BREAKOUT`/`LIMIT`, `PENDING`), never a market chase.
   Set `early_entry_enabled=false` to disable.
+- **Anti-chase:** daily change `<= anti_chase_daily_change_pct` (default `-2.0%`)
+  plus RSI H1 `< anti_chase_rsi_h1` (default `25`) or M15 Bullish divergence
+  invalidates bearish breakout/breakdown and promotes the pullback/rejection.
+  The bullish mirror uses `+2.0%` and RSI H1 `>75`. Set
+  `anti_chase_filter_enabled=false` to disable.
+- **Confidence cap:** `>=90%` only when macro/D1/H4 agree, RSI H1 is `30–65`,
+  and there is no opposite M15 divergence; otherwise cap at 85/75/65. The score
+  is confluence/readiness, not win probability.
+- **Structural SL:** breakout/breakdown SL is anchored beyond the recent M15
+  swing high/low plus a buffer; if risk exceeds 45 points the scenario is
+  invalid, not tightened into the retest zone.
+- **PAXG volume:** weak proxy, weighted below 10%, never the main reason for a
+  signal. True tick volume requires a paid OANDA/FXCM/CME feed.
 - **VETO_ONLY:** AI may only approve, contradict or return `STANDBY`.
   `ai_signal_review_fail_open` (default `true`) applies only here; `false`
   makes it fail-closed.
 - Dashboard controls: `ai_review_mode`, `ai_signal_review_min_confidence`
   (`0.5–1.0`, default `0.75`), `ai_signal_review_fail_open` (VETO_ONLY only),
-  `early_entry_enabled` (default `true`) and `early_entry_min_confidence`
-  (`50–100`, default `90`).
+  `early_entry_enabled` (default `true`), `early_entry_min_confidence`
+  (`50–100`, default `90`), `anti_chase_filter_enabled` (default `true`),
+  `anti_chase_daily_change_pct` (default `-2.0`) and `anti_chase_rsi_h1`
+  (default `25`).
 - One decision/review per real signal attempt. **Unlimited signals/day by
   default**; enable `daily_quota_enabled` to cap real signals at
   `max_signals_per_day` (1–5). Multiple signals still each pass AI Decision +

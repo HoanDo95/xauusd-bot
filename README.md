@@ -194,6 +194,22 @@ every hard risk rule; the AI chooses the direction:
   (default `90`). The AI still has to approve `BUY`/`SELL`. The entry remains the
   scenario trigger (`BREAKOUT`/`LIMIT`, shown as `PENDING`), never a market
   chase. Set `early_entry_enabled=false` to disable this path.
+- **Anti-chase filter (default ON):** if the daily change is at or below
+  `anti_chase_daily_change_pct` (default `-2.0%`) and RSI H1 is below
+  `anti_chase_rsi_h1` (default `25`) or M15 has a Bullish divergence, bearish
+  breakout/breakdown scenarios are invalidated and the pullback/rejection
+  scenario is promoted. The bullish mirror uses `+2.0%` and RSI H1 `>75`.
+- **Confidence cap:** a scenario may reach `>=90%` only when macro/D1/H4 agree,
+  RSI H1 is `30–65`, and there is no opposite M15 divergence. Otherwise the
+  confluence score is capped at 85/75/65. This score is **not** a win
+  probability.
+- **Structural SL:** breakout/breakdown SL is anchored beyond the recent M15
+  swing high/low plus a structural buffer. If the structural SL is wider than
+  the 45-point maximum risk, the scenario is invalid rather than tightened into
+  the retest zone.
+- **PAXG volume is a weak proxy:** it is weighted below 10% in the AI brief and
+  never used as the main reason for a signal. True XAU/USD tick volume requires
+  a paid OANDA/FXCM/CME feed.
 - One AI decision call per real signal attempt. Multiple signals per day are
   possible by default; each still goes through AI Decision + hard risk +
   session/news + per-candle dedup. Simulated setups never call the AI and never

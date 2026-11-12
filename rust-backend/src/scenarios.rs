@@ -1,8 +1,8 @@
 use crate::analyzer::GoldMarketAnalyzer;
 use crate::macro_flow::{align_signal_with_macro_flow, MacroFlowSnapshot};
 use crate::market_context::MarketContext;
-use crate::models::{BotConfig, Candle, SignalType};
-use crate::rsi::rsi_snapshot;
+use crate::models::{BotConfig, Candle, EntryType, SignalType};
+use crate::rsi::{rsi_snapshot, RsiDivergence};
 use crate::signal_validation::validate_signal_levels;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -104,6 +104,15 @@ pub struct ScenarioMarket {
     pub rsi_state: String,
     pub macro_bias: String,
     pub macro_confidence: u8,
+    /// Current-day change vs previous D1 close, in percent. None when unknown.
+    #[serde(default)]
+    pub daily_change_pct: Option<f64>,
+    /// RSI H1 context, when available.
+    #[serde(default)]
+    pub rsi_h1: Option<f64>,
+    /// RSI H4 context, when available.
+    #[serde(default)]
+    pub rsi_h4: Option<f64>,
 }
 
 /// GET /api/scenarios response. Pure snapshot; no Telegram, quota or persistence.
@@ -157,9 +166,14 @@ struct ScenarioInputs<'a> {
     config: &'a BotConfig,
     price: f64,
     atr: f64,
+    d1_bias: &'a str,
     h4_bias: &'a str,
     macro_bias: &'a str,
     rsi_value: Option<f64>,
+    rsi_h1: Option<f64>,
+    rsi_h4: Option<f64>,
+    m15_divergence: RsiDivergence,
+    daily_change_pct: Option<f64>,
     macro_flow: Option<&'a MacroFlowSnapshot>,
 }
 
@@ -224,6 +238,8 @@ pub fn build_scenarios(
     let atr = effective_atr(candles, context);
     let breakout_buffer = (atr * 0.25).max(BREAKOUT_BUFFER_MIN);
     let sl_buffer = (atr * 0.50).max(SL_BUFFER_MIN);
+    let swing_high = recent_swing_high(candles, STRUCTURE_LOOKBACK);
+    let swing_low = recent_swing_low(candles, STRUCTURE_LOOKBACK);
 
     let rsi = rsi_snapshot(
         candles,
@@ -237,11 +253,16 @@ pub fn build_scenarios(
     let h4_bias = timeframe_bias(context.map(|context| &context.h4));
     let h1_bias = timeframe_bias(context.map(|context| &context.h1));
     let d1_bias = timeframe_bias(context.map(|context| &context.d1));
+    let daily_change_pct = context.and_then(|context| {
+        let prev_close = context.d1.prev_close;
+        (prev_close.is_finite() && prev_close > 0.0)
+            .then(|| round2((price - prev_close) / prev_close * 100.0))
+    });
 
     let market = ScenarioMarket {
         h4_bias: h4_bias.clone(),
         h1_bias,
-        d1_bias,
+        d1_bias: d1_bias.clone(),
         h4_atr: round2(atr),
         nearest_support: nearest_support.map(round2),
         nearest_resistance: nearest_resistance.map(round2),
@@ -249,15 +270,31 @@ pub fn build_scenarios(
         rsi_state: rsi.state,
         macro_bias: macro_bias.clone(),
         macro_confidence,
+        daily_change_pct,
+        rsi_h1: context
+            .and_then(|context| context.rsi_h1.as_ref())
+            .and_then(|snapshot| snapshot.value),
+        rsi_h4: context
+            .and_then(|context| context.rsi_h4.as_ref())
+            .and_then(|snapshot| snapshot.value),
     };
 
     let inputs = ScenarioInputs {
         config,
         price,
         atr,
+        d1_bias: &d1_bias,
         h4_bias: &h4_bias,
         macro_bias: &macro_bias,
         rsi_value: rsi.value,
+        rsi_h1: context
+            .and_then(|context| context.rsi_h1.as_ref())
+            .and_then(|snapshot| snapshot.value),
+        rsi_h4: context
+            .and_then(|context| context.rsi_h4.as_ref())
+            .and_then(|snapshot| snapshot.value),
+        m15_divergence: rsi.divergence,
+        daily_change_pct,
         macro_flow,
     };
 
@@ -270,6 +307,7 @@ pub fn build_scenarios(
             nearest_resistance,
             &resistance_levels,
             config.min_risk_reward,
+            swing_low,
         ),
         bearish_breakdown_draft(
             price,
@@ -279,6 +317,7 @@ pub fn build_scenarios(
             nearest_support,
             &support_levels,
             config.min_risk_reward,
+            swing_high,
         ),
         bullish_bounce_draft(
             price,
@@ -300,10 +339,11 @@ pub fn build_scenarios(
         ),
     ];
 
-    let scenarios = drafts
+    let mut scenarios: Vec<Scenario> = drafts
         .into_iter()
         .map(|draft| finalize_scenario(draft, &inputs))
         .collect();
+    apply_anti_chase_filter(&mut scenarios, &inputs);
     let scenarios = rank_scenarios(scenarios);
 
     ScenarioResponse {
@@ -330,6 +370,40 @@ fn min_tp1_reward(risk: f64, min_risk_reward: f64) -> f64 {
     risk * min_rr.max(2.0) + 0.01
 }
 
+/// Number of closed M15 candles used for the structural swing anchor.
+const STRUCTURE_LOOKBACK: usize = 20;
+
+fn recent_swing_high(candles: &[Candle], lookback: usize) -> Option<f64> {
+    if candles.len() < 2 {
+        return None;
+    }
+    let end = candles.len() - 1;
+    let start = end.saturating_sub(lookback);
+    candles[start..end]
+        .iter()
+        .map(|candle| candle.high)
+        .filter(|value| value.is_finite())
+        .reduce(f64::max)
+}
+
+fn recent_swing_low(candles: &[Candle], lookback: usize) -> Option<f64> {
+    if candles.len() < 2 {
+        return None;
+    }
+    let end = candles.len() - 1;
+    let start = end.saturating_sub(lookback);
+    candles[start..end]
+        .iter()
+        .map(|candle| candle.low)
+        .filter(|value| value.is_finite())
+        .reduce(f64::min)
+}
+
+fn structural_buffer(atr: f64) -> f64 {
+    (atr * 0.10).max(3.0)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn bullish_breakout_draft(
     price: f64,
     atr: f64,
@@ -338,17 +412,22 @@ fn bullish_breakout_draft(
     nearest_resistance: Option<f64>,
     resistance_levels: &[f64],
     min_risk_reward: f64,
+    swing_low: Option<f64>,
 ) -> ScenarioDraft {
     let trigger = round2(
         nearest_resistance
             .map(|level| level + breakout_buffer)
             .unwrap_or(price + atr),
     );
-    let stop_loss = round2(
+    let atr_stop_loss = round2(
         nearest_resistance
             .map(|level| level - sl_buffer)
             .unwrap_or(trigger - 2.0 * atr),
     );
+    let stop_loss = swing_low
+        .map(|low| round2(low - structural_buffer(atr)))
+        .map(|structural| structural.min(atr_stop_loss))
+        .unwrap_or(atr_stop_loss);
     let risk = (trigger - stop_loss).abs();
     let tp1_reward = min_tp1_reward(risk, min_risk_reward);
     let take_profit_1 = round2(
@@ -399,6 +478,7 @@ fn bullish_breakout_draft(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn bearish_breakdown_draft(
     price: f64,
     atr: f64,
@@ -407,17 +487,22 @@ fn bearish_breakdown_draft(
     nearest_support: Option<f64>,
     support_levels: &[f64],
     min_risk_reward: f64,
+    swing_high: Option<f64>,
 ) -> ScenarioDraft {
     let trigger = round2(
         nearest_support
             .map(|level| level - breakout_buffer)
             .unwrap_or(price - atr),
     );
-    let stop_loss = round2(
+    let atr_stop_loss = round2(
         nearest_support
             .map(|level| level + sl_buffer)
             .unwrap_or(trigger + 2.0 * atr),
     );
+    let stop_loss = swing_high
+        .map(|high| round2(high + structural_buffer(atr)))
+        .map(|structural| structural.max(atr_stop_loss))
+        .unwrap_or(atr_stop_loss);
     let risk = (stop_loss - trigger).abs();
     let tp1_reward = min_tp1_reward(risk, min_risk_reward);
     let take_profit_1 = round2(
@@ -814,6 +899,104 @@ fn biases_are_opposite(left: &str, right: &str) -> bool {
     )
 }
 
+fn anti_chase_active(inputs: &ScenarioInputs<'_>, bias: &str) -> bool {
+    if !inputs.config.anti_chase_filter_enabled {
+        return false;
+    }
+    let Some(daily_change_pct) = inputs.daily_change_pct else {
+        return false;
+    };
+    let rsi_h1_extreme = inputs.rsi_h1.is_some_and(|value| match bias {
+        "BEARISH" => value < inputs.config.anti_chase_rsi_h1,
+        "BULLISH" => value > 100.0 - inputs.config.anti_chase_rsi_h1,
+        _ => false,
+    });
+    match bias {
+        "BEARISH" => {
+            daily_change_pct <= inputs.config.anti_chase_daily_change_pct
+                && (rsi_h1_extreme || inputs.m15_divergence == RsiDivergence::Bullish)
+        }
+        "BULLISH" => {
+            daily_change_pct >= -inputs.config.anti_chase_daily_change_pct
+                && (rsi_h1_extreme || inputs.m15_divergence == RsiDivergence::Bearish)
+        }
+        _ => false,
+    }
+}
+
+/// Deterministic gate used after AI approval: block a BREAKOUT entry when the
+/// market has already exhausted its daily range and RSI H1 / M15 divergence
+/// warns against chasing. Returns the human-readable reason when blocked.
+pub fn anti_chase_blocks_breakout(
+    signal_type: SignalType,
+    entry_type: EntryType,
+    daily_change_pct: Option<f64>,
+    rsi_h1: Option<f64>,
+    m15_divergence: RsiDivergence,
+    config: &BotConfig,
+) -> Option<String> {
+    if !config.anti_chase_filter_enabled || entry_type != EntryType::Breakout {
+        return None;
+    }
+    let change = daily_change_pct?;
+    let (bias, extreme, opposite_divergence, change_triggered) = match signal_type {
+        SignalType::Sell => (
+            "BEARISH",
+            rsi_h1.is_some_and(|value| value < config.anti_chase_rsi_h1),
+            m15_divergence == RsiDivergence::Bullish,
+            change <= config.anti_chase_daily_change_pct,
+        ),
+        SignalType::Buy => (
+            "BULLISH",
+            rsi_h1.is_some_and(|value| value > 100.0 - config.anti_chase_rsi_h1),
+            m15_divergence == RsiDivergence::Bearish,
+            change >= -config.anti_chase_daily_change_pct,
+        ),
+    };
+    if !(change_triggered && (extreme || opposite_divergence)) {
+        return None;
+    }
+    Some(format!(
+        "Anti-chase: {bias} breakout bị chặn (daily change {change:.2}%, RSI H1 {}, M15 divergence {}).",
+        rsi_h1
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "n/a".to_string()),
+        match m15_divergence {
+            RsiDivergence::Bullish => "Bullish",
+            RsiDivergence::Bearish => "Bearish",
+            RsiDivergence::None => "None",
+        }
+    ))
+}
+
+fn apply_anti_chase_filter(scenarios: &mut [Scenario], inputs: &ScenarioInputs<'_>) {
+    for scenario in scenarios.iter_mut() {
+        if !matches!(
+            scenario.id.as_str(),
+            "bullish_breakout" | "bearish_breakdown"
+        ) || !anti_chase_active(inputs, &scenario.bias)
+        {
+            continue;
+        }
+        scenario.valid = false;
+        scenario.confidence = scenario.confidence.min(65);
+        scenario.priority = scenario.priority.min(65);
+        scenario.notes.push(format!(
+            "Anti-chase: daily change {:.2}% · RSI H1 {} · M15 divergence {} — tắt breakout, ưu tiên pullback.",
+            inputs.daily_change_pct.unwrap_or(0.0),
+            inputs
+                .rsi_h1
+                .map(|value| format!("{value:.2}"))
+                .unwrap_or_else(|| "n/a".to_string()),
+            match inputs.m15_divergence {
+                RsiDivergence::Bullish => "Bullish",
+                RsiDivergence::Bearish => "Bearish",
+                RsiDivergence::None => "None",
+            }
+        ));
+    }
+}
+
 fn scenario_confidence(
     bias: &str,
     signal_type: SignalType,
@@ -851,6 +1034,39 @@ fn scenario_confidence(
         "ALIGNED" => score += 5,
         _ => {}
     }
+
+    // Confidence >= 90 is reserved for full agreement: macro + D1/H4 bias,
+    // healthy RSI H1, and no opposite M15 divergence. This is a deterministic
+    // cap, not an AI suggestion.
+    let macro_aligned =
+        bias == inputs.macro_bias && bias == inputs.d1_bias && bias == inputs.h4_bias;
+    let rsi_h1_healthy = inputs
+        .rsi_h1
+        .is_some_and(|value| (30.0..=65.0).contains(&value));
+    let rsi_h4_extreme = inputs
+        .rsi_h4
+        .is_some_and(|value| !(30.0..=70.0).contains(&value));
+    let opposite_divergence = match signal_type {
+        SignalType::Buy => inputs.m15_divergence == RsiDivergence::Bearish,
+        SignalType::Sell => inputs.m15_divergence == RsiDivergence::Bullish,
+    };
+    let mut cap = MAX_CONFIDENCE;
+    if !macro_aligned {
+        cap = cap.min(85);
+    }
+    if inputs.rsi_h1.is_some() && !rsi_h1_healthy {
+        cap = cap.min(85);
+    }
+    if rsi_h4_extreme {
+        cap = cap.min(85);
+    }
+    if opposite_divergence {
+        cap = cap.min(75);
+    }
+    if (inputs.rsi_h1.is_some() && !rsi_h1_healthy || rsi_h4_extreme) && opposite_divergence {
+        cap = cap.min(65);
+    }
+    score = score.min(cap);
 
     score.clamp(0, MAX_CONFIDENCE) as u8
 }
@@ -1023,6 +1239,15 @@ fn build_warnings(
     if macro_flow.is_none() {
         warnings.push("Macro/Flow chưa sẵn sàng".to_string());
     }
+    if context.is_some()
+        && context
+            .and_then(|context| context.rsi_h1.as_ref())
+            .and_then(|snapshot| snapshot.value)
+            .is_none()
+    {
+        warnings
+            .push("Thiếu RSI H1 — confidence cap và anti-chase có thể không đầy đủ.".to_string());
+    }
     warnings
 }
 
@@ -1041,6 +1266,7 @@ mod tests {
     use super::*;
     use crate::macro_flow::MacroFlowScorecard;
     use crate::models::Timeframe;
+    use crate::rsi::RsiSnapshot;
 
     const BASE_TS: i64 = 1_700_000_000_000;
     const STEP_MS: i64 = 15 * 60 * 1000;
@@ -1156,6 +1382,49 @@ mod tests {
             "TEST_VOLUME",
             BASE_TS,
         )
+    }
+
+    fn anti_chase_context(rsi_h1: f64, rsi_h4: f64, prev_close: f64) -> MarketContext {
+        let mut context = crate::market_context::build_market_context(&[], &[], &[], "TEST", None);
+        context.d1.bias = "BEARISH".to_string();
+        context.h4.bias = "BEARISH".to_string();
+        context.h1.bias = "BEARISH".to_string();
+        context.h4.atr14 = 20.0;
+        context.d1.prev_close = prev_close;
+        context.rsi_h1 = Some(RsiSnapshot {
+            value: Some(rsi_h1),
+            state: "Oversold".to_string(),
+            divergence: RsiDivergence::None,
+        });
+        context.rsi_h4 = Some(RsiSnapshot {
+            value: Some(rsi_h4),
+            state: "Oversold".to_string(),
+            divergence: RsiDivergence::None,
+        });
+        context
+    }
+
+    fn confidence_inputs<'a>(
+        config: &'a BotConfig,
+        rsi_h1: f64,
+        rsi_h4: f64,
+        divergence: RsiDivergence,
+        daily_change_pct: f64,
+    ) -> ScenarioInputs<'a> {
+        ScenarioInputs {
+            config,
+            price: 2680.0,
+            atr: 10.0,
+            d1_bias: "BEARISH",
+            h4_bias: "BEARISH",
+            macro_bias: "BEARISH",
+            rsi_value: Some(40.0),
+            rsi_h1: Some(rsi_h1),
+            rsi_h4: Some(rsi_h4),
+            m15_divergence: divergence,
+            daily_change_pct: Some(daily_change_pct),
+            macro_flow: None,
+        }
     }
 
     #[test]
@@ -1276,6 +1545,153 @@ mod tests {
                 scenario.id
             );
         }
+    }
+
+    #[test]
+    fn breakdown_sl_is_anchored_above_recent_swing_high() {
+        let candles = zigzag_candles(60);
+        let swing_high = recent_swing_high(&candles, STRUCTURE_LOOKBACK).expect("swing high");
+        let response = build(&candles, None);
+        let breakdown = response
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == "bearish_breakdown")
+            .expect("bearish breakdown");
+
+        let stop_loss = breakdown.stop_loss.expect("stop loss");
+        assert!(
+            stop_loss >= swing_high,
+            "breakdown SL {stop_loss} must sit at/above swing high {swing_high}"
+        );
+    }
+
+    #[test]
+    fn breakdown_with_too_wide_structural_sl_is_invalid_not_tightened() {
+        let draft = bearish_breakdown_draft(
+            2700.0,
+            10.0,
+            2.5,
+            5.0,
+            Some(2680.0),
+            &[2670.0, 2660.0],
+            2.0,
+            Some(2800.0),
+        );
+        let levels = draft.levels.expect("levels");
+        assert!(levels.stop_loss > 2800.0);
+        assert!(validate_signal_levels(
+            SignalType::Sell,
+            levels.entry,
+            levels.stop_loss,
+            levels.take_profit_1,
+            levels.take_profit_2,
+            2.0,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn anti_chase_invalidates_breakdown_and_promotes_pullback() {
+        let context = anti_chase_context(18.0, 20.0, 2760.0);
+        let macro_flow = macro_snapshot("BEARISH", 95);
+        let response = build_with_context(&zigzag_candles(60), Some(&context), Some(&macro_flow));
+
+        let breakdown = response
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == "bearish_breakdown")
+            .expect("breakdown");
+        assert!(!breakdown.valid);
+        assert!(breakdown.confidence <= 65);
+        assert!(breakdown
+            .notes
+            .iter()
+            .any(|note| note.contains("Anti-chase")));
+
+        let primary = &response.scenarios[0];
+        assert_eq!(primary.role, "PRIMARY");
+        assert_eq!(primary.id, "bearish_rejection");
+        assert!(primary.valid);
+        assert!(primary.confidence <= 85);
+    }
+
+    #[test]
+    fn anti_chase_stays_inactive_when_rsi_h1_is_healthy() {
+        let context = anti_chase_context(45.0, 50.0, 2760.0);
+        let macro_flow = macro_snapshot("BEARISH", 95);
+        let response = build_with_context(&zigzag_candles(60), Some(&context), Some(&macro_flow));
+
+        let breakdown = response
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == "bearish_breakdown")
+            .expect("breakdown");
+        assert!(breakdown.valid);
+        assert!(breakdown.confidence >= 90);
+    }
+
+    #[test]
+    fn confidence_cap_drops_to_65_when_rsi_extreme_and_divergence_oppose() {
+        let config = config();
+        let inputs = confidence_inputs(&config, 18.0, 50.0, RsiDivergence::Bullish, -2.8);
+        let confidence = scenario_confidence(
+            "BEARISH",
+            SignalType::Sell,
+            Some(2680.0),
+            Some(2.0),
+            &inputs,
+            "ALIGNED",
+        );
+        assert!(confidence <= 65);
+    }
+
+    #[test]
+    fn confidence_cap_drops_to_75_for_opposite_divergence_alone() {
+        let config = config();
+        let inputs = confidence_inputs(&config, 45.0, 50.0, RsiDivergence::Bullish, 0.0);
+        let confidence = scenario_confidence(
+            "BEARISH",
+            SignalType::Sell,
+            Some(2680.0),
+            Some(2.0),
+            &inputs,
+            "ALIGNED",
+        );
+        assert!(confidence <= 75);
+    }
+
+    #[test]
+    fn anti_chase_blocks_breakout_gate() {
+        let config = config();
+        let blocked = anti_chase_blocks_breakout(
+            SignalType::Sell,
+            EntryType::Breakout,
+            Some(-2.8),
+            Some(18.0),
+            RsiDivergence::Bullish,
+            &config,
+        );
+        assert!(blocked.is_some());
+
+        let limit_entry = anti_chase_blocks_breakout(
+            SignalType::Sell,
+            EntryType::Limit,
+            Some(-2.8),
+            Some(18.0),
+            RsiDivergence::Bullish,
+            &config,
+        );
+        assert!(limit_entry.is_none());
+
+        let healthy = anti_chase_blocks_breakout(
+            SignalType::Sell,
+            EntryType::Breakout,
+            Some(-2.8),
+            Some(45.0),
+            RsiDivergence::None,
+            &config,
+        );
+        assert!(healthy.is_none());
     }
 
     #[test]

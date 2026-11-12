@@ -1264,6 +1264,76 @@ export const ConfigPanel: React.FC<Props> = ({
 
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-neutral-300">
+                  Anti-chase breakout
+                </label>
+                <label className="flex items-center gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={formData.anti_chase_filter_enabled ?? true}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        anti_chase_filter_enabled: e.target.checked,
+                      })
+                    }
+                    className="accent-indigo-500 w-4 h-4 rounded cursor-pointer"
+                  />
+                  <span className="text-[11px] text-neutral-300">
+                    Chặn breakout sau ngày đã chạy mạnh
+                  </span>
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="relative">
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="-10"
+                      max="-0.5"
+                      disabled={!(formData.anti_chase_filter_enabled ?? true)}
+                      value={formData.anti_chase_daily_change_pct ?? -2.0}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          anti_chase_daily_change_pct: Math.min(
+                            -0.5,
+                            Math.max(-10, parseFloat(e.target.value) || -2.0)
+                          ),
+                        })
+                      }
+                      className="w-full bg-neutral-950 border border-neutral-800 focus:border-indigo-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                    />
+                    <span className="absolute right-3 top-2 text-[10px] text-neutral-500 font-mono">%</span>
+                  </div>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="10"
+                      max="40"
+                      disabled={!(formData.anti_chase_filter_enabled ?? true)}
+                      value={formData.anti_chase_rsi_h1 ?? 25.0}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          anti_chase_rsi_h1: Math.min(
+                            40,
+                            Math.max(10, parseFloat(e.target.value) || 25.0)
+                          ),
+                        })
+                      }
+                      className="w-full bg-neutral-950 border border-neutral-800 focus:border-indigo-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                    />
+                    <span className="absolute right-3 top-2 text-[10px] text-neutral-500 font-mono">RSI</span>
+                  </div>
+                </div>
+                <span className="text-[11px] text-neutral-500">
+                  Daily change ≤ ngưỡng và (RSI H1 cực đoan hoặc M15 divergence ngược chiều) → tắt
+                  breakout/breakdown, ưu tiên pullback. Không chase sau ngày đã chạy mạnh.
+                </span>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">
                   Khi AI lỗi / timeout
                 </label>
                 <label

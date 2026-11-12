@@ -27,6 +27,10 @@ pub struct TimeframeContext {
     /// "BULLISH" | "BEARISH" | "NEUTRAL"
     pub bias: String,
     pub close: f64,
+    /// Close of the candle before the last one; 0.0 when unavailable.
+    /// Used to compute the current daily change without a separate feed.
+    #[serde(default)]
+    pub prev_close: f64,
     pub ema50: f64,
     pub ema200: f64,
     /// Vị trí trong kênh Donchian(20), 0..=1 (0 = sát đáy kênh, 1 = sát đỉnh kênh).
@@ -106,6 +110,7 @@ pub fn build_timeframe_context(timeframe: &str, candles: &[Candle]) -> Timeframe
             timeframe,
             bias: "NEUTRAL".to_string(),
             close: 0.0,
+            prev_close: 0.0,
             ema50: 0.0,
             ema200: 0.0,
             channel_position: 0.5,
@@ -118,6 +123,12 @@ pub fn build_timeframe_context(timeframe: &str, candles: &[Candle]) -> Timeframe
     }
 
     let close = candles.last().map(|candle| candle.close).unwrap_or(0.0);
+    let prev_close = candles
+        .iter()
+        .rev()
+        .nth(1)
+        .map(|candle| candle.close)
+        .unwrap_or(0.0);
     let last_candle_timestamp = candles.last().map(|candle| candle.timestamp).unwrap_or(0);
     let ema50 = GoldMarketAnalyzer::calculate_ema(candles, 50);
     let ema200 = GoldMarketAnalyzer::calculate_ema(candles, 200);
@@ -135,6 +146,7 @@ pub fn build_timeframe_context(timeframe: &str, candles: &[Candle]) -> Timeframe
         timeframe,
         bias: bias.to_string(),
         close: round2(close),
+        prev_close: round2(prev_close),
         ema50: round2(ema50),
         ema200: round2(ema200),
         channel_position: channel_position(candles, close),
@@ -415,6 +427,7 @@ mod tests {
             timeframe: "H4".to_string(),
             bias: bias.to_string(),
             close: 2400.0,
+            prev_close: 2395.0,
             ema50: 2380.0,
             ema200: 2360.0,
             channel_position: 0.5,
@@ -477,6 +490,18 @@ mod tests {
 
         assert_eq!(context.last_candle_timestamp, expected);
         assert_eq!(context.last_candle_timestamp, BASE_TS + 29 * STEP_MS);
+    }
+
+    #[test]
+    fn timeframe_context_tracks_previous_close() {
+        let candles = trend_candles(30, 2000.0, 1.0);
+        let expected_prev = candles[candles.len() - 2].close;
+
+        let context = build_timeframe_context("D1", &candles);
+
+        assert!((context.prev_close - expected_prev).abs() < 1e-9);
+        assert!(context.prev_close > 0.0);
+        assert_ne!(context.prev_close, context.close);
     }
 
     #[test]

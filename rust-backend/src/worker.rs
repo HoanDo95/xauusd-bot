@@ -13,7 +13,7 @@ use crate::news_filter::ImpactLevel;
 use crate::risk_manager::PositionSizer;
 use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot};
 use crate::scenario_signal::{best_early_entry_scenario, signal_from_scenario};
-use crate::scenarios::{build_scenarios, scenario_triggered};
+use crate::scenarios::{anti_chase_blocks_breakout, build_scenarios, scenario_triggered};
 use crate::scheduler::DailyScheduler;
 use crate::session_alerts::evaluate_and_dispatch;
 use crate::signal_review::{review_blocks_signal, review_signal};
@@ -545,6 +545,34 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                         "✅ [AI Decision] Cho qua {} {} — {}",
                         signal.signal_type, signal.symbol, reason
                     );
+
+                    // Deterministic anti-chase gate: after an exhausted daily
+                    // move, do not chase a breakout even if the AI approved it.
+                    let daily_change_pct = context.as_ref().and_then(|context| {
+                        let prev_close = context.d1.prev_close;
+                        (prev_close.is_finite() && prev_close > 0.0).then(|| {
+                            let current = live_price.unwrap_or(context.d1.close);
+                            (current - prev_close) / prev_close * 100.0
+                        })
+                    });
+                    let rsi_h1 = context
+                        .as_ref()
+                        .and_then(|context| context.rsi_h1.as_ref())
+                        .and_then(|snapshot| snapshot.value);
+                    if let Some(reason) = anti_chase_blocks_breakout(
+                        signal.signal_type,
+                        signal.entry_type,
+                        daily_change_pct,
+                        rsi_h1,
+                        rsi.divergence,
+                        &config,
+                    ) {
+                        warn!(
+                            "🛑 [Anti-chase] Bỏ qua {} {}: {}",
+                            signal.signal_type, signal.symbol, reason
+                        );
+                        continue;
+                    }
 
                     // AI has weighed HTF/volume/RSI/macro as context. Skip the
                     // soft filters but keep every hard risk rule.

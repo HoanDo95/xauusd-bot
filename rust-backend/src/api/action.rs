@@ -544,6 +544,9 @@ mod tests {
             rsi_state: "Neutral".to_string(),
             macro_bias: "BEARISH".to_string(),
             macro_confidence: 95,
+            daily_change_pct: None,
+            rsi_h1: None,
+            rsi_h4: None,
         }
     }
 

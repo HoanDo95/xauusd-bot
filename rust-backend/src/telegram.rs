@@ -1447,7 +1447,7 @@ fn scenario_primary_block(scenario: &Scenario) -> String {
     let trigger = TelegramNotifier::escape_html(&truncate_chars(&scenario.trigger, 220));
     let mut lines = vec![
         format!(
-            "🎯 PRIMARY — {name} [{alignment}] [{status}] · confidence {}",
+            "🎯 PRIMARY — {name} [{alignment}] [{status}] · confluence {}",
             scenario.confidence
         ),
         format!("Trigger: {trigger}"),
@@ -1481,7 +1481,7 @@ fn scenario_alternate_block(scenario: &Scenario, include_details: bool) -> Strin
     let alignment = TelegramNotifier::escape_html(&truncate_chars(&scenario.macro_alignment, 24));
     let status = if scenario.valid { "VALID" } else { "NOT VALID" };
     let header = format!(
-        "🔁 ALTERNATE — {name} [{alignment}] [{status}] · confidence {}",
+        "🔁 ALTERNATE — {name} [{alignment}] [{status}] · confluence {}",
         scenario.confidence
     );
     if !include_details {
@@ -2109,6 +2109,9 @@ mod tests {
                 rsi_state: "Neutral".to_string(),
                 macro_bias: "BEARISH".to_string(),
                 macro_confidence: 95,
+                daily_change_pct: None,
+                rsi_h1: None,
+                rsi_h4: None,
             }),
             scenarios: vec![breakdown, breakout, bounce, rejection],
             warnings: Vec::new(),
@@ -2128,11 +2131,11 @@ mod tests {
             "Giá: 3980.50 · Nguồn: TWELVEDATA",
             "Macro/Flow: BEARISH · 95% · CONFIRMING",
             "D1 BEARISH · H4 BEARISH · H1 NEUTRAL · ATR H4 22.5",
-            "🎯 PRIMARY — Bearish breakdown [ALIGNED] [VALID] · confidence 95",
+            "🎯 PRIMARY — Bearish breakdown [ALIGNED] [VALID] · confluence 95",
             "Trigger: Đóng M15 dưới 3960.00 (phá hỗ trợ 3962.00)",
             "Entry 3960.00 · SL 3968.00 · TP1 3944.00 · TP2 3936.00 · R:R 1:2.00",
             "Invalidation: Đóng M15 ngược hướng.",
-            "🔁 ALTERNATE — Bullish breakout [COUNTER] [NOT VALID] · confidence 50",
+            "🔁 ALTERNATE — Bullish breakout [COUNTER] [NOT VALID] · confluence 50",
             "Trigger: Đóng M15 trên 3997.00 (phá kháng cự 3995.00) · Entry 3997.00 · SL 3990.00 · TP1 4005.00 · R:R 1:1.14",
             "👀 Watchlist: Bullish bounce (not valid) · Bearish rejection (not valid)",
             "Bot sẽ gửi tín hiệu thật khi đủ điều kiện.",
@@ -2174,8 +2177,8 @@ mod tests {
             "Reason: H4/H1 supply confluence + RSI overbought",
             "Macro/Flow: ALIGNED — Real yield và DXY cùng hỗ trợ SELL.",
             "Giá: 3980.50 · Nguồn: TWELVEDATA",
-            "🎯 PRIMARY — Bearish breakdown [ALIGNED] [VALID] · confidence 95",
-            "🔁 ALTERNATE — Bullish breakout [COUNTER] [NOT VALID] · confidence 50",
+            "🎯 PRIMARY — Bearish breakdown [ALIGNED] [VALID] · confluence 95",
+            "🔁 ALTERNATE — Bullish breakout [COUNTER] [NOT VALID] · confluence 50",
             "👀 Watchlist: Bullish bounce (not valid) · Bearish rejection (not valid)",
             "Đây là nhận định AI, không phải lệnh tự động.",
         ] {
@@ -2477,9 +2480,9 @@ mod tests {
             "Macro: BEARISH · 95% · CONFIRMING",
             "D1 BEARISH · H4 BEARISH · H1 NEUTRAL · ATR H4 22.5",
             "Tin đỏ USD: CPI 20:30 · NFP 21:30 (tối đa 4 tin)",
-            "🎯 PRIMARY — Bearish breakdown [ALIGNED] [VALID] · confidence 95",
+            "🎯 PRIMARY — Bearish breakdown [ALIGNED] [VALID] · confluence 95",
             "Entry 3960.00 · SL 3968.00 · TP1 3944.00 · TP2 3936.00 · R:R 1:2.00",
-            "🔁 ALTERNATE — Bullish breakout [COUNTER] [NOT VALID] · confidence 50",
+            "🔁 ALTERNATE — Bullish breakout [COUNTER] [NOT VALID] · confluence 50",
             "👀 Watchlist: Bullish bounce (not valid) · Bearish rejection (not valid)",
             "Action: WAIT — chờ trigger của PRIMARY.",
             "Đây là kế hoạch tham khảo, không phải trade signal đã xác nhận.",
