@@ -1216,6 +1216,54 @@ export const ConfigPanel: React.FC<Props> = ({
 
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-neutral-300">
+                  Duyệt scenario sớm (90% là đủ)
+                </label>
+                <label className="flex items-center gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    disabled={!formData.ai_signal_review_enabled}
+                    checked={formData.early_entry_enabled ?? true}
+                    onChange={(e) =>
+                      setFormData({ ...formData, early_entry_enabled: e.target.checked })
+                    }
+                    className="accent-indigo-500 w-4 h-4 rounded cursor-pointer"
+                  />
+                  <span className="text-[11px] text-neutral-300">
+                    Cho phép entry trước khi trigger xác nhận
+                  </span>
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="1"
+                    min="50"
+                    max="100"
+                    disabled={
+                      !formData.ai_signal_review_enabled ||
+                      !(formData.early_entry_enabled ?? true)
+                    }
+                    value={formData.early_entry_min_confidence ?? 90}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        early_entry_min_confidence: Math.min(
+                          100,
+                          Math.max(50, parseInt(e.target.value, 10) || 90)
+                        ),
+                      })
+                    }
+                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-indigo-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                  />
+                  <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">%</span>
+                </div>
+                <span className="text-[11px] text-neutral-500">
+                  AI được duyệt PRIMARY/ALTERNATE khi confidence ≥ ngưỡng, dù trigger M15 chưa in.
+                  Entry vẫn là mức trigger (lệnh chờ), không chase giá.
+                </span>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">
                   Khi AI lỗi / timeout
                 </label>
                 <label

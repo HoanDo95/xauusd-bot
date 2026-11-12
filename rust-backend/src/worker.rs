@@ -12,7 +12,8 @@ use crate::models::{BotConfig, Candle, Signal, Timeframe};
 use crate::news_filter::ImpactLevel;
 use crate::risk_manager::PositionSizer;
 use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot};
-use crate::scenarios::build_scenarios;
+use crate::scenario_signal::{best_early_entry_scenario, signal_from_scenario};
+use crate::scenarios::{build_scenarios, scenario_triggered};
 use crate::scheduler::DailyScheduler;
 use crate::session_alerts::evaluate_and_dispatch;
 use crate::signal_review::{review_blocks_signal, review_signal};
@@ -215,6 +216,67 @@ fn validate_ai_hard_risk(signal: &Signal, config: &BotConfig) -> Result<(), Stri
     validate_risk_budget(config, &sizing)
 }
 
+/// Build a pending signal from the strongest valid scenario when the pinbar
+/// analyzer found nothing. This is the deterministic "90% is enough" path:
+/// the scenario must be valid, PRIMARY/ALTERNATE and clear the configured
+/// confidence threshold. Entry stays at the scenario trigger; AI approval and
+/// every hard risk rule still apply afterwards.
+async fn build_early_scenario_signal(
+    state: &AppState,
+    candles: &[Candle],
+    config: &BotConfig,
+    live_price: Option<f64>,
+) -> Option<Signal> {
+    if !config.early_entry_enabled {
+        return None;
+    }
+
+    let rsi = rsi_snapshot(
+        candles,
+        config.rsi_period,
+        config.rsi_overbought,
+        config.rsi_oversold,
+        config.rsi_divergence_lookback,
+        config.rsi_pivot_k,
+    );
+    let mut context = state.market_context.read().await.clone();
+    if let Some(context) = context.as_mut() {
+        context.rsi_m15 = Some(rsi);
+    }
+    let macro_flow = state.macro_flow.read().await.clone();
+    let active_data_source = state.active_data_source.read().await.clone();
+    let active_volume_source = state.active_volume_source.read().await.clone();
+    let scenarios = build_scenarios(
+        candles,
+        config,
+        live_price,
+        context.as_ref(),
+        macro_flow.as_ref(),
+        &active_data_source,
+        &active_volume_source,
+        Utc::now().timestamp_millis(),
+    );
+    let scenario = best_early_entry_scenario(&scenarios, config.early_entry_min_confidence)?;
+    // Only pre-trigger entries: if the last closed candle already confirmed the
+    // scenario, the action-trigger alert owns that event.
+    if candles
+        .last()
+        .is_some_and(|candle| scenario_triggered(scenario, candle))
+    {
+        return None;
+    }
+    let signal = signal_from_scenario(scenario, config, candles, live_price, Utc::now())?;
+    info!(
+        "⚡ [Early Entry] Dùng scenario {} ({}) confidence {}% — entry {:.2} ({}) chờ xác nhận.",
+        scenario.role,
+        scenario.id,
+        scenario.confidence,
+        signal.entry_price,
+        signal.entry_type.as_str()
+    );
+    Some(signal)
+}
+
 /// Background Scanner 24/7 — quét mỗi 60 giây.
 ///
 /// `initial_spot_cache` giữ lại kết quả spot/basis vừa fetch lúc bootstrap để
@@ -378,12 +440,18 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
             } else {
                 config.clone()
             };
-            if let Some(mut signal) = GoldMarketAnalyzer::analyze_market_with_live_price(
+            let mut candidate = GoldMarketAnalyzer::analyze_market_with_live_price(
                 &candles,
                 &candidate_config,
                 live_price,
                 Utc::now().timestamp_millis(),
-            ) {
+            );
+            if candidate.is_none() && decision_mode {
+                candidate =
+                    build_early_scenario_signal(&state, &candles, &config, live_price).await;
+            }
+
+            if let Some(mut signal) = candidate {
                 if PersistentStore::is_duplicate_candle(&signals_snapshot, &signal.dedup_key) {
                     continue;
                 }

@@ -344,6 +344,7 @@ pub(crate) fn build_decision_prompt(
     delta: Option<&DeltaSnapshot>,
     events: &[EconomicEvent],
     now: DateTime<Utc>,
+    early_entry_min_confidence: u8,
 ) -> String {
     let vn_now = now + Duration::hours(7);
     let session_label = if (13..=23).contains(&vn_now.hour()) {
@@ -382,9 +383,11 @@ pub(crate) fn build_decision_prompt(
         Hard rules enforced by code (do not attempt to override):\n\
         - SL/TP ordering, minimum R:R, risk budget, daily quota, session window, news kill switch and dedup are validated in code.\n\
         - The AI never sets live SL/TP and must not invent prices. Choose a provided candidate/scenario or STANDBY.\n\
+        - A valid PRIMARY/ALTERNATE scenario with confidence >= {early_entry_min_confidence}% is actionable even if its M15 trigger has not printed yet. Do not demand 100% confirmation; 90% confluence is enough when the structure and macro/HTF context agree.\n\
+        - For an early entry, approve the scenario and use its provided entry/SL/TP levels. The entry is a pending order at the scenario trigger, not a market chase.\n\
         - If the candidate and scenarios disagree, prefer STANDBY unless one setup clearly has better structure and R:R.\n\
         - If data is missing, contradictory, or the setup is counter-macro without exceptional confluence, prefer STANDBY.\n\
-        - If no valid candidate/scenario exists, STANDBY is the only safe action.\n\
+        - STANDBY only when no valid scenario reaches the threshold, the setup is invalid, or a hard invalidation/conflicting event is present.\n\
         - BUY/SELL means you approve using the provided candidate or selected scenario levels; execution still requires all hard checks to pass.\n\n\
         Return ONLY one valid JSON object with exactly these keys:\n\
         {{\"action\":\"BUY\"|\"SELL\"|\"STANDBY\",\"confidence_score\":0.0,\
@@ -544,7 +547,15 @@ pub async fn review_market_decision(
 
     let now = Utc::now();
     let prompt = build_decision_prompt(
-        candidate, context, macro_flow, scenarios, rsi, delta, events, now,
+        candidate,
+        context,
+        macro_flow,
+        scenarios,
+        rsi,
+        delta,
+        events,
+        now,
+        config.early_entry_min_confidence,
     );
     let content = post_ai_chat_completion(
         &settings,
@@ -834,6 +845,7 @@ mod tests {
             Some(&delta),
             &events,
             now,
+            90,
         );
 
         assert!(prompt.contains("Chief Market Analyst"));
@@ -856,6 +868,8 @@ mod tests {
         assert!(prompt.contains("US Core CPI m/m"));
         assert!(prompt.contains("IN golden session 13:00-23:00 VN"));
         assert!(prompt.contains("Hard rules enforced by code"));
+        assert!(prompt.contains("confidence >= 90%"));
+        assert!(prompt.contains("pending order"));
         assert!(prompt.contains("\"selected_scenario\""));
         assert!(prompt.contains("\"macro_flow_alignment\""));
     }
@@ -866,7 +880,7 @@ mod tests {
             .with_ymd_and_hms(2026, 11, 12, 2, 0, 0)
             .single()
             .expect("valid timestamp");
-        let prompt = build_decision_prompt(None, None, None, None, None, None, &[], now);
+        let prompt = build_decision_prompt(None, None, None, None, None, None, &[], now, 90);
 
         assert!(prompt.contains("Current price: n/a"));
         assert!(prompt.contains("D1/H4/H1 context unavailable"));

@@ -226,7 +226,7 @@ impl TelegramNotifier {
             📊 <b>Lệnh:</b> {} <code>{}</code>\n\
             ⏱ <b>Khung:</b> <code>{}</code>\n\
             💵 <b>Entry ({}):</b> <code>${:.2}</code>\n\
-            🕯 <b>Giá đóng nến Pinbar:</b> <code>${:.2}</code>\n\
+            🕯 <b>Giá đóng nến gần nhất:</b> <code>${:.2}</code>\n\
             {}\
             📡 <b>Nguồn giá:</b> <code>{}</code>\n\
             {}\
@@ -1035,8 +1035,17 @@ impl TelegramNotifier {
                 } else {
                     "—".to_string()
                 };
+                let readiness = plan
+                    .readiness
+                    .map(|value| format!(" · readiness {value}%"))
+                    .unwrap_or_default();
+                let early = if plan.early_entry {
+                    " · EARLY (trigger chưa xác nhận)"
+                } else {
+                    ""
+                };
                 let mut block = format!(
-                    "Plan: {source} (reference) · {side} · {status}\n\
+                    "Plan: {source} (reference) · {side} · {status}{readiness}{early}\n\
                      Entry {} · SL {} · TP1 {} · TP2 {} · R:R {risk_reward}",
                     format_level(Some(plan.entry)),
                     format_level(Some(plan.stop_loss)),
@@ -1791,7 +1800,7 @@ mod tests {
 
         assert!(message.contains("Entry (LIMIT):"));
         assert!(message.contains("$2684.50"));
-        assert!(message.contains("Giá đóng nến Pinbar:"));
+        assert!(message.contains("Giá đóng nến gần nhất:"));
         assert!(message.contains("Vùng Limit Retest:"));
         assert!(message.contains("$2680.00"));
         assert!(message.contains("Nguồn giá:"));
@@ -2214,6 +2223,8 @@ mod tests {
                 take_profit_2: 3936.0,
                 risk_reward: 2.0,
                 valid: true,
+                readiness: Some(90),
+                early_entry: true,
                 note: "Kế hoạch tham khảo từ kịch bản PRIMARY.".to_string(),
             }),
             generated_at: "2026-11-12T00:00:00Z".to_string(),
@@ -2229,7 +2240,7 @@ mod tests {
             "Action: <b>SELL</b> · confidence 78%",
             "Selected scenario: PRIMARY",
             "Reason: H4/H1 supply confluence + RSI overbought",
-            "Plan: PRIMARY (reference) · SELL · VALID",
+            "Plan: PRIMARY (reference) · SELL · VALID · readiness 90% · EARLY (trigger chưa xác nhận)",
             "Entry 3960.00 · SL 3968.00 · TP1 3944.00 · TP2 3936.00 · R:R 1:2.00",
             "Macro/Flow: ALIGNED · bias BEARISH · 95% — Real yield và DXY cùng hỗ trợ SELL.",
             "Volume: PAXG proxy · BINANCE_PAXG_PROXY",

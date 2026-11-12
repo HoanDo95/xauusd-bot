@@ -126,6 +126,10 @@ interface BotConfig {
   ai_signal_review_min_confidence: number;
   /** AI error/timeout policy: true = pass (fail-open), false = block. Default true. */
   ai_signal_review_fail_open: boolean;
+  /** Allow AI to approve a strong scenario before its M15 trigger confirms. Default true. */
+  early_entry_enabled: boolean;
+  /** Minimum scenario confidence (50–100) for early approval. Default 90. */
+  early_entry_min_confidence: number;
   /** Optional Volume Delta/CVD gate. Default false — no behavior change. */
   volume_delta_filter_enabled: boolean;
   volume_delta_mode: 'ALIGN' | 'DIVERGENCE' | 'BOTH';
@@ -276,6 +280,8 @@ const DEFAULT_CONFIG: BotConfig = {
   ai_signal_review_enabled: false,
   ai_signal_review_min_confidence: 0.75,
   ai_signal_review_fail_open: true,
+  early_entry_enabled: true,
+  early_entry_min_confidence: 90,
   volume_delta_filter_enabled: false,
   volume_delta_mode: 'BOTH',
   volume_delta_lookback: 20,
@@ -452,6 +458,18 @@ function normalizeConfig(input: Partial<BotConfig>): BotConfig {
     ai_signal_review_fail_open: booleanOr(
       input.ai_signal_review_fail_open,
       base.ai_signal_review_fail_open
+    ),
+    early_entry_enabled: booleanOr(
+      input.early_entry_enabled,
+      base.early_entry_enabled
+    ),
+    early_entry_min_confidence: clamp(
+      numeric(
+        input.early_entry_min_confidence,
+        base.early_entry_min_confidence
+      ),
+      50,
+      100
     ),
     volume_delta_filter_enabled: booleanOr(
       input.volume_delta_filter_enabled,

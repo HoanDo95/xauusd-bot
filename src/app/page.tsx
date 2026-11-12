@@ -95,6 +95,8 @@ const DEFAULT_CONFIG: BotConfig = {
   ai_review_mode: 'DECISION',
   ai_signal_review_min_confidence: 0.75,
   ai_signal_review_fail_open: true,
+  early_entry_enabled: true,
+  early_entry_min_confidence: 90,
   volume_delta_filter_enabled: false,
   volume_delta_mode: 'BOTH',
   volume_delta_lookback: 20,

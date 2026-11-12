@@ -428,6 +428,10 @@ export interface EntryPlan {
   take_profit_2: number;
   risk_reward: number;
   valid: boolean;
+  /** Scenario confidence / candidate confluence, when known. */
+  readiness?: number | null;
+  /** True when the scenario cleared the early-entry threshold before trigger confirmation. */
+  early_entry?: boolean;
   note: string;
 }
 
@@ -558,6 +562,10 @@ export interface BotConfig {
   ai_signal_review_min_confidence?: number;
   /** VETO_ONLY only: true = pass on AI error (fail-open, default), false = block. */
   ai_signal_review_fail_open?: boolean;
+  /** Allow AI to approve a strong scenario before its M15 trigger confirms. Default true. */
+  early_entry_enabled?: boolean;
+  /** Minimum scenario confidence (50–100) for early approval. Default 90. */
+  early_entry_min_confidence?: number;
   /** Optional Volume Delta/CVD gate. Default OFF — no behavior change when false. */
   volume_delta_filter_enabled: boolean;
   /** ALIGN = aggressive flow on trade side; DIVERGENCE = price/CVD divergence; BOTH = OR. */

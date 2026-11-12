@@ -316,11 +316,18 @@ in **Sniper & Risk Config**, not in env.
   risk budget, optional daily quota, session, news and dedup. AI never sets live SL/TP.
 - **DECISION is fail-closed:** missing key, provider error/timeout, or malformed
   JSON means no trade signal, regardless of `ai_signal_review_fail_open`.
+- **Early entry (90% rule):** when no pinbar candidate exists, a valid
+  `PRIMARY`/`ALTERNATE` scenario with `confidence >= early_entry_min_confidence`
+  (default `90`) can become a pending signal after AI approval. Entry stays at
+  the scenario trigger (`BREAKOUT`/`LIMIT`, `PENDING`), never a market chase.
+  Set `early_entry_enabled=false` to disable.
 - **VETO_ONLY:** AI may only approve, contradict or return `STANDBY`.
   `ai_signal_review_fail_open` (default `true`) applies only here; `false`
   makes it fail-closed.
 - Dashboard controls: `ai_review_mode`, `ai_signal_review_min_confidence`
-  (`0.5–1.0`, default `0.75`), `ai_signal_review_fail_open` (VETO_ONLY only).
+  (`0.5–1.0`, default `0.75`), `ai_signal_review_fail_open` (VETO_ONLY only),
+  `early_entry_enabled` (default `true`) and `early_entry_min_confidence`
+  (`50–100`, default `90`).
 - One decision/review per real signal attempt. **Unlimited signals/day by
   default**; enable `daily_quota_enabled` to cap real signals at
   `max_signals_per_day` (1–5). Multiple signals still each pass AI Decision +
@@ -340,7 +347,9 @@ in **Sniper & Risk Config**, not in env.
   R:R and risk-budget rules. It never inserts/sends a trade signal, never sends
   Telegram by itself, never consumes quota and never trades. Unsafe levels return
   `valid=false` with the reason; AI STANDBY may still show the PRIMARY scenario
-  as a clearly-labelled reference. Success is HTTP 200
+  as a clearly-labelled reference. Scenario plans expose `readiness` and
+  `early_entry=true` when the confidence clears the early-entry threshold before
+  the trigger confirms; entry remains the scenario trigger. Success is HTTP 200
   `{"status":"ok","result":{...}}`; unavailable/disabled is HTTP 503
   `{"status":"unavailable","message":"..."}`. The command is admin-only and
   rate-limited to one per 30 seconds per chat.

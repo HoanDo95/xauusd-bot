@@ -310,6 +310,12 @@ export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
                 }`}
               >
                 Plan {entryPlan.source} · {entryPlan.valid ? 'VALID' : 'INVALID'}
+                {entryPlan.readiness != null ? ` · readiness ${entryPlan.readiness}%` : ''}
+              </span>
+            )}
+            {entryPlan?.early_entry && (
+              <span className="px-1.5 py-0.5 rounded border text-[9px] font-bold bg-indigo-500/15 text-indigo-300 border-indigo-500/40">
+                EARLY · trigger chưa xác nhận
               </span>
             )}
           </div>

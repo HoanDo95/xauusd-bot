@@ -188,6 +188,12 @@ every hard risk rule; the AI chooses the direction:
   sends the scenario summary and returns `aiError`; it does not block Start.
   The response includes `aiDecision` and `aiError`, and `/api/action-view`
   exposes the latest decision as `aiDecision`.
+- **Early entry at 90% confluence:** when the pinbar analyzer finds no
+  candidate, the scanner may build a pending signal from a valid
+  `PRIMARY`/`ALTERNATE` scenario whose `confidence >= early_entry_min_confidence`
+  (default `90`). The AI still has to approve `BUY`/`SELL`. The entry remains the
+  scenario trigger (`BREAKOUT`/`LIMIT`, shown as `PENDING`), never a market
+  chase. Set `early_entry_enabled=false` to disable this path.
 - One AI decision call per real signal attempt. Multiple signals per day are
   possible by default; each still goes through AI Decision + hard risk +
   session/news + per-candle dedup. Simulated setups never call the AI and never
@@ -220,7 +226,10 @@ the same SL/TP ordering, R:R and risk-budget checks as a live signal; an unsafe
 plan is returned with `valid=false` and the reason. It never inserts or sends a
 trade signal, never sends Telegram by itself, never consumes quota and never
 trades. AI STANDBY may still return the PRIMARY scenario as a clearly-labelled
-reference plan. The endpoint returns `{"status":"ok","result":{...}}` or HTTP 503
+reference plan. When a scenario clears the early-entry threshold before its M15
+trigger confirms, the plan is marked `readiness=<confidence>` and
+`early_entry=true`; the entry is still the scenario trigger (a pending order).
+The endpoint returns `{"status":"ok","result":{...}}` or HTTP 503
 `{"status":"unavailable","message":"..."}`. The Telegram command is admin-only
 and rate-limited to once per 30 seconds per chat.
 

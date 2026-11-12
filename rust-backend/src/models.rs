@@ -353,6 +353,14 @@ pub struct BotConfig {
     /// false = chặn. Ở chế độ DECISION, AI lỗi luôn fail-closed (không tín hiệu).
     #[serde(default = "default_true")]
     pub ai_signal_review_fail_open: bool,
+    /// Cho phép AI duyệt sớm một scenario đủ mạnh dù trigger M15 chưa in.
+    /// Mặc định BẬT: 90% confluence là đủ, không chờ xác nhận 100%.
+    #[serde(default = "default_true")]
+    pub early_entry_enabled: bool,
+    /// Ngưỡng confidence của scenario (50..=100, mặc định 90) để được duyệt sớm.
+    /// Entry vẫn là mức trigger của scenario (lệnh chờ), không phải market entry.
+    #[serde(default = "default_early_entry_min_confidence")]
+    pub early_entry_min_confidence: u8,
     /// Bật bộ lọc Volume Delta/CVD trước khi phát tín hiệu thật. Mặc định TẮT.
     #[serde(default)]
     pub volume_delta_filter_enabled: bool,
@@ -467,6 +475,10 @@ fn default_ai_review_mode() -> String {
     "DECISION".to_string()
 }
 
+fn default_early_entry_min_confidence() -> u8 {
+    90
+}
+
 fn default_volume_delta_mode() -> String {
     "BOTH".to_string()
 }
@@ -556,6 +568,8 @@ impl Default for BotConfig {
             ai_review_mode: default_ai_review_mode(),
             ai_signal_review_min_confidence: default_ai_signal_review_min_confidence(),
             ai_signal_review_fail_open: true,
+            early_entry_enabled: true,
+            early_entry_min_confidence: default_early_entry_min_confidence(),
             volume_delta_filter_enabled: false,
             volume_delta_mode: default_volume_delta_mode(),
             volume_delta_lookback: default_volume_delta_lookback(),
@@ -644,6 +658,7 @@ impl BotConfig {
         .to_string();
         self.ai_signal_review_min_confidence =
             finite_or(self.ai_signal_review_min_confidence, 0.75).clamp(0.5, 1.0);
+        self.early_entry_min_confidence = self.early_entry_min_confidence.clamp(50, 100);
 
         self.volume_delta_mode = match self.volume_delta_mode.trim().to_uppercase().as_str() {
             "ALIGN" => "ALIGN",
@@ -958,6 +973,36 @@ mod tests {
         assert_eq!(config.ai_review_mode, "DECISION");
         assert_eq!(config.ai_signal_review_min_confidence, 0.75);
         assert!(config.ai_signal_review_fail_open);
+    }
+
+    #[test]
+    fn early_entry_defaults_to_90_and_is_backward_compatible() {
+        let defaults = BotConfig::default();
+        assert!(defaults.early_entry_enabled);
+        assert_eq!(defaults.early_entry_min_confidence, 90);
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        object.remove("early_entry_enabled");
+        object.remove("early_entry_min_confidence");
+
+        let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(config.early_entry_enabled);
+        assert_eq!(config.early_entry_min_confidence, 90);
+
+        let clamped_low = BotConfig {
+            early_entry_min_confidence: 0,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(clamped_low.early_entry_min_confidence, 50);
+
+        let clamped_high = BotConfig {
+            early_entry_min_confidence: 200,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(clamped_high.early_entry_min_confidence, 100);
     }
 
     #[test]

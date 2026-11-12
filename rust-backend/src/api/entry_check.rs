@@ -15,6 +15,7 @@ use crate::analyzer::GoldMarketAnalyzer;
 use crate::models::{BotConfig, Signal, SignalType};
 use crate::risk_manager::PositionSizer;
 use crate::rsi::rsi_snapshot;
+use crate::scenario_signal::{best_early_entry_scenario, signal_from_scenario};
 use crate::scenarios::{Scenario, ScenarioResponse};
 use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
 use crate::volume_delta::compute_delta;
@@ -43,6 +44,11 @@ pub struct EntryPlan {
     pub take_profit_2: f64,
     pub risk_reward: f64,
     pub valid: bool,
+    /// Scenario confidence / candidate confluence (0..=100), when known.
+    pub readiness: Option<u8>,
+    /// True when the plan comes from a scenario that cleared the early-entry
+    /// threshold before its M15 trigger confirmed. Entry remains the trigger.
+    pub early_entry: bool,
     pub note: String,
 }
 
@@ -141,6 +147,8 @@ fn build_entry_plan(
         take_profit_2: levels.take_profit_2,
         risk_reward,
         valid: false,
+        readiness: None,
+        early_entry: false,
         note,
     };
 
@@ -188,7 +196,7 @@ fn build_entry_plan(
 
 fn plan_from_candidate(candidate: &Signal, config: &BotConfig) -> EntryPlan {
     let side = candidate.signal_type;
-    build_entry_plan(
+    let mut plan = build_entry_plan(
         side,
         "CANDIDATE",
         PlanLevels {
@@ -198,12 +206,23 @@ fn plan_from_candidate(candidate: &Signal, config: &BotConfig) -> EntryPlan {
             take_profit_2: candidate.take_profit_2,
             risk_reward: Some(candidate.risk_reward_ratio),
         },
-        format!(
-            "Kế hoạch tham khảo từ candidate {} (relaxed filters).",
-            side.as_str()
-        ),
+        if candidate.dedup_key.contains("_SCENARIO_") {
+            format!(
+                "Kế hoạch tham khảo từ scenario {} — entry tại trigger, chờ xác nhận.",
+                side.as_str()
+            )
+        } else {
+            format!(
+                "Kế hoạch tham khảo từ candidate {} (relaxed filters).",
+                side.as_str()
+            )
+        },
         config,
-    )
+    );
+    plan.readiness = Some(candidate.confluence_score);
+    plan.early_entry = !candidate.is_entry_filled
+        && !matches!(candidate.entry_type, crate::models::EntryType::Market);
+    plan
 }
 
 fn plan_from_scenario(scenario: &Scenario, config: &BotConfig, note: String) -> Option<EntryPlan> {
@@ -214,7 +233,10 @@ fn plan_from_scenario(scenario: &Scenario, config: &BotConfig, note: String) -> 
     } else {
         scenario.role.trim().to_uppercase()
     };
-    Some(build_entry_plan(side, &source, levels, note, config))
+    let mut plan = build_entry_plan(side, &source, levels, note, config);
+    plan.readiness = Some(scenario.confidence);
+    plan.early_entry = scenario.confidence >= config.early_entry_min_confidence;
+    Some(plan)
 }
 
 /// Pure plan selection shared by `run_entry_check` and the unit tests.
@@ -300,11 +322,18 @@ pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult
     }
     let delta = compute_delta(&candles, config.volume_delta_lookback);
     let relaxed = relaxed_candidate_config(&config);
-    let candidate =
-        GoldMarketAnalyzer::analyze_market_with_live_price(&candles, &relaxed, live_price, now_ms);
-
     let live_view = current_live_view(state).await;
     let scenarios = current_scenarios(state).await;
+    let candidate =
+        GoldMarketAnalyzer::analyze_market_with_live_price(&candles, &relaxed, live_price, now_ms)
+            .or_else(|| {
+                if !config.early_entry_enabled {
+                    return None;
+                }
+                best_early_entry_scenario(&scenarios, config.early_entry_min_confidence).and_then(
+                    |scenario| signal_from_scenario(scenario, &config, &candles, live_price, now),
+                )
+            });
 
     let decision = review_market_decision(
         candidate.as_ref(),
@@ -514,6 +543,8 @@ mod tests {
         assert_eq!(plan.take_profit_1, 2705.5);
         assert_eq!(plan.take_profit_2, 2716.0);
         assert_eq!(plan.risk_reward, 2.0);
+        assert_eq!(plan.readiness, Some(90));
+        assert!(!plan.early_entry);
         assert!(
             plan.valid,
             "valid candidate must pass level + budget checks"
@@ -535,8 +566,25 @@ mod tests {
         assert_eq!(plan.stop_loss, 2691.0);
         assert_eq!(plan.take_profit_1, 2721.0);
         assert_eq!(plan.take_profit_2, 2731.0);
+        assert_eq!(plan.readiness, Some(85));
+        assert!(!plan.early_entry);
         assert!(plan.valid);
         assert!(plan.note.contains("PRIMARY"));
+    }
+
+    #[test]
+    fn scenario_at_threshold_is_flagged_as_early_entry() {
+        let decision = decision("BUY", Some("PRIMARY"));
+        let mut primary = scenario("PRIMARY", "BULLISH");
+        primary.confidence = 90;
+        let scenarios = scenario_response(vec![primary]);
+
+        let plan =
+            select_entry_plan(&decision, None, &scenarios, &config()).expect("scenario plan");
+
+        assert_eq!(plan.readiness, Some(90));
+        assert!(plan.early_entry);
+        assert!(plan.valid);
     }
 
     #[test]
