@@ -1,0 +1,1127 @@
+use crate::analyzer::GoldMarketAnalyzer;
+use crate::macro_flow::{align_signal_with_macro_flow, MacroFlowSnapshot};
+use crate::market_context::MarketContext;
+use crate::models::{BotConfig, Candle, SignalType};
+use crate::rsi::rsi_snapshot;
+use crate::signal_validation::validate_signal_levels;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+/// Cluster tolerance for the dynamic S/R zones used by the scenario view.
+const SR_CLUSTER_TOLERANCE: f64 = 2.5;
+/// ATR floor so tiny M15 ranges do not collapse the scenario buffers.
+const MIN_ATR: f64 = 2.5;
+/// Minimum breakout buffer above/below a level.
+const BREAKOUT_BUFFER_MIN: f64 = 2.0;
+/// Minimum stop-loss buffer around a level.
+const SL_BUFFER_MIN: f64 = 3.0;
+/// Number of recent candles used for the swing-high/low fallback.
+const SWING_FALLBACK_LOOKBACK: usize = 20;
+/// Number of M15 candles used for the ATR fallback.
+const ATR_PERIOD: usize = 14;
+/// Confidence ceiling for reference scenarios.
+const MAX_CONFIDENCE: i32 = 95;
+
+/// One read-only reference scenario. Never an executable signal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Scenario {
+    pub id: String,
+    pub name: String,
+    /// BULLISH | BEARISH | NEUTRAL
+    pub bias: String,
+    /// Human-readable trigger condition.
+    pub trigger: String,
+    /// Short condition text.
+    pub condition: String,
+    pub entry: Option<f64>,
+    pub stop_loss: Option<f64>,
+    pub take_profit_1: Option<f64>,
+    pub take_profit_2: Option<f64>,
+    pub risk_reward: Option<f64>,
+    /// Human-readable invalidation condition.
+    pub invalidation: String,
+    /// 0..=95
+    pub confidence: u8,
+    /// ALIGNED | COUNTER | MIXED | UNKNOWN
+    pub macro_alignment: String,
+    /// Levels ordered + R:R >= min + risk within range.
+    pub valid: bool,
+    /// Vietnamese notes, including why the scenario is invalid.
+    pub notes: Vec<String>,
+}
+
+/// Read-only market snapshot that accompanies the reference scenarios.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioMarket {
+    pub h4_bias: String,
+    pub h1_bias: String,
+    pub d1_bias: String,
+    pub h4_atr: f64,
+    pub nearest_support: Option<f64>,
+    pub nearest_resistance: Option<f64>,
+    pub rsi_m15: Option<f64>,
+    pub rsi_state: String,
+    pub macro_bias: String,
+    pub macro_confidence: u8,
+}
+
+/// GET /api/scenarios response. Pure snapshot; no Telegram, quota or persistence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioResponse {
+    /// "ok" | "no_data"
+    pub status: String,
+    pub generated_at: String,
+    pub price: Option<f64>,
+    pub source: String,
+    pub volume_source: String,
+    pub market: Option<ScenarioMarket>,
+    pub scenarios: Vec<Scenario>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Levels {
+    entry: f64,
+    stop_loss: f64,
+    take_profit_1: f64,
+    take_profit_2: f64,
+}
+
+impl Levels {
+    fn new(entry: f64, stop_loss: f64, take_profit_1: f64, take_profit_2: f64) -> Self {
+        Self {
+            entry: round2(entry),
+            stop_loss: round2(stop_loss),
+            take_profit_1: round2(take_profit_1),
+            take_profit_2: round2(take_profit_2),
+        }
+    }
+}
+
+struct ScenarioDraft {
+    id: &'static str,
+    name: &'static str,
+    bias: &'static str,
+    signal_type: SignalType,
+    trigger: String,
+    condition: String,
+    invalidation: String,
+    levels: Option<Levels>,
+    notes: Vec<String>,
+}
+
+struct ScenarioInputs<'a> {
+    config: &'a BotConfig,
+    price: f64,
+    atr: f64,
+    h4_bias: &'a str,
+    macro_bias: &'a str,
+    rsi_value: Option<f64>,
+    macro_flow: Option<&'a MacroFlowSnapshot>,
+}
+
+/// Build four read-only reference scenarios for the current market.
+///
+/// Pure function: no network, no locks, no Telegram, no signal persistence and no
+/// quota consumption. It intentionally does not call the strict signal engine, so
+/// scenarios are available even when the scanner says `no_setup`.
+// The builder mirrors the live-view signature and keeps every display input explicit.
+#[allow(clippy::too_many_arguments)]
+pub fn build_scenarios(
+    candles: &[Candle],
+    config: &BotConfig,
+    live_price: Option<f64>,
+    context: Option<&MarketContext>,
+    macro_flow: Option<&MacroFlowSnapshot>,
+    source: &str,
+    volume_source: &str,
+    now_ms: i64,
+) -> ScenarioResponse {
+    let generated_at = generated_at(now_ms);
+    let warnings = build_warnings(context, macro_flow);
+    let price = live_price
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .or_else(|| {
+            candles
+                .last()
+                .map(|candle| candle.close)
+                .filter(|value| value.is_finite() && *value > 0.0)
+        });
+
+    if candles.len() < config.lookback_period.saturating_add(5) {
+        return ScenarioResponse {
+            status: "no_data".to_string(),
+            generated_at,
+            price: price.map(round2),
+            source: source.to_string(),
+            volume_source: volume_source.to_string(),
+            market: None,
+            scenarios: Vec::new(),
+            warnings,
+        };
+    }
+
+    let Some(price) = price else {
+        return ScenarioResponse {
+            status: "no_data".to_string(),
+            generated_at,
+            price: None,
+            source: source.to_string(),
+            volume_source: volume_source.to_string(),
+            market: None,
+            scenarios: Vec::new(),
+            warnings,
+        };
+    };
+
+    let (support_levels, resistance_levels) = collect_levels(candles, config, price, context);
+    let nearest_support = support_levels.first().copied();
+    let nearest_resistance = resistance_levels.first().copied();
+
+    let atr = effective_atr(candles, context);
+    let breakout_buffer = (atr * 0.25).max(BREAKOUT_BUFFER_MIN);
+    let sl_buffer = (atr * 0.50).max(SL_BUFFER_MIN);
+
+    let rsi = rsi_snapshot(
+        candles,
+        config.rsi_period,
+        config.rsi_overbought,
+        config.rsi_oversold,
+        config.rsi_divergence_lookback,
+        config.rsi_pivot_k,
+    );
+    let (macro_bias, macro_confidence) = macro_view(macro_flow);
+    let h4_bias = timeframe_bias(context.map(|context| &context.h4));
+    let h1_bias = timeframe_bias(context.map(|context| &context.h1));
+    let d1_bias = timeframe_bias(context.map(|context| &context.d1));
+
+    let market = ScenarioMarket {
+        h4_bias: h4_bias.clone(),
+        h1_bias,
+        d1_bias,
+        h4_atr: round2(atr),
+        nearest_support: nearest_support.map(round2),
+        nearest_resistance: nearest_resistance.map(round2),
+        rsi_m15: rsi.value.map(round2),
+        rsi_state: rsi.state,
+        macro_bias: macro_bias.clone(),
+        macro_confidence,
+    };
+
+    let inputs = ScenarioInputs {
+        config,
+        price,
+        atr,
+        h4_bias: &h4_bias,
+        macro_bias: &macro_bias,
+        rsi_value: rsi.value,
+        macro_flow,
+    };
+
+    let drafts = vec![
+        bullish_breakout_draft(
+            price,
+            atr,
+            breakout_buffer,
+            sl_buffer,
+            nearest_resistance,
+            &resistance_levels,
+        ),
+        bearish_breakdown_draft(
+            price,
+            atr,
+            breakout_buffer,
+            sl_buffer,
+            nearest_support,
+            &support_levels,
+        ),
+        bullish_bounce_draft(
+            price,
+            atr,
+            breakout_buffer,
+            sl_buffer,
+            nearest_support,
+            nearest_resistance,
+        ),
+        bearish_rejection_draft(
+            price,
+            atr,
+            breakout_buffer,
+            sl_buffer,
+            nearest_support,
+            nearest_resistance,
+        ),
+    ];
+
+    let scenarios = drafts
+        .into_iter()
+        .map(|draft| finalize_scenario(draft, &inputs))
+        .collect();
+
+    ScenarioResponse {
+        status: "ok".to_string(),
+        generated_at,
+        price: Some(round2(price)),
+        source: source.to_string(),
+        volume_source: volume_source.to_string(),
+        market: Some(market),
+        scenarios,
+        warnings,
+    }
+}
+
+fn bullish_breakout_draft(
+    price: f64,
+    atr: f64,
+    breakout_buffer: f64,
+    sl_buffer: f64,
+    nearest_resistance: Option<f64>,
+    resistance_levels: &[f64],
+) -> ScenarioDraft {
+    let trigger = round2(
+        nearest_resistance
+            .map(|level| level + breakout_buffer)
+            .unwrap_or(price + atr),
+    );
+    let stop_loss = round2(
+        nearest_resistance
+            .map(|level| level - sl_buffer)
+            .unwrap_or(trigger - 2.0 * atr),
+    );
+    let risk = (trigger - stop_loss).abs();
+    let take_profit_1 = round2(
+        resistance_levels
+            .iter()
+            .copied()
+            .find(|level| *level > trigger)
+            .unwrap_or(trigger + 2.0 * risk),
+    );
+    let take_profit_2 = round2(
+        resistance_levels
+            .iter()
+            .copied()
+            .find(|level| *level > take_profit_1)
+            .unwrap_or_else(|| (trigger + 3.0 * risk).max(take_profit_1 + 1.0)),
+    );
+
+    let invalidation = match nearest_resistance {
+        Some(level) => format!("Đóng M15 trở lại dưới {:.2}", level),
+        None => format!("Đóng M15 trở lại dưới {:.2}", trigger),
+    };
+    let trigger_text = match nearest_resistance {
+        Some(level) => format!("Đóng M15 trên {:.2} (phá kháng cự {:.2})", trigger, level),
+        None => format!("Đóng M15 trên {:.2}", trigger),
+    };
+
+    ScenarioDraft {
+        id: "bullish_breakout",
+        name: "Bullish breakout",
+        bias: "BULLISH",
+        signal_type: SignalType::Buy,
+        trigger: trigger_text,
+        condition: "Phá vỡ kháng cự gần nhất".to_string(),
+        invalidation,
+        levels: Some(Levels::new(
+            trigger,
+            stop_loss,
+            take_profit_1,
+            take_profit_2,
+        )),
+        notes: vec!["Kịch bản breakout cần nến M15 đóng cửa xác nhận.".to_string()],
+    }
+}
+
+fn bearish_breakdown_draft(
+    price: f64,
+    atr: f64,
+    breakout_buffer: f64,
+    sl_buffer: f64,
+    nearest_support: Option<f64>,
+    support_levels: &[f64],
+) -> ScenarioDraft {
+    let trigger = round2(
+        nearest_support
+            .map(|level| level - breakout_buffer)
+            .unwrap_or(price - atr),
+    );
+    let stop_loss = round2(
+        nearest_support
+            .map(|level| level + sl_buffer)
+            .unwrap_or(trigger + 2.0 * atr),
+    );
+    let risk = (stop_loss - trigger).abs();
+    let take_profit_1 = round2(
+        support_levels
+            .iter()
+            .copied()
+            .find(|level| *level < trigger)
+            .unwrap_or(trigger - 2.0 * risk),
+    );
+    let take_profit_2 = round2(
+        support_levels
+            .iter()
+            .copied()
+            .find(|level| *level < take_profit_1)
+            .unwrap_or_else(|| (trigger - 3.0 * risk).min(take_profit_1 - 1.0)),
+    );
+
+    let invalidation = match nearest_support {
+        Some(level) => format!("Đóng M15 trở lại trên {:.2}", level),
+        None => format!("Đóng M15 trở lại trên {:.2}", trigger),
+    };
+    let trigger_text = match nearest_support {
+        Some(level) => format!("Đóng M15 dưới {:.2} (phá hỗ trợ {:.2})", trigger, level),
+        None => format!("Đóng M15 dưới {:.2}", trigger),
+    };
+
+    ScenarioDraft {
+        id: "bearish_breakdown",
+        name: "Bearish breakdown",
+        bias: "BEARISH",
+        signal_type: SignalType::Sell,
+        trigger: trigger_text,
+        condition: "Phá vỡ hỗ trợ gần nhất".to_string(),
+        invalidation,
+        levels: Some(Levels::new(
+            trigger,
+            stop_loss,
+            take_profit_1,
+            take_profit_2,
+        )),
+        notes: vec!["Kịch bản breakdown cần nến M15 đóng cửa xác nhận.".to_string()],
+    }
+}
+
+fn bullish_bounce_draft(
+    price: f64,
+    atr: f64,
+    breakout_buffer: f64,
+    sl_buffer: f64,
+    nearest_support: Option<f64>,
+    nearest_resistance: Option<f64>,
+) -> ScenarioDraft {
+    let Some(support) = nearest_support else {
+        return ScenarioDraft {
+            id: "bullish_bounce",
+            name: "Bullish bounce",
+            bias: "BULLISH",
+            signal_type: SignalType::Buy,
+            trigger: "Chưa có vùng hỗ trợ gần để chờ bounce.".to_string(),
+            condition: "Bounce từ hỗ trợ gần nhất".to_string(),
+            invalidation: "Không áp dụng — thiếu vùng hỗ trợ.".to_string(),
+            levels: None,
+            notes: vec!["Không có vùng hỗ trợ gần.".to_string()],
+        };
+    };
+
+    let distance = (price - support).abs();
+    if distance > atr * 1.5 {
+        return ScenarioDraft {
+            id: "bullish_bounce",
+            name: "Bullish bounce",
+            bias: "BULLISH",
+            signal_type: SignalType::Buy,
+            trigger: format!(
+                "Hỗ trợ {:.2} cách giá {:.2} — chưa đủ gần để bounce.",
+                support, distance
+            ),
+            condition: "Bounce từ hỗ trợ gần nhất".to_string(),
+            invalidation: format!("Đóng M15 dưới {:.2}", support),
+            levels: None,
+            notes: vec![format!(
+                "Hỗ trợ gần nhất quá xa ({:.2} > 1.5×ATR = {:.2}) — không đủ điều kiện.",
+                distance,
+                atr * 1.5
+            )],
+        };
+    }
+
+    let entry = round2(support + breakout_buffer);
+    let stop_loss = round2(support - sl_buffer);
+    let risk = (entry - stop_loss).abs();
+    let take_profit_1 = round2(match nearest_resistance {
+        Some(resistance) if (support + resistance) / 2.0 > entry => (support + resistance) / 2.0,
+        _ => entry + 2.0 * risk,
+    });
+    let take_profit_2 = round2(match nearest_resistance {
+        Some(resistance) if resistance > take_profit_1 => resistance,
+        _ => (entry + 3.0 * risk).max(take_profit_1 + 1.0),
+    });
+
+    ScenarioDraft {
+        id: "bullish_bounce",
+        name: "Bullish bounce",
+        bias: "BULLISH",
+        signal_type: SignalType::Buy,
+        trigger: format!("Chạm hỗ trợ {:.2} và đóng M15 trên {:.2}", support, entry),
+        condition: "Bounce từ hỗ trợ gần nhất".to_string(),
+        invalidation: format!("Đóng M15 dưới {:.2}", support),
+        levels: Some(Levels::new(entry, stop_loss, take_profit_1, take_profit_2)),
+        notes: vec!["Kịch bản bounce cần nến M15 giữ được vùng hỗ trợ.".to_string()],
+    }
+}
+
+fn bearish_rejection_draft(
+    price: f64,
+    atr: f64,
+    breakout_buffer: f64,
+    sl_buffer: f64,
+    nearest_support: Option<f64>,
+    nearest_resistance: Option<f64>,
+) -> ScenarioDraft {
+    let Some(resistance) = nearest_resistance else {
+        return ScenarioDraft {
+            id: "bearish_rejection",
+            name: "Bearish rejection",
+            bias: "BEARISH",
+            signal_type: SignalType::Sell,
+            trigger: "Chưa có vùng kháng cự gần để chờ rejection.".to_string(),
+            condition: "Rejection tại kháng cự gần nhất".to_string(),
+            invalidation: "Không áp dụng — thiếu vùng kháng cự.".to_string(),
+            levels: None,
+            notes: vec!["Không có vùng kháng cự gần.".to_string()],
+        };
+    };
+
+    let distance = (resistance - price).abs();
+    if distance > atr * 1.5 {
+        return ScenarioDraft {
+            id: "bearish_rejection",
+            name: "Bearish rejection",
+            bias: "BEARISH",
+            signal_type: SignalType::Sell,
+            trigger: format!(
+                "Kháng cự {:.2} cách giá {:.2} — chưa đủ gần để rejection.",
+                resistance, distance
+            ),
+            condition: "Rejection tại kháng cự gần nhất".to_string(),
+            invalidation: format!("Đóng M15 trên {:.2}", resistance),
+            levels: None,
+            notes: vec![format!(
+                "Kháng cự gần nhất quá xa ({:.2} > 1.5×ATR = {:.2}) — không đủ điều kiện.",
+                distance,
+                atr * 1.5
+            )],
+        };
+    }
+
+    let entry = round2(resistance - breakout_buffer);
+    let stop_loss = round2(resistance + sl_buffer);
+    let risk = (stop_loss - entry).abs();
+    let take_profit_1 = round2(match nearest_support {
+        Some(support) if (support + resistance) / 2.0 < entry => (support + resistance) / 2.0,
+        _ => entry - 2.0 * risk,
+    });
+    let take_profit_2 = round2(match nearest_support {
+        Some(support) if support < take_profit_1 => support,
+        _ => (entry - 3.0 * risk).min(take_profit_1 - 1.0),
+    });
+
+    ScenarioDraft {
+        id: "bearish_rejection",
+        name: "Bearish rejection",
+        bias: "BEARISH",
+        signal_type: SignalType::Sell,
+        trigger: format!(
+            "Chạm kháng cự {:.2} và đóng M15 dưới {:.2}",
+            resistance, entry
+        ),
+        condition: "Rejection tại kháng cự gần nhất".to_string(),
+        invalidation: format!("Đóng M15 trên {:.2}", resistance),
+        levels: Some(Levels::new(entry, stop_loss, take_profit_1, take_profit_2)),
+        notes: vec!["Kịch bản rejection cần nến M15 giữ được vùng kháng cự.".to_string()],
+    }
+}
+
+fn finalize_scenario(draft: ScenarioDraft, inputs: &ScenarioInputs<'_>) -> Scenario {
+    let mut notes = draft.notes;
+    let macro_alignment = scenario_macro_alignment(draft.bias, inputs.macro_flow);
+
+    let (entry, stop_loss, take_profit_1, take_profit_2, risk_reward, valid) = match draft.levels {
+        Some(levels) => {
+            let risk = (levels.entry - levels.stop_loss).abs();
+            let risk_reward = if risk > 0.0 {
+                Some((levels.take_profit_1 - levels.entry).abs() / risk)
+            } else {
+                None
+            };
+            let valid = match validate_signal_levels(
+                draft.signal_type,
+                levels.entry,
+                levels.stop_loss,
+                levels.take_profit_1,
+                levels.take_profit_2,
+                inputs.config.min_risk_reward,
+            ) {
+                Ok(()) => true,
+                Err(reason) => {
+                    notes.push(format!("Không hợp lệ: {reason}"));
+                    false
+                }
+            };
+            if let Some(risk_reward) =
+                risk_reward.filter(|value| *value + 1e-9 < inputs.config.min_risk_reward)
+            {
+                notes.push(format!(
+                    "R:R {:.2} < min {:.2} — không đủ điều kiện.",
+                    risk_reward, inputs.config.min_risk_reward
+                ));
+            }
+            (
+                Some(levels.entry),
+                Some(levels.stop_loss),
+                Some(levels.take_profit_1),
+                Some(levels.take_profit_2),
+                risk_reward,
+                valid,
+            )
+        }
+        None => (None, None, None, None, None, false),
+    };
+
+    if macro_alignment == "COUNTER" {
+        notes.push(format!(
+            "Macro {} — {} là counter-macro.",
+            inputs.macro_bias,
+            draft.signal_type.as_str()
+        ));
+    }
+
+    let confidence = scenario_confidence(
+        draft.bias,
+        draft.signal_type,
+        entry,
+        risk_reward,
+        inputs,
+        &macro_alignment,
+    );
+
+    Scenario {
+        id: draft.id.to_string(),
+        name: draft.name.to_string(),
+        bias: draft.bias.to_string(),
+        trigger: draft.trigger,
+        condition: draft.condition,
+        entry,
+        stop_loss,
+        take_profit_1,
+        take_profit_2,
+        risk_reward,
+        invalidation: draft.invalidation,
+        confidence,
+        macro_alignment,
+        valid,
+        notes,
+    }
+}
+
+fn scenario_confidence(
+    bias: &str,
+    signal_type: SignalType,
+    entry: Option<f64>,
+    risk_reward: Option<f64>,
+    inputs: &ScenarioInputs<'_>,
+    macro_alignment: &str,
+) -> u8 {
+    let mut score: i32 = 50;
+
+    if bias == inputs.h4_bias {
+        score += 10;
+    }
+    if bias == inputs.macro_bias {
+        score += 10;
+    }
+    if let Some(rsi) = inputs.rsi_value {
+        let not_extreme = match signal_type {
+            SignalType::Buy => rsi <= inputs.config.rsi_overbought,
+            SignalType::Sell => rsi >= inputs.config.rsi_oversold,
+        };
+        if not_extreme {
+            score += 10;
+        }
+    }
+    if risk_reward.is_some_and(|value| value + 1e-9 >= inputs.config.min_risk_reward) {
+        score += 10;
+    }
+    if entry.is_some_and(|value| (inputs.price - value).abs() <= inputs.atr * 1.5) {
+        score += 5;
+    }
+
+    match macro_alignment {
+        "COUNTER" => score -= 15,
+        "ALIGNED" => score += 5,
+        _ => {}
+    }
+
+    score.clamp(0, MAX_CONFIDENCE) as u8
+}
+
+fn scenario_macro_alignment(bias: &str, macro_flow: Option<&MacroFlowSnapshot>) -> String {
+    let signal_type = match bias {
+        "BULLISH" => "BUY",
+        "BEARISH" => "SELL",
+        _ => "",
+    };
+    align_signal_with_macro_flow(signal_type, macro_flow).alignment
+}
+
+fn collect_levels(
+    candles: &[Candle],
+    config: &BotConfig,
+    price: f64,
+    context: Option<&MarketContext>,
+) -> (Vec<f64>, Vec<f64>) {
+    let (supports, resistances) = GoldMarketAnalyzer::detect_dynamic_sr_zones(
+        candles,
+        config.lookback_period,
+        SR_CLUSTER_TOLERANCE,
+    );
+
+    let mut support_levels: Vec<f64> = supports
+        .iter()
+        .map(|zone| zone.price)
+        .filter(|level| level.is_finite() && *level < price)
+        .collect();
+    support_levels.sort_by(|left, right| right.total_cmp(left));
+
+    let mut resistance_levels: Vec<f64> = resistances
+        .iter()
+        .map(|zone| zone.price)
+        .filter(|level| level.is_finite() && *level > price)
+        .collect();
+    resistance_levels.sort_by(f64::total_cmp);
+
+    if support_levels.is_empty() {
+        let mut fallback = Vec::new();
+        if let Some(context) = context {
+            for level in [
+                context.h4.nearest_support,
+                context.h1.nearest_support,
+                context.d1.nearest_support,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if level.is_finite() && level < price {
+                    fallback.push(level);
+                }
+            }
+        }
+        let start = candles.len().saturating_sub(SWING_FALLBACK_LOOKBACK);
+        if let Some(level) = candles[start..]
+            .iter()
+            .map(|candle| candle.low)
+            .filter(|level| level.is_finite() && *level < price)
+            .max_by(f64::total_cmp)
+        {
+            fallback.push(level);
+        }
+        fallback.sort_by(|left, right| right.total_cmp(left));
+        support_levels = fallback;
+    }
+
+    if resistance_levels.is_empty() {
+        let mut fallback = Vec::new();
+        if let Some(context) = context {
+            for level in [
+                context.h4.nearest_resistance,
+                context.h1.nearest_resistance,
+                context.d1.nearest_resistance,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if level.is_finite() && level > price {
+                    fallback.push(level);
+                }
+            }
+        }
+        let start = candles.len().saturating_sub(SWING_FALLBACK_LOOKBACK);
+        if let Some(level) = candles[start..]
+            .iter()
+            .map(|candle| candle.high)
+            .filter(|level| level.is_finite() && *level > price)
+            .min_by(f64::total_cmp)
+        {
+            fallback.push(level);
+        }
+        fallback.sort_by(f64::total_cmp);
+        resistance_levels = fallback;
+    }
+
+    (support_levels, resistance_levels)
+}
+
+fn effective_atr(candles: &[Candle], context: Option<&MarketContext>) -> f64 {
+    let context_atr = context
+        .map(|context| {
+            if context.h4.atr14 > 0.0 {
+                context.h4.atr14
+            } else {
+                context.h1.atr14
+            }
+        })
+        .unwrap_or(0.0);
+
+    let atr = if context_atr.is_finite() && context_atr > 0.0 {
+        context_atr
+    } else {
+        let start = candles.len().saturating_sub(ATR_PERIOD);
+        let slice = &candles[start..];
+        if slice.is_empty() {
+            0.0
+        } else {
+            slice.iter().map(Candle::range).sum::<f64>() / slice.len() as f64
+        }
+    };
+
+    if atr.is_finite() && atr > MIN_ATR {
+        atr
+    } else {
+        MIN_ATR
+    }
+}
+
+fn timeframe_bias(context: Option<&crate::market_context::TimeframeContext>) -> String {
+    context
+        .map(|context| {
+            let bias = context.bias.trim().to_uppercase();
+            if bias.is_empty() {
+                "UNKNOWN".to_string()
+            } else {
+                bias
+            }
+        })
+        .unwrap_or_else(|| "UNKNOWN".to_string())
+}
+
+fn macro_view(macro_flow: Option<&MacroFlowSnapshot>) -> (String, u8) {
+    match macro_flow {
+        Some(snapshot) => {
+            let bias = snapshot.scorecard.macro_bias.trim().to_uppercase();
+            let bias = if bias.is_empty() {
+                "UNKNOWN".to_string()
+            } else {
+                bias
+            };
+            (
+                bias,
+                snapshot.scorecard.confidence.min(MAX_CONFIDENCE as u8),
+            )
+        }
+        None => ("UNKNOWN".to_string(), 0),
+    }
+}
+
+fn build_warnings(
+    context: Option<&MarketContext>,
+    macro_flow: Option<&MacroFlowSnapshot>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if context.is_none() {
+        warnings.push("Chưa có HTF context".to_string());
+    }
+    if macro_flow.is_none() {
+        warnings.push("Macro/Flow chưa sẵn sàng".to_string());
+    }
+    warnings
+}
+
+fn generated_at(now_ms: i64) -> String {
+    DateTime::<Utc>::from_timestamp_millis(now_ms)
+        .map(|at| at.to_rfc3339())
+        .unwrap_or_else(|| Utc::now().to_rfc3339())
+}
+
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::macro_flow::MacroFlowScorecard;
+    use crate::models::Timeframe;
+
+    const BASE_TS: i64 = 1_700_000_000_000;
+    const STEP_MS: i64 = 15 * 60 * 1000;
+
+    fn candle(timestamp: i64, open: f64, high: f64, low: f64, close: f64) -> Candle {
+        Candle {
+            timestamp,
+            open,
+            high,
+            low,
+            close,
+            volume: 1000.0,
+            taker_buy_volume: 0.0,
+            timeframe: Timeframe::M15,
+        }
+    }
+
+    /// Zigzag series with stable swing highs/lows so the dynamic S/R detector
+    /// returns a support below and a resistance above the current price.
+    fn zigzag_candles(count: usize) -> Vec<Candle> {
+        (0..count)
+            .map(|index| {
+                let level = match index % 4 {
+                    0 => 2670.0,
+                    2 => 2690.0,
+                    _ => 2680.0,
+                };
+                candle(
+                    BASE_TS + index as i64 * STEP_MS,
+                    level,
+                    level + 0.5,
+                    level - 0.5,
+                    level,
+                )
+            })
+            .collect()
+    }
+
+    /// Flat series: no pivots and no swing high/low beyond the current price.
+    fn flat_candles(count: usize) -> Vec<Candle> {
+        (0..count)
+            .map(|index| {
+                candle(
+                    BASE_TS + index as i64 * STEP_MS,
+                    2680.0,
+                    2680.0,
+                    2680.0,
+                    2680.0,
+                )
+            })
+            .collect()
+    }
+
+    fn config() -> BotConfig {
+        BotConfig {
+            lookback_period: 30,
+            min_risk_reward: 2.0,
+            ..BotConfig::default()
+        }
+    }
+
+    fn macro_snapshot(bias: &str, confidence: u8) -> MacroFlowSnapshot {
+        MacroFlowSnapshot {
+            updated_at: "2026-11-12T00:00:00Z".to_string(),
+            fred_ok: true,
+            yahoo_ok: true,
+            cot_ok: true,
+            metrics: Vec::new(),
+            cot: None,
+            scorecard: MacroFlowScorecard {
+                macro_bias: bias.to_string(),
+                confidence,
+                score: 0,
+                direction: "MIXED".to_string(),
+                driver: "TEST".to_string(),
+                flow_quality: "MIXED".to_string(),
+                risk_regime: "NEUTRAL".to_string(),
+                rate_regime: "NEUTRAL".to_string(),
+                usd_regime: "NEUTRAL".to_string(),
+                vol_regime: "NORMAL".to_string(),
+                notes: Vec::new(),
+            },
+            warnings: Vec::new(),
+            sources: Vec::new(),
+        }
+    }
+
+    fn build(candles: &[Candle], macro_flow: Option<&MacroFlowSnapshot>) -> ScenarioResponse {
+        build_scenarios(
+            candles,
+            &config(),
+            None,
+            None,
+            macro_flow,
+            "TEST",
+            "TEST_VOLUME",
+            BASE_TS,
+        )
+    }
+
+    #[test]
+    fn no_data_when_candles_are_below_lookback_requirement() {
+        let response = build(&zigzag_candles(10), None);
+
+        assert_eq!(response.status, "no_data");
+        assert!(response.scenarios.is_empty());
+        assert!(response.market.is_none());
+        assert!(response
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("HTF")));
+    }
+
+    #[test]
+    fn zigzag_market_builds_four_reference_scenarios() {
+        let response = build(&zigzag_candles(60), None);
+
+        assert_eq!(response.status, "ok");
+        assert_eq!(response.scenarios.len(), 4);
+        assert_eq!(response.scenarios[0].id, "bullish_breakout");
+        assert_eq!(response.scenarios[1].id, "bearish_breakdown");
+        assert_eq!(response.scenarios[2].id, "bullish_bounce");
+        assert_eq!(response.scenarios[3].id, "bearish_rejection");
+
+        let market = response.market.expect("market block");
+        assert!(market.nearest_support.is_some());
+        assert!(market.nearest_resistance.is_some());
+        assert!(market.h4_atr >= MIN_ATR);
+    }
+
+    #[test]
+    fn bullish_breakout_levels_are_ordered_and_valid() {
+        let response = build(&zigzag_candles(60), None);
+        let breakout = response
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == "bullish_breakout")
+            .expect("bullish breakout scenario");
+
+        assert!(breakout.valid);
+        let entry = breakout.entry.expect("entry");
+        let stop_loss = breakout.stop_loss.expect("stop loss");
+        let take_profit_1 = breakout.take_profit_1.expect("tp1");
+        let take_profit_2 = breakout.take_profit_2.expect("tp2");
+
+        assert!(stop_loss < entry);
+        assert!(entry < take_profit_1);
+        assert!(take_profit_1 < take_profit_2);
+        assert!(breakout.risk_reward.expect("risk reward") >= 2.0);
+        assert!(breakout.notes.iter().any(|note| note.contains("breakout")));
+    }
+
+    #[test]
+    fn bounce_and_rejection_are_invalid_without_levels() {
+        let response = build(&flat_candles(60), None);
+        let bounce = response
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == "bullish_bounce")
+            .expect("bullish bounce scenario");
+        let rejection = response
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == "bearish_rejection")
+            .expect("bearish rejection scenario");
+
+        assert!(!bounce.valid);
+        assert!(bounce.entry.is_none());
+        assert!(bounce
+            .notes
+            .iter()
+            .any(|note| note.contains("Không có vùng hỗ trợ gần")));
+
+        assert!(!rejection.valid);
+        assert!(rejection.entry.is_none());
+        assert!(rejection
+            .notes
+            .iter()
+            .any(|note| note.contains("Không có vùng kháng cự gần")));
+    }
+
+    #[test]
+    fn counter_macro_lowers_confidence() {
+        let candles = zigzag_candles(60);
+        let aligned_macro = macro_snapshot("BULLISH", 80);
+        let counter_macro = macro_snapshot("BEARISH", 80);
+
+        let aligned = build(&candles, Some(&aligned_macro));
+        let counter = build(&candles, Some(&counter_macro));
+        let aligned_breakout = aligned
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == "bullish_breakout")
+            .expect("aligned breakout");
+        let counter_breakout = counter
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == "bullish_breakout")
+            .expect("counter breakout");
+
+        assert_eq!(aligned_breakout.macro_alignment, "ALIGNED");
+        assert_eq!(counter_breakout.macro_alignment, "COUNTER");
+        assert!(counter_breakout.confidence < aligned_breakout.confidence);
+        assert!(counter_breakout
+            .notes
+            .iter()
+            .any(|note| note.contains("counter-macro")));
+    }
+
+    #[test]
+    fn build_scenarios_is_pure_and_repeatable() {
+        let candles = zigzag_candles(60);
+        let first = build(&candles, None);
+        let second = build(&candles, None);
+
+        assert_eq!(first.status, second.status);
+        assert_eq!(first.scenarios.len(), second.scenarios.len());
+        for (left, right) in first.scenarios.iter().zip(second.scenarios.iter()) {
+            assert_eq!(left.id, right.id);
+            assert_eq!(left.entry, right.entry);
+            assert_eq!(left.stop_loss, right.stop_loss);
+            assert_eq!(left.take_profit_1, right.take_profit_1);
+            assert_eq!(left.take_profit_2, right.take_profit_2);
+            assert_eq!(left.valid, right.valid);
+        }
+    }
+
+    #[test]
+    fn response_serializes_with_the_documented_api_shape() {
+        let response = build(&zigzag_candles(60), None);
+        let value = serde_json::to_value(&response).expect("serialize scenario response");
+
+        for key in [
+            "status",
+            "generated_at",
+            "price",
+            "source",
+            "volume_source",
+            "market",
+            "scenarios",
+            "warnings",
+        ] {
+            assert!(value.get(key).is_some(), "missing response key: {key}");
+        }
+
+        let market = &value["market"];
+        for key in [
+            "h4_bias",
+            "h1_bias",
+            "d1_bias",
+            "h4_atr",
+            "nearest_support",
+            "nearest_resistance",
+            "rsi_m15",
+            "rsi_state",
+            "macro_bias",
+            "macro_confidence",
+        ] {
+            assert!(market.get(key).is_some(), "missing market key: {key}");
+        }
+
+        let scenario = &value["scenarios"][0];
+        for key in [
+            "id",
+            "name",
+            "bias",
+            "trigger",
+            "condition",
+            "entry",
+            "stop_loss",
+            "take_profit_1",
+            "take_profit_2",
+            "risk_reward",
+            "invalidation",
+            "confidence",
+            "macro_alignment",
+            "valid",
+            "notes",
+        ] {
+            assert!(scenario.get(key).is_some(), "missing scenario key: {key}");
+        }
+    }
+}

@@ -28,6 +28,8 @@ mod live;
 mod macro_flow;
 mod market;
 mod news;
+mod scanner;
+mod scenarios;
 mod signals;
 mod simulation;
 mod telegram;
@@ -41,6 +43,8 @@ use live::get_live_view;
 use macro_flow::get_macro_flow;
 use market::{get_htf_candles, get_market_context, get_recent_candles};
 use news::{get_latest_macro_bias, get_news_calendar, trigger_daily_macro_cron};
+use scanner::{send_scenario_telegram, start_scanner, stop_scanner};
+use scenarios::get_scenarios;
 use signals::{get_all_signals, get_stats};
 use simulation::simulate_setup;
 use telegram::{send_signal_telegram, trigger_test_telegram};
@@ -158,6 +162,13 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/divergence-alerts", get(get_divergence_alerts))
         // Preview read-only: không gửi Telegram, không lưu tín hiệu, không tiêu hao quota
         .route("/api/live-view", get(get_live_view))
+        // 4 kịch bản tham khảo read-only: không phải entry, không gửi Telegram/quota
+        .route("/api/scenarios", get(get_scenarios))
+        // Start/Stop scanner chỉ đổi is_active; Start gửi scenario view tham khảo
+        .route("/api/scanner/start", post(start_scanner))
+        .route("/api/scanner/stop", post(stop_scanner))
+        // Nút "Gửi Telegram" thủ công cho Scenario View (không quota/tín hiệu)
+        .route("/api/scenarios/telegram", post(send_scenario_telegram))
         // Macro & Flow read-only: bối cảnh vĩ mô/dòng tiền, không phải entry
         .route("/api/macro-flow", get(get_macro_flow))
         .with_state(state)

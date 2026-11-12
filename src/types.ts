@@ -207,6 +207,59 @@ export interface LiveViewResponse {
   generated_at?: string;
 }
 
+/**
+ * One read-only reference scenario from GET /api/scenarios. It is never an
+ * executable signal: no Telegram, no quota, no persistence.
+ */
+export interface Scenario {
+  id: string;
+  name: string;
+  bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL' | string;
+  /** Human-readable trigger condition. */
+  trigger: string;
+  /** Short condition text. */
+  condition: string;
+  entry: number | null;
+  stop_loss: number | null;
+  take_profit_1: number | null;
+  take_profit_2: number | null;
+  risk_reward: number | null;
+  invalidation: string;
+  /** 0..95 */
+  confidence: number;
+  macro_alignment: 'ALIGNED' | 'COUNTER' | 'MIXED' | 'UNKNOWN' | string;
+  /** Levels ordered + R:R >= min + risk within range. */
+  valid: boolean;
+  /** Vietnamese notes, including why the scenario is invalid. */
+  notes: string[];
+}
+
+/** Read-only market snapshot that accompanies the reference scenarios. */
+export interface ScenarioMarket {
+  h4_bias: string;
+  h1_bias: string;
+  d1_bias: string;
+  h4_atr: number;
+  nearest_support: number | null;
+  nearest_resistance: number | null;
+  rsi_m15: number | null;
+  rsi_state: string;
+  macro_bias: string;
+  macro_confidence: number;
+}
+
+/** GET /api/scenarios response. Read-only; never an entry confirmation. */
+export interface ScenarioResponse {
+  status: 'ok' | 'no_data';
+  generated_at: string;
+  price: number | null;
+  source: string;
+  volume_source: string;
+  market: ScenarioMarket | null;
+  scenarios: Scenario[];
+  warnings: string[];
+}
+
 /** Aggressive taker flow of the latest M15 candle + CVD over the lookback window. */
 export interface VolumeDeltaSnapshot {
   buy_volume: number;

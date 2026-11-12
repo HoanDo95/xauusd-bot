@@ -9,6 +9,7 @@ import {
   MacroFlowResponse,
   MarketContext,
   NewsCalendarData,
+  ScenarioResponse,
   Signal,
   SupportResistanceZone,
   TrendBias,
@@ -22,10 +23,14 @@ import {
   fetchMacroFlow,
   fetchMarketContext,
   fetchNewsCalendar,
+  fetchScenarios,
   fetchSignals,
   saveConfig,
+  sendScenariosTelegram,
   sendSignalTelegram,
   simulateSetup,
+  startScanner,
+  stopScanner,
   testTelegram,
   type SimulateSetupType,
 } from '../lib/api';
@@ -33,6 +38,7 @@ import { Header, type DashboardTab } from '../components/Header';
 import { MetricCards } from '../components/MetricCards';
 import { MacroContextCard } from '../components/MacroContextCard';
 import { MacroFlowCard } from '../components/MacroFlowCard';
+import { ScenarioCard } from '../components/ScenarioCard';
 import { LiveSetupCard } from '../components/LiveSetupCard';
 import { DivergenceAlertsCard } from '../components/DivergenceAlertsCard';
 import { HtfChartCard } from '../components/HtfChartCard';
@@ -133,6 +139,7 @@ export default function DashboardPage() {
   });
   const [liveView, setLiveView] = useState<LiveViewResponse | null>(null);
   const [macroFlow, setMacroFlow] = useState<MacroFlowResponse | null>(null);
+  const [scenarios, setScenarios] = useState<ScenarioResponse | null>(null);
 
   const [config, setConfig] = useState<BotConfig>(DEFAULT_CONFIG);
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
@@ -246,6 +253,16 @@ export default function DashboardPage() {
     }
   }, []);
 
+  // Fetch the four read-only reference scenarios (never an entry confirmation).
+  const loadScenarios = useCallback(async () => {
+    try {
+      const data = await fetchScenarios();
+      setScenarios(data);
+    } catch (err) {
+      console.error('Lỗi tải kịch bản thị trường:', err);
+    }
+  }, []);
+
   useEffect(() => {
     void loadCandles();
     void loadSignals();
@@ -297,6 +314,16 @@ export default function DashboardPage() {
     return () => clearInterval(timer);
   }, [loadMacroFlow]);
 
+  // Reference scenarios are independent of the scanner and refresh once a minute.
+  useEffect(() => {
+    void loadScenarios();
+    const timer = setInterval(() => {
+      void loadScenarios();
+    }, 60_000);
+
+    return () => clearInterval(timer);
+  }, [loadScenarios]);
+
   // Handle a manual simulation (never consumes the daily Sniper quota).
   const handleSimulate = async (type: SimulateSetupType) => {
     setIsLoading(true);
@@ -338,28 +365,52 @@ export default function DashboardPage() {
     }
   };
 
-  // Start/Stop the scanner via the existing `is_active` config flag.
-  // The backend scanner skips signal generation while paused; this only toggles
-  // the flag and refreshes the read-only live view.
+  // Start/Stop the scanner via the dedicated scanner endpoints.
+  // Start also sends the read-only reference scenario view to Telegram; neither
+  // action inserts a trade signal or consumes the Sniper quota.
   const handleToggleScanner = async () => {
-    const nextActive = !config.is_active;
     setIsTogglingScanner(true);
     try {
-      const data = await saveConfig({ ...config, is_active: nextActive });
-      const savedConfig = data.config || { ...config, is_active: nextActive };
-      setConfig({ ...DEFAULT_CONFIG, ...savedConfig });
-      if (savedConfig.timeframe) setSelectedTimeframe(savedConfig.timeframe);
-      if (savedConfig.max_signals_per_day) {
-        setMaxSignalsPerDay(savedConfig.max_signals_per_day);
+      if (config.is_active) {
+        await stopScanner();
+        setConfig((prev) => ({ ...prev, is_active: false }));
+        setStatusMessage('Scanner đã tắt');
+      } else {
+        const data = await startScanner();
+        setConfig((prev) => ({ ...prev, is_active: true }));
+        if (data.liveView) setLiveView(data.liveView);
+        if (data.scenarios) setScenarios(data.scenarios);
+        if (data.telegramSent) {
+          setStatusMessage('Scanner started — scenario view sent to Telegram');
+        } else {
+          setStatusMessage(
+            `Scanner started — chưa gửi được Telegram${
+              data.telegramError ? `: ${data.telegramError}` : ''
+            }`
+          );
+        }
       }
-      setStatusMessage(nextActive ? 'Scanner đã bật' : 'Scanner đã tắt');
-      await loadLiveView();
+      await Promise.all([loadLiveView(), loadScenarios()]);
     } catch (err) {
       setStatusMessage(
         `Lỗi bật/tắt scanner: ${err instanceof Error ? err.message : String(err)}`
       );
     } finally {
       setIsTogglingScanner(false);
+    }
+  };
+
+  // Manual "Gửi Telegram" on the Scenario View card. Reference snapshot only:
+  // no quota, no signal persistence, no trade alert.
+  const handleSendScenariosTelegram = async () => {
+    try {
+      const data = await sendScenariosTelegram();
+      if (data.telegramSent) {
+        return { success: true, message: data.message || 'Đã gửi Telegram' };
+      }
+      return { success: false, message: data.message || 'Chưa gửi được Telegram' };
+    } catch (err) {
+      return { success: false, message: err instanceof Error ? err.message : String(err) };
     }
   };
 
@@ -464,6 +515,15 @@ export default function DashboardPage() {
 
             {/* Read-only D1/H4/H1 "view toàn cảnh" context */}
             <MacroContextCard context={marketContext} volumeDelta={volumeDelta} />
+
+            {/* 4 read-only reference scenarios — never an entry confirmation */}
+            <ScenarioCard
+              data={scenarios}
+              onRefresh={() => {
+                void loadScenarios();
+              }}
+              onSendTelegram={handleSendScenariosTelegram}
+            />
 
             {/* Standalone RSI divergence alerts — advisory, never an entry */}
             <DivergenceAlertsCard

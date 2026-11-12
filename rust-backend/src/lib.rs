@@ -8,6 +8,7 @@ pub mod models;
 pub mod news_filter;
 pub mod risk_manager;
 pub mod rsi;
+pub mod scenarios;
 pub mod scheduler;
 pub mod session_alerts;
 pub mod signal_review;

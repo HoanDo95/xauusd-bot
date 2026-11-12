@@ -11,6 +11,7 @@ import type {
   MacroFlowResponse,
   MarketContext,
   NewsCalendarData,
+  ScenarioResponse,
   Signal,
   TrendBias,
   TradingViewWebhookPayload,
@@ -35,6 +36,27 @@ export interface ConfigResponse {
   status: string;
   message: string;
   config: BotConfig;
+}
+
+/** POST /api/scanner/start — enables the scanner and sends the reference scenario view. */
+export interface StartScannerResponse {
+  status: string;
+  telegramSent: boolean;
+  telegramError?: string;
+  liveView: LiveViewResponse;
+  scenarios: ScenarioResponse;
+}
+
+/** POST /api/scanner/stop — pauses the scanner without touching quota/signals. */
+export interface StopScannerResponse {
+  status: string;
+}
+
+/** POST /api/scenarios/telegram — manual reference-scenario snapshot send. */
+export interface ScenarioTelegramResponse {
+  status: string;
+  telegramSent: boolean;
+  message?: string;
 }
 
 export interface HealthResponse {
@@ -252,6 +274,54 @@ export async function fetchLiveView(): Promise<LiveViewResponse> {
   } catch {
     return unavailable;
   }
+}
+
+/**
+ * GET /api/scenarios — four read-only reference scenarios for the current market.
+ * Never sends Telegram, stores a signal, or consumes the daily quota. The Express
+ * dev fallback has no endpoint; resolve to a safe no-data payload.
+ */
+export async function fetchScenarios(): Promise<ScenarioResponse> {
+  const unavailable: ScenarioResponse = {
+    status: 'no_data',
+    generated_at: '',
+    price: null,
+    source: '',
+    volume_source: '',
+    market: null,
+    scenarios: [],
+    warnings: ['Scenario view chưa sẵn sàng từ backend.'],
+  };
+  try {
+    const res = await fetch('/api/scenarios');
+    if (!res.ok) return unavailable;
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) return unavailable;
+    return (await res.json()) as ScenarioResponse;
+  } catch {
+    return unavailable;
+  }
+}
+
+/** POST /api/scanner/start — enable the scanner and send the reference scenario view. */
+export function startScanner(): Promise<StartScannerResponse> {
+  return request<StartScannerResponse>('/api/scanner/start', {
+    method: 'POST',
+  });
+}
+
+/** POST /api/scanner/stop — pause the scanner (only flips `is_active`). */
+export function stopScanner(): Promise<StopScannerResponse> {
+  return request<StopScannerResponse>('/api/scanner/stop', {
+    method: 'POST',
+  });
+}
+
+/** POST /api/scenarios/telegram — send the manual reference-scenario snapshot. */
+export function sendScenariosTelegram(): Promise<ScenarioTelegramResponse> {
+  return request<ScenarioTelegramResponse>('/api/scenarios/telegram', {
+    method: 'POST',
+  });
 }
 
 /** GET /api/signals — signal history plus today's Sniper quota counters. */

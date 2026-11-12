@@ -18,6 +18,12 @@ const NO_SETUP_MESSAGE: &str = "Chưa đủ điều kiện Pinbar + Volume + vù
 /// consumes the daily Sniper quota. AI review is only reported as a config flag;
 /// it is never called here (latency/cost). Safe to call while the scanner is paused.
 pub(super) async fn get_live_view(State(state): State<AppState>) -> impl IntoResponse {
+    Json(current_live_view(&state).await)
+}
+
+/// Shared read-only live-view builder used by `/api/live-view` and the scanner
+/// start/manual-Telegram handlers. No side effects.
+pub(super) async fn current_live_view(state: &AppState) -> Value {
     let config = state.config.read().await.clone();
     let candles = state.candles.read().await.clone();
     let live_price = *state.live_price.read().await;
@@ -27,7 +33,7 @@ pub(super) async fn get_live_view(State(state): State<AppState>) -> impl IntoRes
     let active_volume_source = state.active_volume_source.read().await.clone();
     let now_ms = Utc::now().timestamp_millis();
 
-    Json(build_live_view(
+    build_live_view(
         &candles,
         &config,
         live_price,
@@ -36,7 +42,7 @@ pub(super) async fn get_live_view(State(state): State<AppState>) -> impl IntoRes
         &active_data_source,
         &active_volume_source,
         now_ms,
-    ))
+    )
 }
 
 /// Top-level `macroFlow` block for the live view. Display-only: never gates a setup.
