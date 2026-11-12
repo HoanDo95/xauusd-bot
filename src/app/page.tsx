@@ -108,6 +108,8 @@ const DEFAULT_CONFIG: BotConfig = {
   divergence_alert_h1: true,
   divergence_alert_h4: true,
   divergence_alert_cooldown_minutes: 60,
+  action_trigger_alert_enabled: true,
+  action_trigger_cooldown_minutes: 30,
   macro_flow_enabled: true,
 };
 

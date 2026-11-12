@@ -435,3 +435,25 @@ docker compose logs -f api   # look for: TwelveData XAU/USD ... / Đã ghép vol
   auto-trading. It reuses the existing live-view/scenario builders and reports
   their filters; it does not add a hard macro filter or change analyzer logic.
 - The dashboard Action View card polls the endpoint on load and every 30 seconds.
+
+## 16d. Action Trigger alerts
+
+- `action_trigger_alert_enabled` (default true) runs a read-only worker every
+  30 seconds. It alerts only when the PRIMARY scenario is `valid`, has a
+  structured trigger price, and the latest **closed M15 candle** hits it:
+  `ABOVE` = close above, `BELOW` = close below, `TOUCH` = wick range includes
+  the level.
+- Trigger levels are the same ones shown in Scenario View: breakout/breakdown
+  use the buffered entry level; bounce/rejection use nearest support/resistance.
+  Synthetic fallback feeds are ignored, and a candle older than
+  `max_candle_age_secs` after close is skipped.
+- Dedup key is `{scenario_id}:{direction}:{trigger_price}` with
+  `action_trigger_cooldown_minutes` (default 30, range 5–1440). Cooldown state is
+  in memory only (capped at 50 entries), so a restart may re-alert once.
+- The Telegram message includes entry/SL/TP1/TP2/R:R and a PAXG volume-proxy
+  caveat, and explicitly says it is a scenario trigger alert, **not a confirmed
+  trade signal**.
+- This path never inserts a signal, consumes the daily Sniper quota, persists
+  trade state, calls AI review or auto-trades. `/api/health` exposes
+  `actionTriggerAlertEnabled`; `/api/action-view` exposes
+  `triggerAlertEnabled`.

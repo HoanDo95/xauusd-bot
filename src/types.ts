@@ -224,6 +224,12 @@ export interface Scenario {
   take_profit_1: number | null;
   take_profit_2: number | null;
   risk_reward: number | null;
+  /** Structured trigger price watched by the read-only action-trigger worker. */
+  trigger_price: number | null;
+  /** ABOVE | BELOW | TOUCH | NONE. */
+  trigger_direction: 'ABOVE' | 'BELOW' | 'TOUCH' | 'NONE' | string;
+  /** Timeframe used to evaluate the trigger (M15). */
+  trigger_timeframe: string;
   invalidation: string;
   /** 0..95 */
   confidence: number;
@@ -282,6 +288,8 @@ export interface ActionViewResponse {
   macroFlow: MacroFlowAlignment | null;
   volumeQuality: 'PAXG_PROXY' | 'PAXG' | 'NONE' | 'XAUUSD' | 'UNKNOWN';
   volumeWarning: string | null;
+  /** Whether the read-only PRIMARY-scenario trigger Telegram alert is enabled. */
+  triggerAlertEnabled?: boolean;
   source: string;
   volumeSource: string;
   generated_at: string;
@@ -530,6 +538,10 @@ export interface BotConfig {
   divergence_alert_h4?: boolean;
   /** Minimum minutes between alerts for the same timeframe + direction (5–1440, default 60). */
   divergence_alert_cooldown_minutes?: number;
+  /** Telegram alert when the PRIMARY scenario trigger is hit on a closed M15 candle. Default true. */
+  action_trigger_alert_enabled?: boolean;
+  /** Minimum minutes between alerts for the same scenario + direction + trigger (5–1440, default 30). */
+  action_trigger_cooldown_minutes?: number;
   /** Read-only Macro & Flow dashboard (FRED/Yahoo/CFTC). Default true; never affects signals. */
   macro_flow_enabled?: boolean;
 }

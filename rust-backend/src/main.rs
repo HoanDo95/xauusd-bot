@@ -180,6 +180,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         spot_basis_at: Arc::new(RwLock::new(initial_spot_basis.map(|_| chrono::Utc::now()))),
         divergence_alerts: Arc::new(RwLock::new(Vec::new())),
         divergence_last_sent: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        action_trigger_last_sent: Arc::new(RwLock::new(std::collections::HashMap::new())),
         macro_flow: Arc::new(RwLock::new(None)),
         macro_flow_updated_at: Arc::new(RwLock::new(None)),
     };
@@ -200,10 +201,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Độc lập hoàn toàn với tín hiệu/quota; không lưu vào `signals`.
     gold_signal_bot::divergence_alerts::spawn_divergence_worker(state.clone());
 
-    // 8c. Macro & Flow Worker — FRED/Yahoo/CFTC read-only, refresh mỗi 15 phút.
+    // 8c. Action Trigger Worker — cảnh báo khi PRIMARY scenario chạm trigger trên
+    // nến M15 đã đóng. Read-only: không quota, không chèn tín hiệu, không auto-trade.
+    gold_signal_bot::action_alerts::spawn_action_trigger_worker(state.clone());
+
+    // 8d. Macro & Flow Worker — FRED/Yahoo/CFTC read-only, refresh mỗi 15 phút.
     macro_flow::spawn_macro_flow_worker(state.clone());
 
-    // 8d. Telegram command worker — /start, /stop, /view, /status, /help.
+    // 8e. Telegram command worker — /start, /stop, /view, /status, /help.
     // Chỉ admin chat được phép; không quota, không chèn tín hiệu.
     gold_signal_bot::telegram_commands::spawn_telegram_command_worker(state.clone());
 

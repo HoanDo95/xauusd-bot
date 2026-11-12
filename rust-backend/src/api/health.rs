@@ -104,6 +104,7 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "volumeDeltaFilterEnabled": config.volume_delta_filter_enabled,
         "rsiFilterEnabled": config.rsi_filter_enabled,
         "divergenceAlertEnabled": config.divergence_alert_enabled,
+        "actionTriggerAlertEnabled": config.action_trigger_alert_enabled,
         "macroFlowEnabled": config.macro_flow_enabled,
         "macroFlowOk": macro_flow_ok,
         "macroFlowUpdatedAt": macro_flow_updated_at.map(|at| at.to_rfc3339()),

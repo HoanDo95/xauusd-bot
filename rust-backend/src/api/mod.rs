@@ -103,6 +103,9 @@ pub struct AppState {
     pub divergence_alerts: Arc<RwLock<Vec<DivergenceAlert>>>,
     /// Cooldown gửi cảnh báo theo khóa "{timeframe}:{direction}" (chỉ trong RAM).
     pub divergence_last_sent: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
+    /// Cooldown cảnh báo trigger kịch bản theo khóa
+    /// "{scenario_id}:{direction}:{trigger_price}" (chỉ trong RAM).
+    pub action_trigger_last_sent: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
     /// Snapshot Macro & Flow read-only (FRED/Yahoo/CFTC), không tham gia tín hiệu.
     pub macro_flow: Arc<RwLock<Option<MacroFlowSnapshot>>>,
     /// Thời điểm snapshot Macro & Flow được làm mới gần nhất.

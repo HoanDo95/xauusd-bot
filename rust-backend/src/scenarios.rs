@@ -38,6 +38,16 @@ pub struct Scenario {
     pub take_profit_1: Option<f64>,
     pub take_profit_2: Option<f64>,
     pub risk_reward: Option<f64>,
+    /// Structured trigger price used by the read-only trigger alert worker.
+    /// None when the scenario has no level to watch.
+    #[serde(default)]
+    pub trigger_price: Option<f64>,
+    /// ABOVE | BELOW | TOUCH | NONE
+    #[serde(default = "default_trigger_direction")]
+    pub trigger_direction: String,
+    /// Timeframe used to evaluate the trigger (M15).
+    #[serde(default = "default_trigger_timeframe")]
+    pub trigger_timeframe: String,
     /// Human-readable invalidation condition.
     pub invalidation: String,
     /// 0..=95
@@ -52,6 +62,33 @@ pub struct Scenario {
     pub priority: i32,
     /// Vietnamese notes, including why the scenario is invalid.
     pub notes: Vec<String>,
+}
+
+fn default_trigger_direction() -> String {
+    "NONE".to_string()
+}
+
+fn default_trigger_timeframe() -> String {
+    "M15".to_string()
+}
+
+/// Evaluate a scenario trigger against one closed candle.
+///
+/// ABOVE/BELOW use the candle close (confirmation), while TOUCH uses the wick
+/// range (the level was traded during the candle). Missing/NONE triggers never
+/// fire. Equality is intentionally strict for ABOVE/BELOW and inclusive for
+/// TOUCH.
+pub fn scenario_triggered(scenario: &Scenario, candle: &Candle) -> bool {
+    let Some(trigger_price) = scenario.trigger_price.filter(|value| value.is_finite()) else {
+        return false;
+    };
+
+    match scenario.trigger_direction.trim().to_uppercase().as_str() {
+        "ABOVE" => candle.close > trigger_price,
+        "BELOW" => candle.close < trigger_price,
+        "TOUCH" => candle.low <= trigger_price && candle.high >= trigger_price,
+        _ => false,
+    }
 }
 
 /// Read-only market snapshot that accompanies the reference scenarios.
@@ -111,6 +148,8 @@ struct ScenarioDraft {
     condition: String,
     invalidation: String,
     levels: Option<Levels>,
+    trigger_price: Option<f64>,
+    trigger_direction: &'static str,
     notes: Vec<String>,
 }
 
@@ -332,6 +371,12 @@ fn bullish_breakout_draft(
             take_profit_1,
             take_profit_2,
         )),
+        trigger_price: nearest_resistance.map(|_| trigger),
+        trigger_direction: if nearest_resistance.is_some() {
+            "ABOVE"
+        } else {
+            "NONE"
+        },
         notes: vec!["Kịch bản breakout cần nến M15 đóng cửa xác nhận.".to_string()],
     }
 }
@@ -393,6 +438,12 @@ fn bearish_breakdown_draft(
             take_profit_1,
             take_profit_2,
         )),
+        trigger_price: nearest_support.map(|_| trigger),
+        trigger_direction: if nearest_support.is_some() {
+            "BELOW"
+        } else {
+            "NONE"
+        },
         notes: vec!["Kịch bản breakdown cần nến M15 đóng cửa xác nhận.".to_string()],
     }
 }
@@ -415,6 +466,8 @@ fn bullish_bounce_draft(
             condition: "Bounce từ hỗ trợ gần nhất".to_string(),
             invalidation: "Không áp dụng — thiếu vùng hỗ trợ.".to_string(),
             levels: None,
+            trigger_price: None,
+            trigger_direction: "NONE",
             notes: vec!["Không có vùng hỗ trợ gần.".to_string()],
         };
     };
@@ -433,6 +486,8 @@ fn bullish_bounce_draft(
             condition: "Bounce từ hỗ trợ gần nhất".to_string(),
             invalidation: format!("Đóng M15 dưới {:.2}", support),
             levels: None,
+            trigger_price: None,
+            trigger_direction: "NONE",
             notes: vec![format!(
                 "Hỗ trợ gần nhất quá xa ({:.2} > 1.5×ATR = {:.2}) — không đủ điều kiện.",
                 distance,
@@ -462,6 +517,8 @@ fn bullish_bounce_draft(
         condition: "Bounce từ hỗ trợ gần nhất".to_string(),
         invalidation: format!("Đóng M15 dưới {:.2}", support),
         levels: Some(Levels::new(entry, stop_loss, take_profit_1, take_profit_2)),
+        trigger_price: Some(round2(support)),
+        trigger_direction: "TOUCH",
         notes: vec!["Kịch bản bounce cần nến M15 giữ được vùng hỗ trợ.".to_string()],
     }
 }
@@ -484,6 +541,8 @@ fn bearish_rejection_draft(
             condition: "Rejection tại kháng cự gần nhất".to_string(),
             invalidation: "Không áp dụng — thiếu vùng kháng cự.".to_string(),
             levels: None,
+            trigger_price: None,
+            trigger_direction: "NONE",
             notes: vec!["Không có vùng kháng cự gần.".to_string()],
         };
     };
@@ -502,6 +561,8 @@ fn bearish_rejection_draft(
             condition: "Rejection tại kháng cự gần nhất".to_string(),
             invalidation: format!("Đóng M15 trên {:.2}", resistance),
             levels: None,
+            trigger_price: None,
+            trigger_direction: "NONE",
             notes: vec![format!(
                 "Kháng cự gần nhất quá xa ({:.2} > 1.5×ATR = {:.2}) — không đủ điều kiện.",
                 distance,
@@ -534,6 +595,8 @@ fn bearish_rejection_draft(
         condition: "Rejection tại kháng cự gần nhất".to_string(),
         invalidation: format!("Đóng M15 trên {:.2}", resistance),
         levels: Some(Levels::new(entry, stop_loss, take_profit_1, take_profit_2)),
+        trigger_price: Some(round2(resistance)),
+        trigger_direction: "TOUCH",
         notes: vec!["Kịch bản rejection cần nến M15 giữ được vùng kháng cự.".to_string()],
     }
 }
@@ -621,6 +684,9 @@ fn finalize_scenario(draft: ScenarioDraft, inputs: &ScenarioInputs<'_>) -> Scena
         take_profit_1,
         take_profit_2,
         risk_reward,
+        trigger_price: draft.trigger_price.map(round2),
+        trigger_direction: draft.trigger_direction.to_string(),
+        trigger_timeframe: "M15".to_string(),
         invalidation: draft.invalidation,
         confidence,
         macro_alignment,
@@ -1339,6 +1405,9 @@ mod tests {
             "take_profit_1",
             "take_profit_2",
             "risk_reward",
+            "trigger_price",
+            "trigger_direction",
+            "trigger_timeframe",
             "invalidation",
             "confidence",
             "macro_alignment",
@@ -1349,5 +1418,167 @@ mod tests {
         ] {
             assert!(scenario.get(key).is_some(), "missing scenario key: {key}");
         }
+    }
+
+    fn trigger_scenario(direction: &str, trigger_price: Option<f64>) -> Scenario {
+        Scenario {
+            id: "test_trigger".to_string(),
+            name: "Test trigger".to_string(),
+            bias: "BULLISH".to_string(),
+            trigger: "Test".to_string(),
+            condition: "Test".to_string(),
+            entry: Some(2701.0),
+            stop_loss: Some(2691.0),
+            take_profit_1: Some(2721.0),
+            take_profit_2: Some(2731.0),
+            risk_reward: Some(2.0),
+            trigger_price,
+            trigger_direction: direction.to_string(),
+            trigger_timeframe: "M15".to_string(),
+            invalidation: "Test".to_string(),
+            confidence: 80,
+            macro_alignment: "ALIGNED".to_string(),
+            valid: true,
+            role: "PRIMARY".to_string(),
+            priority: 300,
+            notes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn scenario_triggered_above_uses_close_and_strict_boundary() {
+        let scenario = trigger_scenario("ABOVE", Some(2700.0));
+
+        assert!(scenario_triggered(
+            &scenario,
+            &candle(BASE_TS, 2690.0, 2705.0, 2689.0, 2700.01)
+        ));
+        assert!(!scenario_triggered(
+            &scenario,
+            &candle(BASE_TS, 2690.0, 2705.0, 2689.0, 2700.0)
+        ));
+        assert!(!scenario_triggered(
+            &scenario,
+            &candle(BASE_TS, 2690.0, 2705.0, 2689.0, 2699.99)
+        ));
+    }
+
+    #[test]
+    fn scenario_triggered_below_uses_close_and_strict_boundary() {
+        let scenario = trigger_scenario("BELOW", Some(2668.0));
+
+        assert!(scenario_triggered(
+            &scenario,
+            &candle(BASE_TS, 2670.0, 2671.0, 2660.0, 2667.99)
+        ));
+        assert!(!scenario_triggered(
+            &scenario,
+            &candle(BASE_TS, 2670.0, 2671.0, 2660.0, 2668.0)
+        ));
+        assert!(!scenario_triggered(
+            &scenario,
+            &candle(BASE_TS, 2670.0, 2671.0, 2660.0, 2668.01)
+        ));
+    }
+
+    #[test]
+    fn scenario_triggered_touch_uses_wick_range_and_includes_boundaries() {
+        let scenario = trigger_scenario("TOUCH", Some(2670.0));
+
+        assert!(scenario_triggered(
+            &scenario,
+            &candle(BASE_TS, 2672.0, 2678.0, 2668.0, 2675.0)
+        ));
+        assert!(scenario_triggered(
+            &scenario,
+            &candle(BASE_TS, 2672.0, 2678.0, 2670.0, 2675.0)
+        ));
+        assert!(scenario_triggered(
+            &scenario,
+            &candle(BASE_TS, 2665.0, 2670.0, 2662.0, 2668.0)
+        ));
+        assert!(!scenario_triggered(
+            &scenario,
+            &candle(BASE_TS, 2672.0, 2678.0, 2670.01, 2675.0)
+        ));
+        assert!(!scenario_triggered(
+            &scenario,
+            &candle(BASE_TS, 2665.0, 2669.99, 2662.0, 2668.0)
+        ));
+    }
+
+    #[test]
+    fn scenario_triggered_none_or_missing_price_never_fires() {
+        let none = trigger_scenario("NONE", Some(2700.0));
+        let above_without_price = trigger_scenario("ABOVE", None);
+        let unknown = trigger_scenario("SIDEWAYS", Some(2700.0));
+        let boundary_candle = candle(BASE_TS, 2700.0, 2700.0, 2700.0, 2700.0);
+
+        assert!(!scenario_triggered(&none, &boundary_candle));
+        assert!(!scenario_triggered(&above_without_price, &boundary_candle));
+        assert!(!scenario_triggered(&unknown, &boundary_candle));
+    }
+
+    #[test]
+    fn built_scenarios_expose_structured_breakout_triggers() {
+        let response = build(&zigzag_candles(60), None);
+        let breakout = response
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == "bullish_breakout")
+            .expect("bullish breakout");
+        let breakdown = response
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == "bearish_breakdown")
+            .expect("bearish breakdown");
+
+        assert_eq!(breakout.trigger_direction, "ABOVE");
+        assert_eq!(breakout.trigger_timeframe, "M15");
+        assert_eq!(breakout.trigger_price, breakout.entry);
+
+        assert_eq!(breakdown.trigger_direction, "BELOW");
+        assert_eq!(breakdown.trigger_timeframe, "M15");
+        assert_eq!(breakdown.trigger_price, breakdown.entry);
+    }
+
+    #[test]
+    fn built_bounce_and_rejection_use_touch_at_the_level() {
+        let mut context = crate::market_context::build_market_context(&[], &[], &[], "TEST", None);
+        context.h4.atr14 = 20.0;
+        let response = build_with_context(&zigzag_candles(60), Some(&context), None);
+        let market = response.market.as_ref().expect("market block");
+        let bounce = response
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == "bullish_bounce")
+            .expect("bullish bounce");
+        let rejection = response
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == "bearish_rejection")
+            .expect("bearish rejection");
+
+        assert_eq!(bounce.trigger_direction, "TOUCH");
+        assert_eq!(bounce.trigger_timeframe, "M15");
+        assert_eq!(bounce.trigger_price, market.nearest_support);
+
+        assert_eq!(rejection.trigger_direction, "TOUCH");
+        assert_eq!(rejection.trigger_timeframe, "M15");
+        assert_eq!(rejection.trigger_price, market.nearest_resistance);
+    }
+
+    #[test]
+    fn scenarios_without_levels_have_no_trigger() {
+        let response = build(&flat_candles(60), None);
+
+        assert!(response
+            .scenarios
+            .iter()
+            .all(|scenario| scenario.trigger_price.is_none()));
+        assert!(response
+            .scenarios
+            .iter()
+            .all(|scenario| scenario.trigger_direction == "NONE"));
     }
 }

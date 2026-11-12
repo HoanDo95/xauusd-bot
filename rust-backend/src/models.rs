@@ -397,6 +397,14 @@ pub struct BotConfig {
     /// Số phút tối thiểu giữa hai cảnh báo cùng khung + cùng hướng (5..=1440, mặc định 60).
     #[serde(default = "default_divergence_alert_cooldown")]
     pub divergence_alert_cooldown_minutes: i64,
+    /// Bật cảnh báo Telegram khi PRIMARY scenario chạm trigger trên nến M15 đã đóng.
+    /// Read-only: không phải trade signal, không tiêu hao quota. Mặc định true.
+    #[serde(default = "default_true")]
+    pub action_trigger_alert_enabled: bool,
+    /// Số phút tối thiểu giữa hai cảnh báo cùng scenario + hướng + mức trigger
+    /// (5..=1440, mặc định 30).
+    #[serde(default = "default_action_trigger_cooldown")]
+    pub action_trigger_cooldown_minutes: i64,
     /// Bật dashboard Macro & Flow read-only (FRED/Yahoo/CFTC). Mặc định true.
     #[serde(default = "default_true")]
     pub macro_flow_enabled: bool,
@@ -486,6 +494,10 @@ fn default_divergence_alert_cooldown() -> i64 {
     60
 }
 
+fn default_action_trigger_cooldown() -> i64 {
+    30
+}
+
 impl Default for BotConfig {
     fn default() -> Self {
         Self {
@@ -542,6 +554,8 @@ impl Default for BotConfig {
             divergence_alert_h1: true,
             divergence_alert_h4: true,
             divergence_alert_cooldown_minutes: default_divergence_alert_cooldown(),
+            action_trigger_alert_enabled: true,
+            action_trigger_cooldown_minutes: default_action_trigger_cooldown(),
             macro_flow_enabled: true,
         }
     }
@@ -633,6 +647,7 @@ impl BotConfig {
         // Boolean toggles keep their explicit value; only the cooldown is clamped.
         self.divergence_alert_cooldown_minutes =
             self.divergence_alert_cooldown_minutes.clamp(5, 1440);
+        self.action_trigger_cooldown_minutes = self.action_trigger_cooldown_minutes.clamp(5, 1440);
 
         self.telegram_bot_token = self.telegram_bot_token.trim().to_string();
         self.telegram_chat_id = self.telegram_chat_id.trim().to_string();
@@ -1179,6 +1194,58 @@ mod tests {
         }
         .sanitized();
         assert_eq!(valid.divergence_alert_cooldown_minutes, 120);
+    }
+
+    #[test]
+    fn action_trigger_alert_defaults_true_and_is_backward_compatible() {
+        let defaults = BotConfig::default();
+        assert!(defaults.action_trigger_alert_enabled);
+        assert_eq!(defaults.action_trigger_cooldown_minutes, 30);
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        object.remove("action_trigger_alert_enabled");
+        object.remove("action_trigger_cooldown_minutes");
+
+        let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(
+            config.action_trigger_alert_enabled,
+            "alerts must default ON"
+        );
+        assert_eq!(config.action_trigger_cooldown_minutes, 30);
+
+        let disabled = BotConfig {
+            action_trigger_alert_enabled: false,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert!(!disabled.action_trigger_alert_enabled);
+    }
+
+    #[test]
+    fn sanitize_action_trigger_cooldown_clamps_but_keeps_toggle() {
+        let too_low = BotConfig {
+            action_trigger_alert_enabled: false,
+            action_trigger_cooldown_minutes: 0,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert!(!too_low.action_trigger_alert_enabled);
+        assert_eq!(too_low.action_trigger_cooldown_minutes, 5);
+
+        let too_high = BotConfig {
+            action_trigger_cooldown_minutes: 99_999,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(too_high.action_trigger_cooldown_minutes, 1440);
+
+        let valid = BotConfig {
+            action_trigger_cooldown_minutes: 45,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(valid.action_trigger_cooldown_minutes, 45);
     }
 }
 

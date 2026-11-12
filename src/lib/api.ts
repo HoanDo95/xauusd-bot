@@ -90,6 +90,8 @@ export interface HealthResponse {
   rsiFilterEnabled?: boolean;
   /** Standalone RSI divergence alert worker state (default true). */
   divergenceAlertEnabled?: boolean;
+  /** PRIMARY-scenario trigger Telegram alert state (default true). */
+  actionTriggerAlertEnabled?: boolean;
   /** True only when the live feed is fresh and not a fallback seed. */
   feedOk?: boolean;
   /** Age of the last scanner tick in seconds (null before the first scan). */

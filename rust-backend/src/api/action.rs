@@ -22,6 +22,7 @@ pub(super) async fn get_action_view(State(state): State<AppState>) -> impl IntoR
     let macro_flow = state.macro_flow.read().await.clone();
     let source = state.active_data_source.read().await.clone();
     let volume_source = state.active_volume_source.read().await.clone();
+    let trigger_alert_enabled = state.config.read().await.action_trigger_alert_enabled;
 
     Json(build_action_view(
         &live_view,
@@ -29,6 +30,7 @@ pub(super) async fn get_action_view(State(state): State<AppState>) -> impl IntoR
         macro_flow.as_ref(),
         &source,
         &volume_source,
+        trigger_alert_enabled,
     ))
 }
 
@@ -169,6 +171,7 @@ pub(super) fn build_action_view(
     macro_flow: Option<&MacroFlowSnapshot>,
     source: &str,
     volume_source: &str,
+    trigger_alert_enabled: bool,
 ) -> Value {
     let quality = volume_quality(volume_source);
     let warning = volume_warning(quality);
@@ -308,6 +311,7 @@ pub(super) fn build_action_view(
         "macroFlow": macro_flow_payload,
         "volumeQuality": quality,
         "volumeWarning": warning,
+        "triggerAlertEnabled": trigger_alert_enabled,
         "source": source,
         "volumeSource": volume_source,
         "generated_at": generated_at(live_view),
@@ -427,6 +431,9 @@ mod tests {
             take_profit_1: Some(2721.00),
             take_profit_2: Some(2731.00),
             risk_reward: Some(2.00),
+            trigger_price: Some(2701.00),
+            trigger_direction: "ABOVE".to_string(),
+            trigger_timeframe: "M15".to_string(),
             invalidation: "Đóng M15 dưới 2690.00".to_string(),
             confidence: 80,
             macro_alignment: macro_alignment.to_string(),
@@ -487,6 +494,7 @@ mod tests {
             macro_flow,
             "TWELVEDATA",
             "BINANCE_PAXG_PROXY",
+            true,
         )
     }
 
@@ -648,6 +656,7 @@ mod tests {
             None,
             "TWELVEDATA",
             "BINANCE_PAXG",
+            false,
         );
         assert_eq!(action["volumeQuality"], "PAXG");
         assert_eq!(action["volumeWarning"], VOLUME_PROXY_WARNING);
@@ -672,12 +681,14 @@ mod tests {
             "macroFlow",
             "volumeQuality",
             "volumeWarning",
+            "triggerAlertEnabled",
             "source",
             "volumeSource",
             "generated_at",
         ] {
             assert!(action.get(key).is_some(), "missing action-view key: {key}");
         }
+        assert_eq!(action["triggerAlertEnabled"], true);
         assert_eq!(action["source"], "TWELVEDATA");
         assert_eq!(action["volumeSource"], "BINANCE_PAXG_PROXY");
         assert!(action["generated_at"].as_str().is_some());

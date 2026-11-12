@@ -1025,6 +1025,69 @@ export const ConfigPanel: React.FC<Props> = ({
             </div>
           </div>
 
+          {/* Action Trigger alerts (read-only, no quota) */}
+          <div className="rounded-xl border border-sky-500/30 bg-sky-500/5 p-4 flex flex-col gap-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="flex flex-col gap-1">
+                <div className="text-xs font-bold text-sky-300 uppercase tracking-wider">
+                  🚨 Cảnh báo trigger kịch bản chính — không phải trade signal
+                </div>
+                <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
+                  Gửi Telegram khi kịch bản PRIMARY valid đạt trigger trên nến M15 đã đóng
+                  (ABOVE/BELOW/TOUCH). Chỉ cảnh báo: không chèn tín hiệu, không tiêu hao quota,
+                  không lưu trade state và không tự vào lệnh.
+                </p>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+                <input
+                  type="checkbox"
+                  checked={formData.action_trigger_alert_enabled ?? true}
+                  onChange={(e) =>
+                    setFormData({ ...formData, action_trigger_alert_enabled: e.target.checked })
+                  }
+                  className="accent-sky-500 w-4 h-4 rounded cursor-pointer"
+                />
+                <span className="font-semibold text-white">
+                  Bật cảnh báo Telegram khi trigger kịch bản
+                </span>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">
+                  Cooldown cảnh báo trigger
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min="5"
+                    max="1440"
+                    step="5"
+                    disabled={!(formData.action_trigger_alert_enabled ?? true)}
+                    value={formData.action_trigger_cooldown_minutes ?? 30}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        action_trigger_cooldown_minutes: Math.min(
+                          1440,
+                          Math.max(5, parseInt(e.target.value) || 30)
+                        ),
+                      })
+                    }
+                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-sky-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                  />
+                  <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">
+                    phút
+                  </span>
+                </div>
+                <span className="text-[11px] text-neutral-500">
+                  5–1440 phút, mặc định 30. Dedup theo scenario + hướng + mức trigger.
+                </span>
+              </div>
+            </div>
+          </div>
+
           {/* AI Chief Risk Officer (optional, veto-only) */}
           <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/5 p-4 flex flex-col gap-4">
             <div className="flex flex-wrap items-start justify-between gap-3">

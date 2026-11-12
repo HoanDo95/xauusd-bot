@@ -384,6 +384,101 @@ impl TelegramNotifier {
         }
     }
 
+    /// Định dạng cảnh báo trigger của PRIMARY scenario trên nến M15 đã đóng.
+    ///
+    /// Đây là cảnh báo trigger read-only, KHÔNG phải trade signal đã xác nhận:
+    /// không có quota, không lưu signal và không tự vào lệnh. Mọi text động đều
+    /// được escape HTML trước khi gửi.
+    pub fn format_action_trigger_message(scenario: &Scenario, candle_close: f64) -> String {
+        let name = Self::escape_html(&truncate_chars(&scenario.name, 80));
+        let direction_raw = scenario.trigger_direction.trim().to_uppercase();
+        let direction = if direction_raw.is_empty() {
+            "NONE".to_string()
+        } else {
+            Self::escape_html(&truncate_chars(&direction_raw, 16))
+        };
+        let timeframe = {
+            let value = scenario.trigger_timeframe.trim();
+            if value.is_empty() {
+                "M15".to_string()
+            } else {
+                Self::escape_html(&truncate_chars(value, 12))
+            }
+        };
+        let macro_alignment = Self::escape_html(&truncate_chars(&scenario.macro_alignment, 40));
+        let trigger_price = format_level(scenario.trigger_price);
+        let entry = format_level(scenario.entry);
+        let stop_loss = format_level(scenario.stop_loss);
+        let take_profit_1 = format_level(scenario.take_profit_1);
+        let take_profit_2 = format_level(scenario.take_profit_2);
+        let risk_reward = scenario
+            .risk_reward
+            .filter(|value| value.is_finite())
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "—".to_string());
+
+        format!(
+            "🚨 <b>ACTION TRIGGERED</b> — {name}\n\
+             XAU/USD · {timeframe} close {candle_close:.2} {direction} {trigger_price}\n\
+             Entry {entry} · SL {stop_loss} · TP1 {take_profit_1} · TP2 {take_profit_2} · R:R 1:{risk_reward}\n\
+             Macro/Flow: {macro_alignment}\n\
+             Volume: PAXG proxy (khi nguồn volume là PAXG) — chỉ là volume tương đối, không phải volume XAU/USD thật.\n\
+             Đây là cảnh báo trigger của kịch bản, KHÔNG phải trade signal đã xác nhận."
+        )
+    }
+
+    /// Gửi cảnh báo trigger kịch bản. Token/Chat trống = simulator thành công (Ok(1001)).
+    /// Hàm này không đụng tới quota, danh sách tín hiệu hay trạng thái giao dịch.
+    pub async fn send_action_trigger_alert(
+        &self,
+        scenario: &Scenario,
+        candle_close: f64,
+    ) -> Result<i64, String> {
+        if self.bot_token.is_empty() || self.chat_id.is_empty() {
+            info!(
+                "⚠️ [Telegram Simulator] Action trigger {} (chưa cấu hình token)",
+                scenario.id
+            );
+            return Ok(1001);
+        }
+
+        let message_text = Self::format_action_trigger_message(scenario, candle_close);
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
+        let payload = json!({
+            "chat_id": self.chat_id,
+            "text": message_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true
+        });
+
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let body: serde_json::Value =
+                        resp.json().await.map_err(|e| e.without_url().to_string())?;
+                    let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
+                    info!(
+                        "✅ Đã gửi action trigger {} tới Telegram! Message ID: {}",
+                        scenario.id, msg_id
+                    );
+                    Ok(msg_id)
+                } else {
+                    let err_text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Lỗi không xác định".into());
+                    error!("❌ Telegram action trigger API lỗi: {}", err_text);
+                    Err(format!("Telegram API Error: {err_text}"))
+                }
+            }
+            Err(err) => {
+                let err = err.without_url();
+                error!("❌ Không thể gửi action trigger tới Telegram: {}", err);
+                Err(format!("Network Error: {err}"))
+            }
+        }
+    }
+
     /// Định dạng snapshot kịch bản tham khảo khi Scanner Start.
     ///
     /// Đây là view tham khảo, KHÔNG phải tín hiệu vào lệnh: không quota, không
@@ -977,6 +1072,14 @@ fn hard_truncate_scenario_message(message: &str, footer: &str) -> String {
     format!("{truncated}…{footer}")
 }
 
+/// Format an optional scenario level for the compact trigger alert.
+fn format_level(value: Option<f64>) -> String {
+    value
+        .filter(|value| value.is_finite())
+        .map(|value| format!("{value:.2}"))
+        .unwrap_or_else(|| "—".to_string())
+}
+
 fn json_number(value: &serde_json::Value, key: &str) -> Option<f64> {
     value
         .get(key)
@@ -1358,6 +1461,58 @@ mod tests {
         assert!(!message.contains("Bear<ish>"));
     }
 
+    #[test]
+    fn format_action_trigger_message_includes_levels_and_disclaimer() {
+        let mut scenario = base_scenario("bullish_breakout", "Bullish breakout", "BULLISH");
+        scenario.trigger_price = Some(2701.0);
+        scenario.trigger_direction = "ABOVE".to_string();
+        scenario.entry = Some(2701.0);
+        scenario.stop_loss = Some(2691.0);
+        scenario.take_profit_1 = Some(2721.0);
+        scenario.take_profit_2 = Some(2731.0);
+        scenario.risk_reward = Some(2.0);
+        scenario.macro_alignment = "ALIGNED".to_string();
+
+        let message = TelegramNotifier::format_action_trigger_message(&scenario, 2705.25);
+
+        assert!(message.contains("ACTION TRIGGERED"));
+        assert!(message.contains("Bullish breakout"));
+        assert!(message.contains("M15 close 2705.25 ABOVE 2701.00"));
+        assert!(message.contains("Entry 2701.00"));
+        assert!(message.contains("SL 2691.00"));
+        assert!(message.contains("TP1 2721.00"));
+        assert!(message.contains("TP2 2731.00"));
+        assert!(message.contains("R:R 1:2.00"));
+        assert!(message.contains("Macro/Flow: ALIGNED"));
+        assert!(message.contains("Volume: PAXG proxy"));
+        assert!(message.contains("KHÔNG phải trade signal đã xác nhận"));
+    }
+
+    #[test]
+    fn format_action_trigger_message_escapes_dynamic_fields() {
+        let mut scenario = base_scenario("test", "Break <script> & test", "BULLISH");
+        scenario.trigger_price = Some(2701.0);
+        scenario.trigger_direction = "ABOVE<&>".to_string();
+        scenario.macro_alignment = "ALIGNED<script>".to_string();
+
+        let message = TelegramNotifier::format_action_trigger_message(&scenario, 2705.25);
+
+        assert!(message.contains("Break &lt;script&gt; &amp; test"));
+        assert!(message.contains("ABOVE&lt;&amp;&gt;"));
+        assert!(message.contains("ALIGNED&lt;script&gt;"));
+        assert!(!message.contains("<script>"));
+    }
+
+    #[test]
+    fn format_action_trigger_message_handles_missing_levels() {
+        let scenario = base_scenario("test", "No level", "BULLISH");
+        let message = TelegramNotifier::format_action_trigger_message(&scenario, 2705.25);
+
+        assert!(message.contains("NONE —"));
+        assert!(message.contains("Entry — · SL — · TP1 — · TP2 — · R:R 1:—"));
+        assert!(message.contains("KHÔNG phải trade signal"));
+    }
+
     fn base_scenario(id: &str, name: &str, bias: &str) -> Scenario {
         Scenario {
             id: id.to_string(),
@@ -1370,6 +1525,9 @@ mod tests {
             take_profit_1: None,
             take_profit_2: None,
             risk_reward: None,
+            trigger_price: None,
+            trigger_direction: "NONE".to_string(),
+            trigger_timeframe: "M15".to_string(),
             invalidation: "Đóng M15 ngược hướng.".to_string(),
             confidence: 70,
             macro_alignment: "ALIGNED".to_string(),

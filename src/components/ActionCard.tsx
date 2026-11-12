@@ -23,6 +23,20 @@ function timeLabel(value?: string): string {
   });
 }
 
+function triggerCondition(direction: string, triggerPrice: number): string {
+  const value = triggerPrice.toFixed(2);
+  switch ((direction || '').toUpperCase()) {
+    case 'ABOVE':
+      return `M15 close > ${value}`;
+    case 'BELOW':
+      return `M15 close < ${value}`;
+    case 'TOUCH':
+      return `M15 touch ${value}`;
+    default:
+      return `M15 ${value}`;
+  }
+}
+
 function verdictTone(verdict: ActionVerdict): string {
   switch (verdict) {
     case 'BUY':
@@ -270,6 +284,21 @@ export const ActionCard: React.FC<Props> = ({ data }) => {
           <p className="text-[11px] font-semibold text-neutral-200 leading-snug">
             {primary.trigger}
           </p>
+
+          {typeof primary.trigger_price === 'number' &&
+            Number.isFinite(primary.trigger_price) && (
+              <p className="text-[10px] font-mono text-neutral-400">
+                Trigger alert:{' '}
+                <span
+                  className={`font-bold ${
+                    (data.triggerAlertEnabled ?? true) ? 'text-emerald-300' : 'text-neutral-500'
+                  }`}
+                >
+                  {(data.triggerAlertEnabled ?? true) ? 'ON' : 'OFF'}
+                </span>{' '}
+                · {triggerCondition(primary.trigger_direction, primary.trigger_price)}
+              </p>
+            )}
 
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 font-mono">
             <Metric label="Entry" value={price(primary.entry)} />

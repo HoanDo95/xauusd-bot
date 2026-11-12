@@ -307,6 +307,31 @@ scenario and the macro/flow snapshot into one read-only verdict:
   the existing scanner filters; it only reports them. The card is labelled
   “View hành động — không phải lệnh tự động; bot không tự vào lệnh.”
 
+### Action Trigger alerts (Phase C7)
+
+The PRIMARY reference scenario now carries a structured trigger
+(`trigger_price`, `trigger_direction`, `trigger_timeframe`) and a read-only
+worker checks the latest closed M15 candle every 30 seconds:
+
+- `ABOVE` fires when the candle close is above the trigger price, `BELOW` when
+  the close is below it, and `TOUCH` when the candle's wick range includes the
+  level.
+- Trigger levels match Scenario View: breakout/breakdown use the buffered entry
+  level, while bounce/rejection use the nearest support/resistance.
+- Only a `valid` PRIMARY scenario with a trigger price is eligible. Fallback or
+  unavailable feeds are ignored, and a candle older than
+  `max_candle_age_secs` after its close time is skipped.
+- Dedup key: `{scenario_id}:{direction}:{trigger_price}`. The cooldown is
+  `action_trigger_cooldown_minutes` (default 30, range 5–1440). State is kept in
+  memory only (max 50 entries).
+- Config toggles: `action_trigger_alert_enabled` (default true) and
+  `action_trigger_cooldown_minutes` (default 30). `/api/health` exposes
+  `actionTriggerAlertEnabled`, and `/api/action-view` exposes
+  `triggerAlertEnabled` for the Action View card.
+- The Telegram message states clearly that it is a **scenario trigger alert,
+  not a confirmed trade signal**. It never inserts a signal, consumes Sniper
+  quota, persists trade state, calls AI review or auto-trades.
+
 ### Telegram bot commands
 
 The API runs a long-poll command worker. Commands are accepted only from the
