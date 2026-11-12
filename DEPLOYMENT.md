@@ -226,6 +226,35 @@ sample read the same config value. Leave it empty only for Tailscale-only use;
 empty disables the check and is not recommended for public endpoints. Rotate the
 passphrase after any exposure.
 
+## 13b. Optional dashboard Basic auth
+
+The web container can protect the dashboard and `/api/` with HTTP Basic auth.
+It is **opt-in**; leave both variables unset to keep the Tailscale-only behavior.
+
+```bash
+# /home/jason/xauusd-bot/.env (compose project env, never committed)
+DASHBOARD_USER="operator"
+DASHBOARD_PASSWORD="use-a-long-random-password"
+
+cd /home/jason/xauusd-bot
+docker compose up -d web
+docker compose logs web | grep '\[auth\]'
+```
+
+Verify:
+
+```bash
+curl -I http://127.0.0.1:3000/                 # 401 without credentials
+curl -I -u operator:<password> http://127.0.0.1:3000/   # 200
+curl -I http://127.0.0.1:3000/healthz          # 200 (exempt)
+```
+
+Webhook paths (`/api/webhook`, `/api/webhook/tradingview`,
+`/api/candles/webhook`) and health endpoints are exempt so TradingView can keep
+posting; they rely on the webhook passphrase instead. The deploy smoke test uses
+`/healthz` and the API container's direct health endpoint, so it works with auth
+enabled.
+
 ## 14. Optional AI macro report
 
 AI is optional and only used for the daily 07:00 macro commentary. Core signals

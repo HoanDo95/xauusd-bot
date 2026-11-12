@@ -3,8 +3,12 @@ name: ci
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
+
+# The self-hosted runner has Docker access and can read the deploy directory.
+# Never run untrusted pull-request code on it; use a hosted runner for PRs.
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}

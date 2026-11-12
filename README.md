@@ -343,9 +343,11 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
   screenshot, public repo), then update it in the dashboard **and**
   `rust-backend/.env`.
 - The dashboard is intended for **Tailscale-only** access; Tailscale remains the
-  perimeter. There is no built-in dashboard authentication yet. If you expose it
-  publicly, put authentication in front of it (Cloudflare Access / Nginx basic
-  auth).
+  perimeter. Optional HTTP Basic auth is built in: set `DASHBOARD_USER` and
+  `DASHBOARD_PASSWORD` in the compose `.env` and restart `web`. Health and
+  TradingView webhook paths stay exempt (webhooks use the passphrase).
+- CI runs only on `push`/manual dispatch. Do not run fork/PR code on the
+  self-hosted runner: it has Docker access and can read the deploy directory.
 - The persistent state file is written with `0600` permissions on Unix, and
   backups use `umask 077` + `chmod 600`.
 - Deploy workflow never overwrites `.env` or `data/`.

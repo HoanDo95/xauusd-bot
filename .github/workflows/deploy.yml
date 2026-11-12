@@ -61,14 +61,15 @@ jobs:
         working-directory: ${{ env.DEPLOY_DIR }}
         run: |
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:3000/api/health >/dev/null; then
-              echo "health OK after ${i} attempt(s)"
+            if curl -fsS http://127.0.0.1:3000/healthz >/dev/null; then
+              echo "web health OK after ${i} attempt(s)"
               break
             fi
             echo "waiting for API/web... ($i/30)"
             sleep 5
           done
-          curl -fsS http://127.0.0.1:3000/api/health | head -c 240; echo
+          # Check the API directly so optional dashboard Basic auth cannot break deploys.
+          docker compose exec -T api curl -fsS http://127.0.0.1:8090/api/health | head -c 240; echo
           docker compose ps
 
       - name: Cleanup dangling images (never volumes)
