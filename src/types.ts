@@ -151,6 +151,21 @@ export interface MacroFlowResponse {
 }
 
 /**
+ * Advisory alignment between a candidate signal and the macro/flow snapshot.
+ * Display-only: it never blocks a signal or changes SL/TP/quota.
+ */
+export interface MacroFlowAlignment {
+  bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL' | 'UNKNOWN' | string;
+  /** 0..95 */
+  confidence: number;
+  score: number;
+  flowQuality: 'CONFIRMING' | 'DIVERGING' | 'MIXED' | 'INSUFFICIENT' | 'UNKNOWN' | string;
+  alignment: 'ALIGNED' | 'COUNTER' | 'MIXED' | 'UNKNOWN' | string;
+  /** Short Vietnamese explanation. */
+  note: string;
+}
+
+/**
  * Filter checks evaluated by GET /api/live-view. Display-only: the preview never
  * applies them, so a setup can still show a blocked filter that the scanner would skip.
  */
@@ -178,6 +193,8 @@ export interface LiveViewResponse {
   status: 'setup' | 'no_setup' | 'no_data';
   signal?: Signal;
   filters?: LiveViewFilters;
+  /** Advisory macro/flow alignment (present when a snapshot exists). */
+  macroFlow?: MacroFlowAlignment;
   message?: string;
   /** Present for no_data: number of candles currently buffered. */
   candles?: number;
@@ -282,6 +299,10 @@ export interface Signal {
   rsi_state?: string | null;
   /** "None" | "Bullish" | "Bearish". */
   rsi_divergence?: string | null;
+  /** "ALIGNED" | "COUNTER" | "MIXED" | "UNKNOWN" — advisory only, never blocks. */
+  macro_flow_alignment?: string | null;
+  /** Short Vietnamese macro/flow note (advisory only). */
+  macro_flow_note?: string | null;
 }
 
 /** AI Chief Risk Officer review — veto-only, never live SL/TP. */
@@ -298,6 +319,9 @@ export interface AiSignalReview {
   rsi_divergence?: string | null;
   /** Advisory execution rule proposed by the AI. */
   execution_rule?: string | null;
+  /** AI view of macro/flow alignment (advisory; falls back to deterministic snapshot). */
+  macro_flow_alignment?: string | null;
+  macro_flow_note?: string | null;
   reason: string;
   provider: string;
   model: string;

@@ -1,5 +1,6 @@
 use super::{round2, AppState};
 use crate::analyzer::GoldMarketAnalyzer;
+use crate::macro_flow::{align_signal_with_macro_flow, MacroFlowSnapshot};
 use crate::market_context::{htf_allows_signal, MarketContext};
 use crate::models::{BotConfig, Candle};
 use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot};
@@ -21,6 +22,7 @@ pub(super) async fn get_live_view(State(state): State<AppState>) -> impl IntoRes
     let candles = state.candles.read().await.clone();
     let live_price = *state.live_price.read().await;
     let market_context = state.market_context.read().await.clone();
+    let macro_flow = state.macro_flow.read().await.clone();
     let active_data_source = state.active_data_source.read().await.clone();
     let active_volume_source = state.active_volume_source.read().await.clone();
     let now_ms = Utc::now().timestamp_millis();
@@ -30,31 +32,57 @@ pub(super) async fn get_live_view(State(state): State<AppState>) -> impl IntoRes
         &config,
         live_price,
         market_context.as_ref(),
+        macro_flow.as_ref(),
         &active_data_source,
         &active_volume_source,
         now_ms,
     ))
 }
 
+/// Top-level `macroFlow` block for the live view. Display-only: never gates a setup.
+fn macro_flow_view(
+    signal_type: Option<&str>,
+    macro_flow: Option<&MacroFlowSnapshot>,
+) -> Option<Value> {
+    let snapshot = macro_flow?;
+    let alignment = align_signal_with_macro_flow(signal_type.unwrap_or(""), Some(snapshot));
+    Some(json!({
+        "bias": alignment.bias,
+        "confidence": alignment.confidence,
+        "score": alignment.score,
+        "flowQuality": alignment.flow_quality,
+        "alignment": alignment.alignment,
+        "note": alignment.note,
+    }))
+}
+
 /// Pure response builder for `/api/live-view` (no locks, no side effects).
 ///
 /// Filters are evaluated only for display: a `setup` response may still show
 /// `*_ok=false`, meaning the real scanner would skip that signal.
+// The builder is a pure response mapper; keeping every display input explicit
+// is clearer than introducing a one-off argument struct.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_live_view(
     candles: &[Candle],
     config: &BotConfig,
     live_price: Option<f64>,
     context: Option<&MarketContext>,
+    macro_flow: Option<&MacroFlowSnapshot>,
     active_data_source: &str,
     active_volume_source: &str,
     now_ms: i64,
 ) -> Value {
     if candles.len() < config.lookback_period + 5 {
-        return json!({
+        let mut payload = json!({
             "status": "no_data",
             "message": NO_DATA_MESSAGE,
             "candles": candles.len(),
         });
+        if let Some(view) = macro_flow_view(None, macro_flow) {
+            payload["macroFlow"] = view;
+        }
+        return payload;
     }
 
     let generated_at = DateTime::<Utc>::from_timestamp_millis(now_ms)
@@ -69,7 +97,7 @@ pub(super) fn build_live_view(
             .map(|candle| (candle.timestamp, round2(candle.close)))
             .unwrap_or((0, 0.0));
 
-        return json!({
+        let mut payload = json!({
             "status": "no_setup",
             "message": NO_SETUP_MESSAGE,
             "candle_timestamp": candle_timestamp,
@@ -78,6 +106,10 @@ pub(super) fn build_live_view(
             "volumeSource": active_volume_source,
             "generated_at": generated_at,
         });
+        if let Some(view) = macro_flow_view(None, macro_flow) {
+            payload["macroFlow"] = view;
+        }
+        return payload;
     };
 
     let (htf_ok, htf_reason) = match context {
@@ -119,7 +151,8 @@ pub(super) fn build_live_view(
         (true, "Volume Delta filter disabled".to_string())
     };
 
-    json!({
+    let macro_flow_payload = macro_flow_view(Some(signal.signal_type.as_str()), macro_flow);
+    let mut payload = json!({
         "status": "setup",
         "signal": signal,
         "filters": {
@@ -139,12 +172,17 @@ pub(super) fn build_live_view(
         "source": active_data_source,
         "volumeSource": active_volume_source,
         "generated_at": generated_at,
-    })
+    });
+    if let Some(view) = macro_flow_payload {
+        payload["macroFlow"] = view;
+    }
+    payload
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::macro_flow::{CotSnapshot, MacroFlowScorecard, MacroMetric};
     use crate::models::Timeframe;
 
     const BASE_TS: i64 = 1_700_000_000_000;
@@ -204,10 +242,58 @@ mod tests {
         }
     }
 
+    fn macro_snapshot() -> MacroFlowSnapshot {
+        MacroFlowSnapshot {
+            updated_at: "2026-11-12T00:00:00Z".to_string(),
+            fred_ok: true,
+            yahoo_ok: true,
+            cot_ok: true,
+            metrics: vec![MacroMetric {
+                key: "gold".to_string(),
+                label: "Gold".to_string(),
+                value: Some(3980.0),
+                unit: "USD".to_string(),
+                change_1d: None,
+                change_5d: Some(-133.8),
+                change_5d_pct: Some(-3.25),
+                volume_ratio_20d: None,
+                date: Some("2026-11-11".to_string()),
+                source: "TEST".to_string(),
+                note: String::new(),
+            }],
+            cot: Some(CotSnapshot {
+                report_date: "2026-11-03".to_string(),
+                open_interest: 399_169.0,
+                noncommercial_long: 220_530.0,
+                noncommercial_short: 40_982.0,
+                noncommercial_net: 179_548.0,
+                noncommercial_net_change: -6_903.0,
+                net_pct_oi: 44.9806,
+                open_interest_change: 2_359.0,
+            }),
+            scorecard: MacroFlowScorecard {
+                macro_bias: "BEARISH".to_string(),
+                confidence: 95,
+                score: -4,
+                direction: "DOWN".to_string(),
+                driver: "DXY ↑".to_string(),
+                flow_quality: "CONFIRMING".to_string(),
+                risk_regime: "NEUTRAL".to_string(),
+                rate_regime: "TIGHTENING".to_string(),
+                usd_regime: "STRONG".to_string(),
+                vol_regime: "NORMAL".to_string(),
+                notes: Vec::new(),
+            },
+            warnings: Vec::new(),
+            sources: Vec::new(),
+        }
+    }
+
     fn build(candles: &[Candle]) -> Value {
         build_live_view(
             candles,
             &buy_config(),
+            None,
             None,
             None,
             "TWELVEDATA",
@@ -275,6 +361,60 @@ mod tests {
         assert!(filters["delta_ratio"].is_number());
         assert!(filters["cvd"].is_number());
         assert_eq!(filters["ai_review_enabled"], false);
+        assert!(
+            view.get("macroFlow").is_none(),
+            "no snapshot must not add a macroFlow block"
+        );
+    }
+
+    #[test]
+    fn setup_includes_read_only_macro_flow_alignment() {
+        let mut candles = zigzag_candles(60);
+        candles.push(bullish_pinbar(BASE_TS + 60 * STEP_MS));
+        let snapshot = macro_snapshot();
+
+        let view = build_live_view(
+            &candles,
+            &buy_config(),
+            None,
+            None,
+            Some(&snapshot),
+            "TWELVEDATA",
+            "BINANCE_PAXG_PROXY",
+            BASE_TS,
+        );
+
+        assert_eq!(view["status"], "setup");
+        assert_eq!(view["macroFlow"]["bias"], "BEARISH");
+        assert_eq!(view["macroFlow"]["confidence"], 95);
+        assert_eq!(view["macroFlow"]["score"], -4);
+        assert_eq!(view["macroFlow"]["flowQuality"], "CONFIRMING");
+        assert_eq!(view["macroFlow"]["alignment"], "COUNTER");
+        assert!(view["macroFlow"]["note"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("BUY ngược bối cảnh vĩ mô"));
+    }
+
+    #[test]
+    fn no_setup_still_exposes_macro_flow_when_available() {
+        let candles = zigzag_candles(60);
+        let snapshot = macro_snapshot();
+
+        let view = build_live_view(
+            &candles,
+            &buy_config(),
+            None,
+            None,
+            Some(&snapshot),
+            "TWELVEDATA",
+            "BINANCE_PAXG_PROXY",
+            BASE_TS,
+        );
+
+        assert_eq!(view["status"], "no_setup");
+        assert_eq!(view["macroFlow"]["bias"], "BEARISH");
+        assert_eq!(view["macroFlow"]["alignment"], "UNKNOWN");
     }
 
     #[test]
@@ -295,6 +435,7 @@ mod tests {
             &config,
             None,
             Some(&context),
+            None,
             "TWELVEDATA",
             "BINANCE_PAXG_PROXY",
             BASE_TS,

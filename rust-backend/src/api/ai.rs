@@ -79,8 +79,17 @@ pub(super) async fn ai_review_signal(
         }
     }
     let events = state.news_filter.read().await.calendar_events.clone();
+    let macro_flow = state.macro_flow.read().await.clone();
 
-    match review_signal(&signal, context.as_ref(), &config, &events).await {
+    match review_signal(
+        &signal,
+        context.as_ref(),
+        macro_flow.as_ref(),
+        &config,
+        &events,
+    )
+    .await
+    {
         Some(review) => (
             StatusCode::OK,
             Json(json!({

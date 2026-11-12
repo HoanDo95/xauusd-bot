@@ -1,6 +1,7 @@
 use super::{
-    ai_review_block_reason, apply_volume_delta_filter, attach_rsi_snapshot, evaluate_outcomes,
-    htf_block_reason, persist_state, round2, rsi_block_reason, AppState,
+    ai_review_block_reason, apply_volume_delta_filter, attach_macro_flow_alignment,
+    attach_rsi_snapshot, evaluate_outcomes, htf_block_reason, persist_state, round2,
+    rsi_block_reason, AppState,
 };
 use crate::analyzer::GoldMarketAnalyzer;
 use crate::models::{
@@ -198,6 +199,10 @@ pub(super) async fn receive_candle_webhook(
             config.rsi_pivot_k,
         );
         attach_rsi_snapshot(&mut signal, &rsi);
+
+        // Macro/flow alignment is advisory and always attached, even when AI review is off.
+        let macro_flow = state.macro_flow.read().await.clone();
+        attach_macro_flow_alignment(&mut signal, macro_flow.as_ref());
 
         if let Some(reason) = htf_block_reason(&state, &config, signal.signal_type.as_str()).await {
             warn!(
@@ -668,6 +673,8 @@ pub(super) async fn receive_tradingview_webhook(
         rsi_value: None,
         rsi_state: None,
         rsi_divergence: None,
+        macro_flow_alignment: None,
+        macro_flow_note: None,
     };
 
     // Bước 6a: Chặn tín hiệu sai cấu trúc hoặc vượt ngân sách rủi ro trước khi
@@ -718,6 +725,10 @@ pub(super) async fn receive_tradingview_webhook(
         config.rsi_pivot_k,
     );
     attach_rsi_snapshot(&mut signal, &rsi);
+
+    // Macro/flow alignment is advisory and always attached, even when AI review is off.
+    let macro_flow = state.macro_flow.read().await.clone();
+    attach_macro_flow_alignment(&mut signal, macro_flow.as_ref());
 
     // Bước 6c: Volume Delta/CVD tùy chọn (mặc định OFF) — chỉ tín hiệu thật.
     if let Some(reason) = apply_volume_delta_filter(&config, &mut signal, &candles_snapshot) {

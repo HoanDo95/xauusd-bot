@@ -103,6 +103,23 @@ impl TelegramNotifier {
                 )
             })
             .unwrap_or_default();
+        let macro_flow_line = signal
+            .macro_flow_alignment
+            .as_deref()
+            .map(|alignment| {
+                let note = signal
+                    .macro_flow_note
+                    .as_deref()
+                    .filter(|note| !note.is_empty())
+                    .map(|note| format!(" — {}", Self::escape_html(note)))
+                    .unwrap_or_default();
+                format!(
+                    "🌐 <b>Macro/Flow:</b> {}{}\n",
+                    Self::escape_html(alignment),
+                    note
+                )
+            })
+            .unwrap_or_default();
 
         format!(
             "🚨 <b>GOLD SIGNAL ALERT | {}</b> 🚨\n\
@@ -123,6 +140,7 @@ impl TelegramNotifier {
             🔍 <b>Phân tích Kỹ thuật & Volume:</b>\n\
             • <b>Price Action:</b> {}\n\
             • <b>Volume Absorption:</b> {}\n\
+            {}\
             {}\
             {}\
             • <b>Đánh giá:</b> {}\n\
@@ -155,6 +173,7 @@ impl TelegramNotifier {
             volume_analysis,
             volume_delta_line,
             rsi_line,
+            macro_flow_line,
             rationale,
             ai_review_line
         )
@@ -580,6 +599,8 @@ mod tests {
             rsi_value: None,
             rsi_state: None,
             rsi_divergence: None,
+            macro_flow_alignment: None,
+            macro_flow_note: None,
         }
     }
 
@@ -693,6 +714,39 @@ mod tests {
         assert!(message.contains("Neutral&lt;script&gt;"));
         assert!(message.contains("Bullish&lt;&amp;&gt; Divergence"));
         assert!(!message.contains("Neutral<script>"));
+    }
+
+    #[test]
+    fn format_signal_message_appends_macro_flow_alignment() {
+        let mut signal = sample_signal();
+        signal.macro_flow_alignment = Some("COUNTER".to_string());
+        signal.macro_flow_note = Some("Macro BEARISH (95%) · flow CONFIRMING".to_string());
+
+        let message = TelegramNotifier::format_signal_message(&signal);
+        assert!(message.contains("Macro/Flow:"));
+        assert!(message.contains("COUNTER"));
+        assert!(message.contains("Macro BEARISH (95%) · flow CONFIRMING"));
+
+        signal.macro_flow_note = None;
+        let without_note = TelegramNotifier::format_signal_message(&signal);
+        assert!(without_note.contains("Macro/Flow:"));
+        assert!(without_note.contains("COUNTER"));
+        assert!(!without_note.contains("Macro BEARISH"));
+
+        let absent = TelegramNotifier::format_signal_message(&sample_signal());
+        assert!(!absent.contains("Macro/Flow:"));
+    }
+
+    #[test]
+    fn format_signal_message_escapes_macro_flow_fields() {
+        let mut signal = sample_signal();
+        signal.macro_flow_alignment = Some("COUNTER<script>".to_string());
+        signal.macro_flow_note = Some("a < b & c > d".to_string());
+
+        let message = TelegramNotifier::format_signal_message(&signal);
+        assert!(message.contains("COUNTER&lt;script&gt;"));
+        assert!(message.contains("a &lt; b &amp; c &gt; d"));
+        assert!(!message.contains("COUNTER<script>"));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::analyzer::GoldMarketAnalyzer;
-use crate::api::{persist_state, AppState};
+use crate::api::{attach_macro_flow_alignment, persist_state, AppState};
 use crate::market_context::{
     build_market_context, htf_allows_signal, shift_candles_prices, MarketContext,
 };
@@ -413,7 +413,12 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     info!("📐 [RSI Filter] {} — {}", signal.id, reason);
                 }
 
-                // 6.7e AI Chief Risk Officer tùy chọn (mặc định OFF).
+                // 6.7e Macro & Flow alignment (advisory) — luôn gắn, kể cả khi AI
+                // review tắt. Không bao giờ chặn tín hiệu.
+                let macro_flow = state.macro_flow.read().await.clone();
+                attach_macro_flow_alignment(&mut signal, macro_flow.as_ref());
+
+                // 6.7f AI Chief Risk Officer tùy chọn (mặc định OFF).
                 // AI chỉ được veto/standby; không bao giờ sửa SL/TP live.
                 if config.ai_signal_review_enabled {
                     let mut context = state.market_context.read().await.clone();
@@ -422,11 +427,25 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     }
                     let events = state.news_filter.read().await.calendar_events.clone();
 
-                    match review_signal(&signal, context.as_ref(), &config, &events).await {
+                    match review_signal(
+                        &signal,
+                        context.as_ref(),
+                        macro_flow.as_ref(),
+                        &config,
+                        &events,
+                    )
+                    .await
+                    {
                         Some(review) => {
                             signal.ai_verdict = Some(review.action.clone());
                             signal.ai_confidence = Some(review.confidence_score);
                             signal.ai_reason = Some(review.reason.clone());
+                            if review.macro_flow_alignment.is_some() {
+                                signal.macro_flow_alignment = review.macro_flow_alignment.clone();
+                            }
+                            if review.macro_flow_note.is_some() {
+                                signal.macro_flow_note = review.macro_flow_note.clone();
+                            }
 
                             let (blocked, reason) = review_blocks_signal(
                                 &signal,

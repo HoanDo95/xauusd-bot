@@ -98,6 +98,99 @@ pub struct MacroFlowSnapshot {
     pub sources: Vec<String>,
 }
 
+/// Read-only alignment between a candidate signal and the macro/flow snapshot.
+///
+/// Advisory only: callers may display it, but it must never block a signal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MacroFlowAlignment {
+    /// BULLISH | BEARISH | NEUTRAL | UNKNOWN
+    pub bias: String,
+    /// 0..=95
+    pub confidence: u8,
+    pub score: i32,
+    /// CONFIRMING | DIVERGING | MIXED | INSUFFICIENT | UNKNOWN
+    pub flow_quality: String,
+    /// ALIGNED | COUNTER | MIXED | UNKNOWN
+    pub alignment: String,
+    /// Vietnamese explanation.
+    pub note: String,
+}
+
+/// Đối chiếu hướng tín hiệu với bias macro/flow. Pure, không network, không chặn.
+pub fn align_signal_with_macro_flow(
+    signal_type: &str,
+    snapshot: Option<&MacroFlowSnapshot>,
+) -> MacroFlowAlignment {
+    let Some(snapshot) = snapshot else {
+        return MacroFlowAlignment {
+            bias: "UNKNOWN".to_string(),
+            confidence: 0,
+            score: 0,
+            flow_quality: "UNKNOWN".to_string(),
+            alignment: "UNKNOWN".to_string(),
+            note: "Macro & Flow chưa sẵn sàng — chưa có bối cảnh vĩ mô để đối chiếu.".to_string(),
+        };
+    };
+
+    let scorecard = &snapshot.scorecard;
+    let bias = scorecard.macro_bias.trim().to_uppercase();
+    let flow_quality = scorecard.flow_quality.trim().to_uppercase();
+    let side = match signal_type.trim().to_uppercase().as_str() {
+        "BUY" | "LONG" => Some("BUY"),
+        "SELL" | "SHORT" => Some("SELL"),
+        _ => None,
+    };
+    let base_note = format!(
+        "Macro {} ({}%) · flow {}",
+        bias, scorecard.confidence, flow_quality
+    );
+
+    let (alignment, note) = match side {
+        None => (
+            "UNKNOWN",
+            format!(
+                "{} — chưa xác định được hướng tín hiệu để đối chiếu.",
+                base_note
+            ),
+        ),
+        Some(_) if bias == "NEUTRAL" || flow_quality == "INSUFFICIENT" => (
+            "MIXED",
+            format!(
+                "{} — bias chưa đủ độ tin cậy để đối chiếu; chỉ tham khảo.",
+                base_note
+            ),
+        ),
+        Some(side) if bias == "BULLISH" || bias == "BEARISH" => {
+            let aligned =
+                (side == "BUY" && bias == "BULLISH") || (side == "SELL" && bias == "BEARISH");
+            if aligned {
+                (
+                    "ALIGNED",
+                    format!("{} — {} thuận bối cảnh vĩ mô.", base_note, side),
+                )
+            } else {
+                (
+                    "COUNTER",
+                    format!("{} — {} ngược bối cảnh vĩ mô.", base_note, side),
+                )
+            }
+        }
+        Some(_) => (
+            "UNKNOWN",
+            format!("{} — bias không xác định; chỉ tham khảo.", base_note),
+        ),
+    };
+
+    MacroFlowAlignment {
+        bias,
+        confidence: scorecard.confidence,
+        score: scorecard.score,
+        flow_quality,
+        alignment: alignment.to_string(),
+        note,
+    }
+}
+
 /// Trả về (last, change 1 observation, change 5 observations, % change 5 observations).
 ///
 /// "5 observations" là giá trị cách hiện tại 5 phiên (cần ít nhất 6 điểm dữ liệu),
@@ -1212,5 +1305,134 @@ mod tests {
         assert_eq!(scorecard.confidence, 40);
         assert_eq!(scorecard.score, 0);
         assert_eq!(scorecard.driver, "không có tín hiệu rõ");
+    }
+
+    fn snapshot(bias: &str, confidence: u8, score: i32, flow_quality: &str) -> MacroFlowSnapshot {
+        MacroFlowSnapshot {
+            updated_at: "2026-11-12T00:00:00Z".to_string(),
+            fred_ok: true,
+            yahoo_ok: true,
+            cot_ok: true,
+            metrics: Vec::new(),
+            cot: None,
+            scorecard: MacroFlowScorecard {
+                macro_bias: bias.to_string(),
+                confidence,
+                score,
+                direction: "MIXED".to_string(),
+                driver: String::new(),
+                flow_quality: flow_quality.to_string(),
+                risk_regime: "NEUTRAL".to_string(),
+                rate_regime: "NEUTRAL".to_string(),
+                usd_regime: "NEUTRAL".to_string(),
+                vol_regime: "NORMAL".to_string(),
+                notes: Vec::new(),
+            },
+            warnings: Vec::new(),
+            sources: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn alignment_without_snapshot_is_unknown() {
+        let alignment = align_signal_with_macro_flow("BUY", None);
+        assert_eq!(alignment.bias, "UNKNOWN");
+        assert_eq!(alignment.alignment, "UNKNOWN");
+        assert_eq!(alignment.flow_quality, "UNKNOWN");
+        assert_eq!(alignment.confidence, 0);
+        assert_eq!(alignment.score, 0);
+        assert!(alignment.note.contains("chưa sẵn sàng"));
+    }
+
+    #[test]
+    fn buy_is_aligned_with_bullish_bias() {
+        let snapshot = snapshot("BULLISH", 85, 4, "CONFIRMING");
+        let alignment = align_signal_with_macro_flow("BUY", Some(&snapshot));
+
+        assert_eq!(alignment.bias, "BULLISH");
+        assert_eq!(alignment.alignment, "ALIGNED");
+        assert_eq!(alignment.confidence, 85);
+        assert_eq!(alignment.score, 4);
+        assert_eq!(alignment.flow_quality, "CONFIRMING");
+        assert!(alignment.note.contains("Macro BULLISH (85%)"));
+        assert!(alignment.note.contains("flow CONFIRMING"));
+        assert!(alignment.note.contains("BUY thuận bối cảnh vĩ mô"));
+    }
+
+    #[test]
+    fn buy_is_counter_to_bearish_bias() {
+        let snapshot = snapshot("BEARISH", 95, -4, "CONFIRMING");
+        let alignment = align_signal_with_macro_flow("BUY", Some(&snapshot));
+
+        assert_eq!(alignment.alignment, "COUNTER");
+        assert!(alignment.note.contains("Macro BEARISH (95%)"));
+        assert!(alignment.note.contains("BUY ngược bối cảnh vĩ mô"));
+    }
+
+    #[test]
+    fn sell_is_aligned_with_bearish_bias() {
+        let snapshot = snapshot("BEARISH", 90, -5, "DIVERGING");
+        let alignment = align_signal_with_macro_flow("SELL", Some(&snapshot));
+
+        assert_eq!(alignment.alignment, "ALIGNED");
+        assert!(alignment.note.contains("SELL thuận bối cảnh vĩ mô"));
+    }
+
+    #[test]
+    fn sell_is_counter_to_bullish_bias() {
+        let snapshot = snapshot("BULLISH", 75, 3, "MIXED");
+        let alignment = align_signal_with_macro_flow("SELL", Some(&snapshot));
+
+        assert_eq!(alignment.alignment, "COUNTER");
+        assert!(alignment.note.contains("SELL ngược bối cảnh vĩ mô"));
+    }
+
+    #[test]
+    fn neutral_bias_is_mixed_for_both_sides() {
+        let snapshot = snapshot("NEUTRAL", 40, 0, "MIXED");
+        for signal_type in ["BUY", "SELL"] {
+            let alignment = align_signal_with_macro_flow(signal_type, Some(&snapshot));
+            assert_eq!(alignment.alignment, "MIXED", "{signal_type}");
+            assert!(alignment.note.contains("chưa đủ độ tin cậy"));
+        }
+    }
+
+    #[test]
+    fn insufficient_flow_quality_is_mixed_even_with_directional_bias() {
+        let snapshot = snapshot("BULLISH", 40, 1, "INSUFFICIENT");
+        let alignment = align_signal_with_macro_flow("BUY", Some(&snapshot));
+
+        assert_eq!(alignment.alignment, "MIXED");
+        assert!(alignment.note.contains("flow INSUFFICIENT"));
+    }
+
+    #[test]
+    fn alignment_accepts_long_short_aliases_and_lowercase() {
+        let bullish = snapshot("BULLISH", 80, 3, "CONFIRMING");
+        assert_eq!(
+            align_signal_with_macro_flow("long", Some(&bullish)).alignment,
+            "ALIGNED"
+        );
+
+        let bearish = snapshot("BEARISH", 80, -3, "CONFIRMING");
+        assert_eq!(
+            align_signal_with_macro_flow("Short", Some(&bearish)).alignment,
+            "ALIGNED"
+        );
+    }
+
+    #[test]
+    fn unknown_signal_side_or_bias_is_unknown() {
+        let bullish = snapshot("BULLISH", 80, 3, "CONFIRMING");
+        assert_eq!(
+            align_signal_with_macro_flow("", Some(&bullish)).alignment,
+            "UNKNOWN"
+        );
+
+        let unknown_bias = snapshot("SIDEWAYS", 50, 0, "MIXED");
+        assert_eq!(
+            align_signal_with_macro_flow("BUY", Some(&unknown_bias)).alignment,
+            "UNKNOWN"
+        );
     }
 }

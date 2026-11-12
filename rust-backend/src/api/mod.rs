@@ -1,5 +1,5 @@
 use crate::divergence_alerts::DivergenceAlert;
-use crate::macro_flow::MacroFlowSnapshot;
+use crate::macro_flow::{align_signal_with_macro_flow, MacroFlowSnapshot};
 use crate::market_context::{htf_allows_signal, MarketContext};
 use crate::market_feed::MarketDataFeed;
 use crate::models::{BotConfig, Candle, DailyMacroReport, Signal};
@@ -239,6 +239,16 @@ pub(crate) fn attach_rsi_snapshot(signal: &mut Signal, snapshot: &RsiSnapshot) {
     signal.rsi_divergence = Some(divergence_label(snapshot.divergence));
 }
 
+/// Gắn đối chiếu macro/flow (advisory) vào tín hiệu. Không bao giờ chặn tín hiệu.
+pub(crate) fn attach_macro_flow_alignment(
+    signal: &mut Signal,
+    macro_flow: Option<&MacroFlowSnapshot>,
+) {
+    let alignment = align_signal_with_macro_flow(signal.signal_type.as_str(), macro_flow);
+    signal.macro_flow_alignment = Some(alignment.alignment);
+    signal.macro_flow_note = Some(alignment.note);
+}
+
 /// Áp bộ lọc RSI cứng cho tín hiệu thật. Trả lý do nếu bị chặn.
 /// Mặc định filter OFF => luôn None (không đổi hành vi).
 pub(crate) fn rsi_block_reason(
@@ -278,11 +288,26 @@ pub(crate) async fn ai_review_block_reason(
         ));
     }
     let events = state.news_filter.read().await.calendar_events.clone();
-    match review_signal(signal, context.as_ref(), config, &events).await {
+    let macro_flow = state.macro_flow.read().await.clone();
+    match review_signal(
+        signal,
+        context.as_ref(),
+        macro_flow.as_ref(),
+        config,
+        &events,
+    )
+    .await
+    {
         Some(review) => {
             signal.ai_verdict = Some(review.action.clone());
             signal.ai_confidence = Some(review.confidence_score);
             signal.ai_reason = Some(review.reason.clone());
+            if let Some(alignment) = review.macro_flow_alignment.clone() {
+                signal.macro_flow_alignment = Some(alignment);
+            }
+            if let Some(note) = review.macro_flow_note.clone() {
+                signal.macro_flow_note = Some(note);
+            }
             let (blocked, reason) =
                 review_blocks_signal(signal, &review, config.ai_signal_review_min_confidence);
             blocked.then_some(reason)

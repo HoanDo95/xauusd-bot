@@ -1,3 +1,4 @@
+use crate::macro_flow::{align_signal_with_macro_flow, MacroFlowSnapshot};
 use crate::market_context::{MarketContext, TimeframeContext};
 use crate::models::{BotConfig, EconomicEvent, ImpactLevel, Signal};
 use crate::rsi::{divergence_label, RsiSnapshot};
@@ -38,6 +39,12 @@ pub struct AiSignalReview {
     /// Quy tắc thực thi ngắn gọn do AI đề xuất (advisory).
     #[serde(default)]
     pub execution_rule: Option<String>,
+    /// AI nhận định mức độ thuận/ngược với macro/flow (advisory).
+    #[serde(default)]
+    pub macro_flow_alignment: Option<String>,
+    /// Ghi chú macro/flow ngắn gọn do AI trả về (advisory).
+    #[serde(default)]
+    pub macro_flow_note: Option<String>,
     pub reason: String,
     pub provider: String,
     pub model: String,
@@ -171,10 +178,80 @@ fn format_rsi_block(candidate: &Signal, context: Option<&MarketContext>) -> Stri
     format!("rsi_m15: {}\nrsi_h1: {}\nrsi_h4: {}", m15, h1, h4)
 }
 
+fn format_metric_value(value: Option<f64>, decimals: usize) -> String {
+    value
+        .map(|value| format!("{:.*}", decimals, value))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn format_metric_change(value: Option<f64>, decimals: usize) -> String {
+    value
+        .map(|value| format!("{:+.decimals$}", value, decimals = decimals))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+/// Khối Macro & Flow gọn cho prompt. Read-only; không bao giờ là hard rule.
+fn format_macro_flow_block(candidate: &Signal, macro_flow: Option<&MacroFlowSnapshot>) -> String {
+    let Some(snapshot) = macro_flow else {
+        return "Macro & Flow (read-only):\nmacro_flow: unavailable".to_string();
+    };
+
+    let scorecard = &snapshot.scorecard;
+    let alignment = align_signal_with_macro_flow(candidate.signal_type.as_str(), Some(snapshot));
+    let metric = |key: &str| snapshot.metrics.iter().find(|metric| metric.key == key);
+    let real_yield = metric("real_yield_10y");
+    let dxy = metric("dxy");
+    let gold = metric("gold");
+
+    let real_yield_value = format_metric_value(real_yield.and_then(|metric| metric.value), 2);
+    let real_yield_change = format_metric_change(real_yield.and_then(|metric| metric.change_5d), 2);
+    let dxy_value = format_metric_value(dxy.and_then(|metric| metric.value), 1);
+    let dxy_change = format_metric_change(dxy.and_then(|metric| metric.change_5d_pct), 2);
+    let gold_value = format_metric_value(gold.and_then(|metric| metric.value), 0);
+    let gold_change = format_metric_change(gold.and_then(|metric| metric.change_5d_pct), 2);
+
+    let cot_line = snapshot
+        .cot
+        .as_ref()
+        .map(|cot| {
+            format!(
+                "COT net={:.0} (weekly change {:+.0}, {:.2}% OI)",
+                cot.noncommercial_net, cot.noncommercial_net_change, cot.net_pct_oi
+            )
+        })
+        .unwrap_or_else(|| "COT: n/a".to_string());
+
+    format!(
+        "Macro & Flow (read-only):\n\
+        bias={} score={} confidence={} flow={}\n\
+        real_yield_10y={} (5d {}) DXY={} (5d {}%) gold={} (5d {}%)\n\
+        {}\n\
+        risk_regime={} rate_regime={} usd_regime={} vol_regime={}\n\
+        alignment_with_candidate={}",
+        scorecard.macro_bias,
+        scorecard.score,
+        scorecard.confidence,
+        scorecard.flow_quality,
+        real_yield_value,
+        real_yield_change,
+        dxy_value,
+        dxy_change,
+        gold_value,
+        gold_change,
+        cot_line,
+        scorecard.risk_regime,
+        scorecard.rate_regime,
+        scorecard.usd_regime,
+        scorecard.vol_regime,
+        alignment.alignment
+    )
+}
+
 /// Prompt gọn: chỉ dữ liệu cần cho quyết định veto/standby.
 fn build_review_prompt(
     candidate: &Signal,
     context: Option<&MarketContext>,
+    macro_flow: Option<&MacroFlowSnapshot>,
     events: &[EconomicEvent],
     now: DateTime<Utc>,
 ) -> String {
@@ -225,6 +302,7 @@ fn build_review_prompt(
 
     let current_price = candidate.live_market_price.unwrap_or(candidate.entry_price);
     let rsi_lines = format_rsi_block(candidate, context);
+    let macro_flow_lines = format_macro_flow_block(candidate, macro_flow);
 
     format!(
         "You are the independent Chief Risk Officer (AI) for a XAU/USD signal bot.\n\
@@ -233,6 +311,7 @@ fn build_review_prompt(
         advisory observations only.\n\n\
         Market context (read-only):\n{}\n\n\
         RSI context (Wilder, closed candles):\n{}\n\n\
+        {}\n\n\
         Candidate signal:\n\
         side={} entry={:.2} SL={:.2} TP1={:.2} TP2={:.2} RR=1:{:.2} lot={:.2}\n\
         volume_surge={:.2}x entry_type={} candle_close={:.2} current_price={:.2}\n\
@@ -247,16 +326,24 @@ fn build_review_prompt(
         3) If one of the three layers is missing or contradictory, prefer STANDBY.\n\n\
         Risk rules of thumb: reject counter-D1/H4 trades, stretched channel entries, \
         thin R:R, and signals immediately before red news. Be conservative but concise.\n\n\
+        Macro & Flow rules (context only, never a hard rule):\n\
+        - Macro/flow is context, not a hard rule; never invent data.\n\
+        - If alignment_with_candidate=COUNTER, lower confidence or choose STANDBY unless technical \
+        confluence is exceptional.\n\
+        - If ALIGNED, you may approve but still require R:R/structure.\n\n\
         Return ONLY one valid JSON object with exactly these keys:\n\
         {{\"action\":\"BUY\"|\"SELL\"|\"STANDBY\",\"confidence_score\":0.0,\
         \"entry_zone\":\"short text or null\",\"dynamic_sl\":null,\"tp\":null,\
         \"macro_trend_h1_h4\":\"short text or null\",\
         \"rsi_indicator_m15\":{{\"value\":76.4,\"status\":\"Overbought\",\"divergence\":\"Bearish\"}},\
-        \"execution_rule\":\"short text or null\",\"reason\":\"non-empty, <=240 chars\"}}\n\
+        \"execution_rule\":\"short text or null\",\
+        \"macro_flow_alignment\":\"ALIGNED\"|\"COUNTER\"|\"MIXED\"|\"UNKNOWN\",\
+        \"macro_flow_note\":\"short text or null\",\"reason\":\"non-empty, <=240 chars\"}}\n\
         action must be uppercase BUY, SELL or STANDBY. confidence_score must be 0.0-1.0. \
         rsi_indicator_m15 must mirror the supplied RSI context (use null value when unavailable).",
         context_lines,
         rsi_lines,
+        macro_flow_lines,
         candidate.signal_type.as_str(),
         candidate.entry_price,
         candidate.stop_loss,
@@ -330,6 +417,15 @@ fn normalize_rsi_divergence(value: &str) -> String {
     .to_string()
 }
 
+fn normalize_macro_flow_alignment(value: &str) -> Option<String> {
+    let normalized = value.trim().to_uppercase();
+    matches!(
+        normalized.as_str(),
+        "ALIGNED" | "COUNTER" | "MIXED" | "UNKNOWN"
+    )
+    .then_some(normalized)
+}
+
 fn non_empty_string(value: Option<&Value>) -> Option<String> {
     value
         .and_then(Value::as_str)
@@ -385,6 +481,9 @@ fn parse_review_content(content: &str, provider: &str, model: &str) -> Option<Ai
     }
 
     let (rsi_value, rsi_state, rsi_divergence) = parse_rsi_fields(&value);
+    let macro_flow_alignment = optional_string(&value, "macro_flow_alignment")
+        .and_then(|alignment| normalize_macro_flow_alignment(&alignment));
+    let macro_flow_note = optional_string(&value, "macro_flow_note");
 
     Some(AiSignalReview {
         action,
@@ -397,6 +496,8 @@ fn parse_review_content(content: &str, provider: &str, model: &str) -> Option<Ai
         rsi_state,
         rsi_divergence,
         execution_rule: optional_string(&value, "execution_rule"),
+        macro_flow_alignment,
+        macro_flow_note,
         reason: reason.to_string(),
         provider: provider.to_string(),
         model: model.to_string(),
@@ -413,6 +514,22 @@ fn apply_candidate_rsi_fallback(review: &mut AiSignalReview, candidate: &Signal)
     }
     if review.rsi_divergence.is_none() {
         review.rsi_divergence = candidate.rsi_divergence.clone();
+    }
+}
+
+/// Nếu AI bỏ trống alignment, fallback về đối chiếu deterministic từ snapshot.
+/// Advisory only: không ảnh hưởng review_blocks_signal.
+fn apply_macro_flow_fallback(
+    review: &mut AiSignalReview,
+    candidate: &Signal,
+    macro_flow: Option<&MacroFlowSnapshot>,
+) {
+    if review.macro_flow_alignment.is_none() {
+        let alignment = align_signal_with_macro_flow(candidate.signal_type.as_str(), macro_flow);
+        review.macro_flow_alignment = Some(alignment.alignment);
+        if review.macro_flow_note.is_none() {
+            review.macro_flow_note = Some(alignment.note);
+        }
     }
 }
 
@@ -486,6 +603,7 @@ pub fn review_blocks_signal(
 pub async fn review_signal(
     candidate: &Signal,
     context: Option<&MarketContext>,
+    macro_flow: Option<&MacroFlowSnapshot>,
     config: &BotConfig,
     events: &[EconomicEvent],
 ) -> Option<AiSignalReview> {
@@ -500,7 +618,7 @@ pub async fn review_signal(
     )?;
 
     let now = Utc::now();
-    let prompt = build_review_prompt(candidate, context, events, now);
+    let prompt = build_review_prompt(candidate, context, macro_flow, events, now);
     let url = format!(
         "{}/chat/completions",
         settings.api_base.trim_end_matches('/')
@@ -565,11 +683,15 @@ pub async fn review_signal(
     let mut review = parse_review_content(content, "opencode_go", &settings.model);
     if let Some(review) = review.as_mut() {
         apply_candidate_rsi_fallback(review, candidate);
+        apply_macro_flow_fallback(review, candidate, macro_flow);
     }
     match review.as_ref() {
         Some(review) => info!(
-            "🤖 [AI Risk Officer] verdict={} confidence={:.2} model={}",
-            review.action, review.confidence_score, review.model
+            "🤖 [AI Risk Officer] verdict={} confidence={:.2} model={} macro_alignment={}",
+            review.action,
+            review.confidence_score,
+            review.model,
+            review.macro_flow_alignment.as_deref().unwrap_or("n/a")
         ),
         None => warn!("⚠️ [AI Risk Officer] Phản hồi AI không hợp lệ — bỏ qua review."),
     }
@@ -579,6 +701,7 @@ pub async fn review_signal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::macro_flow::{CotSnapshot, MacroFlowScorecard, MacroMetric};
     use crate::models::{EntryType, SignalStatus, SignalType, Timeframe};
     use chrono::TimeZone;
 
@@ -627,6 +750,8 @@ mod tests {
             rsi_value: None,
             rsi_state: None,
             rsi_divergence: None,
+            macro_flow_alignment: None,
+            macro_flow_note: None,
         }
     }
 
@@ -642,9 +767,66 @@ mod tests {
             rsi_state: None,
             rsi_divergence: None,
             execution_rule: None,
+            macro_flow_alignment: None,
+            macro_flow_note: None,
             reason: "structure agrees".to_string(),
             provider: "opencode_go".to_string(),
             model: DEFAULT_REVIEW_MODEL.to_string(),
+        }
+    }
+
+    fn macro_metric(key: &str, value: f64, change_5d: f64, change_5d_pct: f64) -> MacroMetric {
+        MacroMetric {
+            key: key.to_string(),
+            label: key.to_string(),
+            value: Some(value),
+            unit: "%".to_string(),
+            change_1d: None,
+            change_5d: Some(change_5d),
+            change_5d_pct: Some(change_5d_pct),
+            volume_ratio_20d: None,
+            date: Some("2026-11-11".to_string()),
+            source: "TEST".to_string(),
+            note: String::new(),
+        }
+    }
+
+    fn macro_snapshot() -> MacroFlowSnapshot {
+        MacroFlowSnapshot {
+            updated_at: "2026-11-12T00:00:00Z".to_string(),
+            fred_ok: true,
+            yahoo_ok: true,
+            cot_ok: true,
+            metrics: vec![
+                macro_metric("real_yield_10y", 2.66, 0.04, 1.53),
+                macro_metric("dxy", 103.0, 1.45, 1.43),
+                macro_metric("gold", 3980.0, -133.8, -3.25),
+            ],
+            cot: Some(CotSnapshot {
+                report_date: "2026-11-03".to_string(),
+                open_interest: 399_169.0,
+                noncommercial_long: 220_530.0,
+                noncommercial_short: 40_982.0,
+                noncommercial_net: 179_548.0,
+                noncommercial_net_change: -6_903.0,
+                net_pct_oi: 44.9806,
+                open_interest_change: 2_359.0,
+            }),
+            scorecard: MacroFlowScorecard {
+                macro_bias: "BEARISH".to_string(),
+                confidence: 95,
+                score: -4,
+                direction: "DOWN".to_string(),
+                driver: "real yield ↑, DXY ↑".to_string(),
+                flow_quality: "CONFIRMING".to_string(),
+                risk_regime: "NEUTRAL".to_string(),
+                rate_regime: "TIGHTENING".to_string(),
+                usd_regime: "STRONG".to_string(),
+                vol_regime: "NORMAL".to_string(),
+                notes: Vec::new(),
+            },
+            warnings: Vec::new(),
+            sources: Vec::new(),
         }
     }
 
@@ -836,7 +1018,7 @@ mod tests {
             actual: None,
         }];
 
-        let prompt = build_review_prompt(&sample_signal(), None, &events, now);
+        let prompt = build_review_prompt(&sample_signal(), None, None, &events, now);
 
         assert!(prompt.contains("side=BUY"));
         assert!(prompt.contains("Upcoming High-Impact USD events: US Core CPI m/m"));
@@ -856,7 +1038,7 @@ mod tests {
         candidate.rsi_state = Some("Overbought".to_string());
         candidate.rsi_divergence = Some("Bearish".to_string());
 
-        let prompt = build_review_prompt(&candidate, None, &[], now);
+        let prompt = build_review_prompt(&candidate, None, None, &[], now);
 
         assert!(prompt.contains("RSI context (Wilder, closed candles):"));
         assert!(prompt.contains("rsi_m15: value=76.4 state=Overbought divergence=Bearish"));
@@ -890,9 +1072,113 @@ mod tests {
             divergence: RsiDivergence::Bearish,
         });
 
-        let prompt = build_review_prompt(&candidate, Some(&context), &[], now);
+        let prompt = build_review_prompt(&candidate, Some(&context), None, &[], now);
         assert!(prompt.contains("rsi_m15: value=81.2 state=Overbought divergence=Bearish"));
         assert!(!prompt.contains("rsi_m15: value=40.0"));
+    }
+
+    #[test]
+    fn prompt_contains_macro_flow_block_and_alignment() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 11, 10, 14, 30, 0)
+            .single()
+            .expect("valid timestamp");
+        let snapshot = macro_snapshot();
+
+        let prompt = build_review_prompt(&sample_signal(), None, Some(&snapshot), &[], now);
+
+        assert!(prompt.contains("Macro & Flow (read-only):"));
+        assert!(prompt.contains("bias=BEARISH score=-4 confidence=95 flow=CONFIRMING"));
+        assert!(prompt.contains(
+            "real_yield_10y=2.66 (5d +0.04) DXY=103.0 (5d +1.43%) gold=3980 (5d -3.25%)"
+        ));
+        assert!(prompt.contains("COT net=179548 (weekly change -6903, 44.98% OI)"));
+        assert!(prompt.contains(
+            "risk_regime=NEUTRAL rate_regime=TIGHTENING usd_regime=STRONG vol_regime=NORMAL"
+        ));
+        assert!(prompt.contains("alignment_with_candidate=COUNTER"));
+        assert!(prompt.contains("Macro & Flow rules (context only, never a hard rule):"));
+        assert!(prompt.contains("\"macro_flow_alignment\""));
+        assert!(prompt.contains("\"macro_flow_note\""));
+    }
+
+    #[test]
+    fn prompt_marks_macro_flow_unavailable_without_snapshot() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 11, 10, 14, 30, 0)
+            .single()
+            .expect("valid timestamp");
+
+        let prompt = build_review_prompt(&sample_signal(), None, None, &[], now);
+        assert!(prompt.contains("Macro & Flow (read-only):"));
+        assert!(prompt.contains("macro_flow: unavailable"));
+        assert!(!prompt.contains("bias=BEARISH"));
+    }
+
+    #[test]
+    fn parses_and_normalizes_macro_flow_fields() {
+        let content = r#"{
+            "action": "BUY",
+            "confidence_score": 0.8,
+            "macro_flow_alignment": " counter ",
+            "macro_flow_note": "  Macro ngược hướng, chỉ tham khảo.  ",
+            "reason": "structure agrees"
+        }"#;
+        let parsed =
+            parse_review_content(content, "opencode_go", "test-model").expect("macro review JSON");
+        assert_eq!(parsed.macro_flow_alignment.as_deref(), Some("COUNTER"));
+        assert_eq!(
+            parsed.macro_flow_note.as_deref(),
+            Some("Macro ngược hướng, chỉ tham khảo.")
+        );
+
+        let invalid = r#"{
+            "action": "BUY",
+            "confidence_score": 0.8,
+            "macro_flow_alignment": "sideways",
+            "reason": "structure agrees"
+        }"#;
+        let parsed =
+            parse_review_content(invalid, "opencode_go", "test-model").expect("valid review");
+        assert_eq!(parsed.macro_flow_alignment, None);
+    }
+
+    #[test]
+    fn macro_flow_falls_back_to_snapshot_when_ai_omits_it() {
+        let candidate = sample_signal();
+        let snapshot = macro_snapshot();
+        let content = r#"{"action":"BUY","confidence_score":0.8,"reason":"structure agrees"}"#;
+        let mut parsed = parse_review_content(content, "opencode_go", "test-model")
+            .expect("review without macro");
+        apply_macro_flow_fallback(&mut parsed, &candidate, Some(&snapshot));
+
+        assert_eq!(parsed.macro_flow_alignment.as_deref(), Some("COUNTER"));
+        assert!(parsed
+            .macro_flow_note
+            .as_deref()
+            .unwrap_or_default()
+            .contains("BUY ngược bối cảnh vĩ mô"));
+
+        // AI-provided alignment wins over the deterministic fallback.
+        let mut provided = parse_review_content(
+            r#"{"action":"BUY","confidence_score":0.8,"macro_flow_alignment":"MIXED","macro_flow_note":"AI note","reason":"ok"}"#,
+            "opencode_go",
+            "test-model",
+        )
+        .expect("review with macro");
+        apply_macro_flow_fallback(&mut provided, &candidate, Some(&snapshot));
+        assert_eq!(provided.macro_flow_alignment.as_deref(), Some("MIXED"));
+        assert_eq!(provided.macro_flow_note.as_deref(), Some("AI note"));
+
+        // Without a snapshot the fallback is UNKNOWN, not a block.
+        let mut no_snapshot = parse_review_content(
+            r#"{"action":"BUY","confidence_score":0.8,"reason":"ok"}"#,
+            "opencode_go",
+            "test-model",
+        )
+        .expect("review without macro");
+        apply_macro_flow_fallback(&mut no_snapshot, &candidate, None);
+        assert_eq!(no_snapshot.macro_flow_alignment.as_deref(), Some("UNKNOWN"));
     }
 
     #[test]
@@ -926,7 +1212,7 @@ mod tests {
         let config = BotConfig::default();
         assert!(!config.ai_signal_review_enabled);
 
-        let result = review_signal(&candidate, None, &config, &[]).await;
+        let result = review_signal(&candidate, None, None, &config, &[]).await;
         assert!(result.is_none());
     }
 }

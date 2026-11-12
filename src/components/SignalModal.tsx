@@ -58,6 +58,11 @@ export const SignalModal: React.FC<Props> = ({
           signal.rsi_state ? ` · ${signal.rsi_state}` : ''
         }${rsiDivergence}`
       : '';
+  const macroTelegramLine = signal.macro_flow_alignment
+    ? `\n🌐 Macro/Flow: ${signal.macro_flow_alignment}${
+        signal.macro_flow_note ? ` — ${signal.macro_flow_note}` : ''
+      }`
+    : '';
 
   const baseTelegramMessage = `${simulationPrefix}🚨 GOLD SIGNAL ALERT | ${signal.symbol} 🚨
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -72,7 +77,7 @@ export const SignalModal: React.FC<Props> = ({
 ━━━━━━━━━━━━━━━━━━━━━━
 🔍 Phân tích Kỹ thuật & Volume:
 • Price Action: ${signal.price_action_notes}
-• Volume Absorption: ${signal.volume_analysis_notes}${volumeDeltaLine}${rsiTelegramLine}
+• Volume Absorption: ${signal.volume_analysis_notes}${volumeDeltaLine}${rsiTelegramLine}${macroTelegramLine}
 • Đánh giá: ${signal.full_rationale}${aiTelegramLine}
 ━━━━━━━━━━━━━━━━━━━━━━
 ⚠️ Quản lý rủi ro tối đa 1-2% tài khoản. Chúc bạn giao dịch kỷ luật!
@@ -228,6 +233,34 @@ export const SignalModal: React.FC<Props> = ({
                 <p className="text-neutral-300 leading-relaxed">
                   <span className="text-indigo-300 font-mono">•</span> {signal.ai_reason}
                 </p>
+              )}
+            </div>
+          )}
+
+          {/* Macro/Flow alignment (advisory, never blocks the signal) */}
+          {signal.macro_flow_alignment && (
+            <div className="rounded-xl border border-teal-500/30 bg-teal-500/10 p-3.5 flex flex-col gap-2 text-xs">
+              <div className="flex flex-wrap items-center gap-2 font-mono">
+                <span className="text-teal-300 font-bold">🌐 Macro/Flow</span>
+                <span
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                    signal.macro_flow_alignment === 'ALIGNED'
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                      : signal.macro_flow_alignment === 'COUNTER'
+                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                        : signal.macro_flow_alignment === 'MIXED'
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                          : 'bg-neutral-800 text-neutral-300 border-neutral-700'
+                  }`}
+                >
+                  {signal.macro_flow_alignment}
+                </span>
+                <span className="text-[10px] text-neutral-500">
+                  bối cảnh vĩ mô · không tự động chặn
+                </span>
+              </div>
+              {signal.macro_flow_note && (
+                <p className="text-neutral-300 leading-relaxed">{signal.macro_flow_note}</p>
               )}
             </div>
           )}

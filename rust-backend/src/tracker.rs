@@ -326,6 +326,8 @@ mod tests {
             rsi_value: None,
             rsi_state: None,
             rsi_divergence: None,
+            macro_flow_alignment: None,
+            macro_flow_note: None,
         }
     }
 

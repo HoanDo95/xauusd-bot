@@ -236,6 +236,13 @@ pub struct Signal {
     /// "None" | "Bullish" | "Bearish".
     #[serde(default)]
     pub rsi_divergence: Option<String>,
+    /// Macro/flow alignment at signal time: "ALIGNED" | "COUNTER" | "MIXED" | "UNKNOWN".
+    /// Advisory only — never blocks a signal.
+    #[serde(default)]
+    pub macro_flow_alignment: Option<String>,
+    /// Short Vietnamese macro/flow note (advisory only).
+    #[serde(default)]
+    pub macro_flow_note: Option<String>,
 }
 
 fn default_entry_filled() -> bool {
