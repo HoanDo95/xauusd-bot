@@ -349,27 +349,48 @@ docker compose restart api
 docker compose logs -f api
 ```
 
-## 16. PAXG → XAU/USD spot basis calibration
+## 16. XAU/USD data source: TwelveData vs Binance PAXG
 
-Binance `PAXGUSDT` remains the only OHLCV + volume feed. `TWELVEDATA_API_KEY` is
-optional and now powers **only** the XAU/USD spot reference used to calibrate the
-PAXG premium/discount; TwelveData `time_series` has no volume and is not used for
-candles. The spot quote is cached 300s (~288 calls/day) and falls back to
-`https://api.gold-api.com/price/XAU` when TwelveData fails.
+Two modes are supported (dashboard config, persisted in `data/bot_state.json`):
 
-Set it in `rust-backend/.env`, then restart the API so the environment is reloaded:
+| Mode | Price | Volume |
+|---|---|---|
+| `BINANCE_PAXG` (default) | Binance `PAXGUSDT` + spot basis | Binance PAXG |
+| `TWELVEDATA` | TwelveData `XAU/USD` OHLC | Binance PAXG volume proxy (timestamp-matched) |
+
+`TWELVEDATA` mode:
+
+- OHLC from `time_series` (`15min` / `1h` / `4h` / `1day`, `timezone=UTC`,
+  `order=ASC`); RSI is computed locally from those closes.
+- Volume is merged from Binance PAXG by matching candle timestamps. If no
+  timestamps match, `volumeSource = "NONE"`; turn off `volume_filter_enabled`
+  in the dashboard to keep generating price-action signals without volume.
+- Cached per timeframe: M15 300s, H1/H4 900s, D1 3600s (~500 requests/day,
+  inside the free 800/day tier).
+- Health shows `dataSource`, `priceSource`, `volumeSource`, `spotBasis: null`.
+- Switch back to Binance at any time via `data_source = BINANCE_PAXG`.
+
+`BINANCE_PAXG` mode keeps the spot-basis calibration: the TwelveData `/price`
+reference is cached 300s and shifts PAXG OHLC toward XAU/USD; `spotBasis` is
+`null` if both spot providers fail and the engine continues with PAXG + manual
+offset.
+
+Set the key in `rust-backend/.env`, then restart the API:
 
 ```bash
 # rust-backend/.env
 TWELVEDATA_API_KEY="your_twelvedata_api_key_here"
 
 docker compose restart api
-docker compose logs -f api   # look for: 🌐 Spot basis: spot=..., basis=+...
+docker compose logs -f api   # look for: TwelveData XAU/USD ... / Đã ghép volume ...
 ```
 
-`use_auto_spot_basis` (default true) is dashboard config in
-`data/bot_state.json`; no restart is needed to toggle it. A legacy persisted
-`data_source = "TWELVEDATA"` is migrated back to `BINANCE_PAXG` on startup.
-`broker_price_offset` still applies on top. If both spot providers fail,
-`spotBasis` is `null` and the engine continues with Binance PAXG + the manual
-offset.
+## 16b. Divergence alerts and Live Setup preview
+
+- `divergence_alert_enabled` (default true) sends standalone RSI divergence
+  alerts for M15/H1/H4. They are advisory only, never consume the daily quota,
+  and use a 60-minute cooldown per timeframe + direction.
+- `GET /api/divergence-alerts` returns recent in-memory alerts.
+- `GET /api/live-view` returns a read-only Entry/SL/TP/R:R preview (or
+  `no_setup`); it never sends Telegram, stores a signal or consumes quota.
+- The dashboard Live Setup card has the Start/Stop control for `is_active`.
