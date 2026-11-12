@@ -398,3 +398,8 @@ docker compose logs -f api   # look for: TwelveData XAU/USD ... / Đã ghép vol
   signals and the Live Setup preview. It is advisory only: no code-level hard
   macro filter. The AI Risk Officer receives the macro/flow block and may
   lower confidence or STANDBY.
+- Scenario View (`GET /api/scenarios`) returns four reference scenarios even
+  when the signal engine says `no_setup`. Pressing Start
+  (`POST /api/scanner/start`) sends the scenario summary to Telegram and returns
+  the same view to the dashboard; it never inserts a signal or consumes quota.
+  `POST /api/scenarios/telegram` resends on demand.

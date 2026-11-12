@@ -242,6 +242,32 @@ SELL + macro BULLISH  → COUNTER
 - **No hard macro filter**: alignment is advisory only; it does not block a
   signal in code. AI veto remains the only macro-related block.
 
+### Scenario View + Start-to-Telegram (Phase C4)
+
+The dashboard has a **Scenario View** card with four reference scenarios even
+when the strict signal engine says `no_setup`:
+
+```text
+Bullish breakout · Bearish breakdown · Bullish bounce · Bearish rejection
+```
+
+Each scenario shows trigger, entry, SL, TP1/TP2, R:R, invalidation, confidence,
+macro/flow alignment and `VALID`/`NOT VIABLE`. It is read-only reference
+planning, not a confirmed signal; the card never inserts a signal or consumes
+quota.
+
+Pressing **Start** now:
+
+1. Enables `is_active`.
+2. Builds the live view + scenario view immediately.
+3. Sends the scenario summary to Telegram (so you have a view even if the
+   dashboard is unreachable).
+4. Returns the same view to the dashboard.
+
+The Scenario View card also has **Gửi Telegram** to resend the current snapshot
+on demand. Stop only pauses the scanner; it does not close open signals or reset
+quota.
+
 ### Entry execution (dashboard config)
 
 | `entry_mode` | Behaviour |
