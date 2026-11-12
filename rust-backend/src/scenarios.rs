@@ -269,6 +269,7 @@ pub fn build_scenarios(
             sl_buffer,
             nearest_resistance,
             &resistance_levels,
+            config.min_risk_reward,
         ),
         bearish_breakdown_draft(
             price,
@@ -277,6 +278,7 @@ pub fn build_scenarios(
             sl_buffer,
             nearest_support,
             &support_levels,
+            config.min_risk_reward,
         ),
         bullish_bounce_draft(
             price,
@@ -285,6 +287,7 @@ pub fn build_scenarios(
             sl_buffer,
             nearest_support,
             nearest_resistance,
+            config.min_risk_reward,
         ),
         bearish_rejection_draft(
             price,
@@ -293,6 +296,7 @@ pub fn build_scenarios(
             sl_buffer,
             nearest_support,
             nearest_resistance,
+            config.min_risk_reward,
         ),
     ];
 
@@ -314,6 +318,18 @@ pub fn build_scenarios(
     }
 }
 
+/// Minimum distance from entry to TP1 so TP1 satisfies the configured R:R.
+/// At least 2R is always required; a one-cent buffer keeps the target valid
+/// after price rounding.
+fn min_tp1_reward(risk: f64, min_risk_reward: f64) -> f64 {
+    let min_rr = if min_risk_reward.is_finite() && min_risk_reward > 0.0 {
+        min_risk_reward
+    } else {
+        2.0
+    };
+    risk * min_rr.max(2.0) + 0.01
+}
+
 fn bullish_breakout_draft(
     price: f64,
     atr: f64,
@@ -321,6 +337,7 @@ fn bullish_breakout_draft(
     sl_buffer: f64,
     nearest_resistance: Option<f64>,
     resistance_levels: &[f64],
+    min_risk_reward: f64,
 ) -> ScenarioDraft {
     let trigger = round2(
         nearest_resistance
@@ -333,12 +350,13 @@ fn bullish_breakout_draft(
             .unwrap_or(trigger - 2.0 * atr),
     );
     let risk = (trigger - stop_loss).abs();
+    let tp1_reward = min_tp1_reward(risk, min_risk_reward);
     let take_profit_1 = round2(
         resistance_levels
             .iter()
             .copied()
-            .find(|level| *level > trigger)
-            .unwrap_or(trigger + 2.0 * risk),
+            .find(|level| *level >= trigger + tp1_reward)
+            .unwrap_or(trigger + tp1_reward),
     );
     let take_profit_2 = round2(
         resistance_levels
@@ -388,6 +406,7 @@ fn bearish_breakdown_draft(
     sl_buffer: f64,
     nearest_support: Option<f64>,
     support_levels: &[f64],
+    min_risk_reward: f64,
 ) -> ScenarioDraft {
     let trigger = round2(
         nearest_support
@@ -400,12 +419,13 @@ fn bearish_breakdown_draft(
             .unwrap_or(trigger + 2.0 * atr),
     );
     let risk = (stop_loss - trigger).abs();
+    let tp1_reward = min_tp1_reward(risk, min_risk_reward);
     let take_profit_1 = round2(
         support_levels
             .iter()
             .copied()
-            .find(|level| *level < trigger)
-            .unwrap_or(trigger - 2.0 * risk),
+            .find(|level| *level <= trigger - tp1_reward)
+            .unwrap_or(trigger - tp1_reward),
     );
     let take_profit_2 = round2(
         support_levels
@@ -455,6 +475,7 @@ fn bullish_bounce_draft(
     sl_buffer: f64,
     nearest_support: Option<f64>,
     nearest_resistance: Option<f64>,
+    min_risk_reward: f64,
 ) -> ScenarioDraft {
     let Some(support) = nearest_support else {
         return ScenarioDraft {
@@ -499,9 +520,12 @@ fn bullish_bounce_draft(
     let entry = round2(support + breakout_buffer);
     let stop_loss = round2(support - sl_buffer);
     let risk = (entry - stop_loss).abs();
+    let tp1_reward = min_tp1_reward(risk, min_risk_reward);
     let take_profit_1 = round2(match nearest_resistance {
-        Some(resistance) if (support + resistance) / 2.0 > entry => (support + resistance) / 2.0,
-        _ => entry + 2.0 * risk,
+        Some(resistance) if (support + resistance) / 2.0 >= entry + tp1_reward => {
+            (support + resistance) / 2.0
+        }
+        _ => entry + tp1_reward,
     });
     let take_profit_2 = round2(match nearest_resistance {
         Some(resistance) if resistance > take_profit_1 => resistance,
@@ -530,6 +554,7 @@ fn bearish_rejection_draft(
     sl_buffer: f64,
     nearest_support: Option<f64>,
     nearest_resistance: Option<f64>,
+    min_risk_reward: f64,
 ) -> ScenarioDraft {
     let Some(resistance) = nearest_resistance else {
         return ScenarioDraft {
@@ -574,9 +599,12 @@ fn bearish_rejection_draft(
     let entry = round2(resistance - breakout_buffer);
     let stop_loss = round2(resistance + sl_buffer);
     let risk = (stop_loss - entry).abs();
+    let tp1_reward = min_tp1_reward(risk, min_risk_reward);
     let take_profit_1 = round2(match nearest_support {
-        Some(support) if (support + resistance) / 2.0 < entry => (support + resistance) / 2.0,
-        _ => entry - 2.0 * risk,
+        Some(support) if (support + resistance) / 2.0 <= entry - tp1_reward => {
+            (support + resistance) / 2.0
+        }
+        _ => entry - tp1_reward,
     });
     let take_profit_2 = round2(match nearest_support {
         Some(support) if support < take_profit_1 => support,
@@ -1199,6 +1227,58 @@ mod tests {
     }
 
     #[test]
+    fn scenario_tp1_respects_configured_min_risk_reward() {
+        let config = BotConfig {
+            lookback_period: 30,
+            min_risk_reward: 3.0,
+            ..BotConfig::default()
+        };
+        let response = build_scenarios(
+            &zigzag_candles(60),
+            &config,
+            None,
+            None,
+            None,
+            "TEST",
+            "TEST_VOLUME",
+            BASE_TS,
+        );
+
+        let with_levels: Vec<_> = response
+            .scenarios
+            .iter()
+            .filter(|scenario| scenario.entry.is_some())
+            .collect();
+        assert!(!with_levels.is_empty());
+
+        for scenario in with_levels {
+            let entry = scenario.entry.expect("entry");
+            let stop_loss = scenario.stop_loss.expect("stop loss");
+            let take_profit_1 = scenario.take_profit_1.expect("tp1");
+            let take_profit_2 = scenario.take_profit_2.expect("tp2");
+            let risk = (entry - stop_loss).abs();
+            let reward = (take_profit_1 - entry).abs();
+
+            assert!(
+                scenario.valid,
+                "{} should be valid: {:?}",
+                scenario.id, scenario.notes
+            );
+            assert!(
+                reward / risk >= 3.0,
+                "{} TP1 R:R {:.2} is below 3.0",
+                scenario.id,
+                reward / risk
+            );
+            assert!(
+                (take_profit_2 - entry).abs() > reward,
+                "{} TP2 must sit beyond TP1",
+                scenario.id
+            );
+        }
+    }
+
+    #[test]
     fn bounce_and_rejection_are_invalid_without_levels() {
         let response = build(&flat_candles(60), None);
         let bounce = response
@@ -1286,9 +1366,11 @@ mod tests {
 
     #[test]
     fn all_invalid_scenarios_still_get_primary_and_alternate() {
+        // An invalid R:R configuration makes every generated scenario invalid;
+        // ranking must still assign PRIMARY/ALTERNATE/WATCHLIST roles.
         let config = BotConfig {
             lookback_period: 30,
-            min_risk_reward: 10.0,
+            min_risk_reward: 0.0,
             ..BotConfig::default()
         };
         let response = build_scenarios(
