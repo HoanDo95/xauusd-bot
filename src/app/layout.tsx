@@ -2,9 +2,9 @@ import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 import './globals.css';
 
-const title = 'Gold Signal Bot — 1 Signal/Day Sniper Mode';
+const title = 'Gold Signal Bot — XAU/USD Sniper Engine';
 const description =
-  'XAU/USD Sniper engine with free live Binance PAXG data, ForexFactory news kill switch, EMA50 trend bias, dynamic S/R, Telegram alerts and a hard 1-signal-per-day quota.';
+  'XAU/USD Sniper engine with free live Binance PAXG data, ForexFactory news kill switch, EMA50 trend bias, dynamic S/R, Telegram alerts and an optional daily quota (unlimited by default).';
 
 export const metadata: Metadata = {
   title,

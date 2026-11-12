@@ -58,8 +58,8 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
     };
 
     let signals_today = PersistentStore::count_live_signals_today(&signals, now);
-    let daily_quota_reached =
-        PersistentStore::has_reached_daily_quota(&signals, config.max_signals_per_day, now);
+    let daily_quota_reached = config.daily_quota_enabled
+        && PersistentStore::has_reached_daily_quota(&signals, config.max_signals_per_day, now);
     let is_market_safe = state
         .news_filter
         .read()
@@ -96,6 +96,7 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "signalsCount": signals.len(),
         "signalsToday": signals_today,
         "maxSignalsPerDay": config.max_signals_per_day,
+        "dailyQuotaEnabled": config.daily_quota_enabled,
         "dailyQuotaReached": daily_quota_reached,
         "sessionFilterEnabled": config.session_filter_enabled,
         "h4FilterEnabled": config.htf_h4_filter_enabled,

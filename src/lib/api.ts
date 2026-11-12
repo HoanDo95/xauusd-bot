@@ -31,6 +31,8 @@ export interface SignalsResponse {
   signals: Signal[];
   signalsToday: number;
   maxSignalsPerDay: number;
+  /** Optional daily cap state (default false = unlimited). */
+  dailyQuotaEnabled?: boolean;
   dailyQuotaReached: boolean;
 }
 
@@ -74,6 +76,8 @@ export interface HealthResponse {
   isActive: boolean;
   signalsToday: number;
   maxSignalsPerDay: number;
+  /** Optional daily cap state (default false = unlimited). */
+  dailyQuotaEnabled?: boolean;
   dailyQuotaReached: boolean;
   dataSource: string;
   dataSourceLabel: string;

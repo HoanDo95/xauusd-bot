@@ -30,7 +30,7 @@ export const SignalModal: React.FC<Props> = ({
   const tp2UsdStr = signal.potential_profit_tp2_usd ? ` | +$${signal.potential_profit_tp2_usd.toFixed(2)}` : '';
 
   const simulationPrefix = signal.is_simulated
-    ? '🧪 [SIMULATION - Không tốn Quota 1 lệnh/ngày]\n'
+    ? '🧪 [SIMULATION - Không tốn Quota]\n'
     : '';
   const confluenceLine =
     typeof signal.confluence_score === 'number'

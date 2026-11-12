@@ -497,8 +497,10 @@ export interface BotConfig {
   order_block_filter: boolean;
   /** Optional TradingView webhook passphrase (empty = not enforced). */
   webhook_passphrase: string;
-  /** Maximum real (non-simulated) signals per calendar day. Default 1 — Sniper mode. */
+  /** Maximum real (non-simulated) signals per calendar day when the quota is enabled. Default 1. */
   max_signals_per_day: number;
+  /** Optional daily cap. Default false — the bot sends every setup that passes all gates. */
+  daily_quota_enabled: boolean;
   /** Prefer the high-liquidity Vietnam session 13:00 – 23:00 (GMT+7). */
   session_filter_enabled: boolean;
   /** Send informational Telegram briefings before London/New York opens (Mon–Fri, DST-aware). */

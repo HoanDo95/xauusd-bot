@@ -138,6 +138,13 @@ impl PersistentStore {
         Self::count_live_signals_today(signals, now) >= max_per_day
     }
 
+    /// Quota tùy chọn có cho phép thêm một tín hiệu thật hay không.
+    /// Khi `daily_quota_enabled = false`, mọi setup đủ điều kiện đều được phép.
+    pub fn daily_quota_allows(config: &BotConfig, signals: &[Signal], now: DateTime<Utc>) -> bool {
+        !config.daily_quota_enabled
+            || !Self::has_reached_daily_quota(signals, config.max_signals_per_day, now)
+    }
+
     /// Chống bắn lặp trên cùng một cây nến thông qua dedup_key.
     /// Bỏ qua tín hiệu mô phỏng để lệnh test không chặn tín hiệu thật cùng nến.
     pub fn is_duplicate_candle(signals: &[Signal], dedup_key: &str) -> bool {
@@ -257,6 +264,31 @@ mod tests {
         assert_eq!(PersistentStore::count_live_signals_today(&signals, now), 1);
         assert!(PersistentStore::has_reached_daily_quota(&signals, 1, now));
         assert!(!PersistentStore::has_reached_daily_quota(&signals, 2, now));
+    }
+
+    #[test]
+    fn test_daily_quota_disabled_allows_multiple_signals() {
+        let now = at(2026, 11, 9, 12, 0);
+        let signals = vec![
+            sample_signal("SIG-1", at(2026, 11, 9, 8, 0), false, "XAU/USD_M15_1"),
+            sample_signal("SIG-2", at(2026, 11, 9, 9, 0), false, "XAU/USD_M15_2"),
+            sample_signal("SIG-3", at(2026, 11, 9, 10, 0), false, "XAU/USD_M15_3"),
+        ];
+        let config = BotConfig::default();
+
+        assert!(!config.daily_quota_enabled);
+        assert_eq!(PersistentStore::count_live_signals_today(&signals, now), 3);
+        assert!(PersistentStore::has_reached_daily_quota(&signals, 1, now));
+        assert!(PersistentStore::daily_quota_allows(&config, &signals, now));
+
+        let limited = BotConfig {
+            daily_quota_enabled: true,
+            max_signals_per_day: 2,
+            ..BotConfig::default()
+        };
+        assert!(!PersistentStore::daily_quota_allows(
+            &limited, &signals, now
+        ));
     }
 
     #[test]

@@ -11,8 +11,8 @@ pub(super) async fn get_all_signals(State(state): State<AppState>) -> impl IntoR
     let signals = state.signals.read().await.clone();
     let now = Utc::now();
     let signals_today = PersistentStore::count_live_signals_today(&signals, now);
-    let daily_quota_reached =
-        PersistentStore::has_reached_daily_quota(&signals, config.max_signals_per_day, now);
+    let daily_quota_reached = config.daily_quota_enabled
+        && PersistentStore::has_reached_daily_quota(&signals, config.max_signals_per_day, now);
     let stats = compute_stats(&signals);
 
     Json(json!({
@@ -21,6 +21,7 @@ pub(super) async fn get_all_signals(State(state): State<AppState>) -> impl IntoR
         "stats": stats,
         "signalsToday": signals_today,
         "maxSignalsPerDay": config.max_signals_per_day,
+        "dailyQuotaEnabled": config.daily_quota_enabled,
         "dailyQuotaReached": daily_quota_reached
     }))
 }

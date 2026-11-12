@@ -69,8 +69,9 @@ export const MetricCards: React.FC<Props> = ({
       ? (closedSignals.reduce((acc, s) => acc + rMultiple(s), 0) / closed).toFixed(2)
       : '—';
 
+  const quotaEnabled = config.daily_quota_enabled ?? false;
   const maxSignals = Math.max(1, config.max_signals_per_day || 1);
-  const quotaReached = signalsToday >= maxSignals;
+  const quotaReached = quotaEnabled && signalsToday >= maxSignals;
 
   const nearestSupport = supports.length ? supports[0].price : currentPrice - 8;
   const nearestResistance = resistances.length ? resistances[0].price : currentPrice + 8;
@@ -95,15 +96,19 @@ export const MetricCards: React.FC<Props> = ({
         >
           <span className="text-base leading-none">🎯</span>
           <span>
-            Quota Hôm Nay: {signalsToday}/{maxSignals} Lệnh
+            {quotaEnabled
+              ? `Quota Hôm Nay: ${signalsToday}/${maxSignals} Lệnh`
+              : 'Quota: Không giới hạn'}
           </span>
-          <span
-            className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ${
-              quotaReached ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'
-            }`}
-          >
-            {quotaReached ? 'Quota Reached' : 'Ready'}
-          </span>
+          {quotaEnabled && (
+            <span
+              className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ${
+                quotaReached ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'
+              }`}
+            >
+              {quotaReached ? 'Quota Reached' : 'Ready'}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl border border-sky-500/40 bg-sky-500/10 text-sky-300 text-xs font-mono font-semibold shadow-sm shadow-sky-500/5">
@@ -195,9 +200,11 @@ export const MetricCards: React.FC<Props> = ({
           <div className="text-xs text-neutral-400 font-medium">Sniper Limit & SL Buffer</div>
           <div className="flex items-baseline gap-2 mt-1">
             <span className={`text-2xl font-bold font-mono tabular-nums ${quotaReached ? 'text-amber-400' : 'text-emerald-400'}`}>
-              {maxSignals}
+              {quotaEnabled ? maxSignals : '∞'}
             </span>
-            <span className="text-xs text-neutral-500 font-mono">lệnh / ngày</span>
+            <span className="text-xs text-neutral-500 font-mono">
+              {quotaEnabled ? 'lệnh / ngày' : 'không giới hạn'}
+            </span>
             <span className="ml-auto text-xs font-bold font-mono text-amber-400 tabular-nums">
               {config.gold_sl_buffer_points.toFixed(1)}$
             </span>

@@ -106,6 +106,8 @@ interface BotConfig {
   macro_bias: MacroBias;
   order_block_filter: boolean;
   max_signals_per_day: number;
+  /** Optional daily cap. Default false — send every setup that passes all gates. */
+  daily_quota_enabled: boolean;
   session_filter_enabled: boolean;
   session_alerts_enabled: boolean;
   session_alert_lead_minutes: number;
@@ -258,6 +260,7 @@ const DEFAULT_CONFIG: BotConfig = {
   macro_bias: 'AUTO',
   order_block_filter: true,
   max_signals_per_day: 1,
+  daily_quota_enabled: false,
   session_filter_enabled: true,
   session_alerts_enabled: true,
   session_alert_lead_minutes: 60,
@@ -385,6 +388,7 @@ function normalizeConfig(input: Partial<BotConfig>): BotConfig {
     macro_bias: bias,
     order_block_filter: booleanOr(input.order_block_filter, base.order_block_filter),
     max_signals_per_day: clampInt(input.max_signals_per_day, base.max_signals_per_day, 1, 5),
+    daily_quota_enabled: booleanOr(input.daily_quota_enabled, base.daily_quota_enabled),
     session_filter_enabled: booleanOr(
       input.session_filter_enabled,
       base.session_filter_enabled
@@ -1389,6 +1393,7 @@ function countLiveSignalsToday(signals: Signal[], now: Date = new Date()): numbe
 }
 
 function hasReachedDailyQuota(): boolean {
+  if (!config.daily_quota_enabled) return false;
   return countLiveSignalsToday(signalsList) >= Math.max(1, config.max_signals_per_day);
 }
 
@@ -1404,7 +1409,8 @@ function quotaSnapshot() {
   return {
     signalsToday,
     maxSignalsPerDay,
-    dailyQuotaReached: signalsToday >= maxSignalsPerDay,
+    dailyQuotaEnabled: config.daily_quota_enabled,
+    dailyQuotaReached: config.daily_quota_enabled && signalsToday >= maxSignalsPerDay,
   };
 }
 
@@ -1678,8 +1684,13 @@ async function runScheduledScan(): Promise<void> {
     }
     saveState();
 
+    const quota = quotaSnapshot();
     console.log(
-      `[Scanner] 🎯 Live signal ${signal.signal_type} @ $${signal.entry_price} | confluence ${signal.confluence_score}/100 | quota ${quotaSnapshot().signalsToday}/${quotaSnapshot().maxSignalsPerDay}`
+      `[Scanner] 🎯 Live signal ${signal.signal_type} @ $${signal.entry_price} | confluence ${signal.confluence_score}/100 | quota ${
+        quota.dailyQuotaEnabled
+          ? `${quota.signalsToday}/${quota.maxSignalsPerDay}`
+          : 'unlimited'
+      }`
     );
   } catch (err) {
     console.warn('[Scanner] Cycle failed:', err instanceof Error ? err.message : err);
@@ -2092,15 +2103,19 @@ async function startServer() {
       return;
     }
 
+    const quota = quotaSnapshot();
+    const quotaLabel = quota.dailyQuotaEnabled
+      ? `${quota.signalsToday}/${quota.maxSignalsPerDay} lệnh`
+      : 'Không giới hạn';
     const testText = `🔔 <b>[Gold Sniper Bot - Test Alert]</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 ✅ Kết nối Telegram Bot API thành công!
-• Hệ thống: <b>Gold Sniper 1 Lệnh/Ngày + Free Live Data</b>
+• Hệ thống: <b>Gold Sniper + Free Live Data</b>
 • Cặp tài sản: <code>${config.symbol}</code>
 • Nguồn dữ liệu: <code>${dataSourceLabel(activeDataSource)}</code>
 • Thuật toán: <i>Dynamic S/R + Pinbar Rejection + Volume Absorption + EMA50 Trend</i>
 • R:R Tối thiểu: <b>1:${config.min_risk_reward}</b>
-• Daily Sniper Quota: <b>${quotaSnapshot().signalsToday}/${quotaSnapshot().maxSignalsPerDay} lệnh</b>
+• Daily Quota: <b>${quotaLabel}</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 ⚡ <i>Sẵn sàng tiếp nhận và bắn tín hiệu tự động 24/7 với chi phí API 0đ.</i>`;
 

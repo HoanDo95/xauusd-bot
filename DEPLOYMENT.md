@@ -149,7 +149,7 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
 
 Persistent paths:
 
-- `./data/bot_state.json` — config + signal history + daily quota/dedup state.
+- `./data/bot_state.json` — config + signal history + optional daily quota/dedup state.
   The API rewrites it atomically and sets `chmod 600` on Unix.
 - `./rust-backend/.env` — Telegram token/chat ID and runtime config. Keep it
   `chmod 600` and never commit it.
@@ -189,7 +189,7 @@ Once billing is fixed, switch `runs-on` back to `ubuntu-latest` in
 
 ## 12. Daily state backup
 
-`data/bot_state.json` holds config, signal history, quota and dedup state.
+`data/bot_state.json` holds config, signal history, optional quota and dedup state.
 Install the user timer once on the server:
 
 ```bash
@@ -313,7 +313,7 @@ in **Sniper & Risk Config**, not in env.
   relaxes `volume_filter_enabled` and `macro_bias` so AI can review setups the
   old soft filters rejected. After AI approval the HTF/Volume Delta/RSI soft
   filters are skipped, but code still enforces SL/TP ordering, minimum R:R,
-  risk budget, quota, session, news and dedup. AI never sets live SL/TP.
+  risk budget, optional daily quota, session, news and dedup. AI never sets live SL/TP.
 - **DECISION is fail-closed:** missing key, provider error/timeout, or malformed
   JSON means no trade signal, regardless of `ai_signal_review_fail_open`.
 - **VETO_ONLY:** AI may only approve, contradict or return `STANDBY`.
@@ -321,8 +321,10 @@ in **Sniper & Risk Config**, not in env.
   makes it fail-closed.
 - Dashboard controls: `ai_review_mode`, `ai_signal_review_min_confidence`
   (`0.5–1.0`, default `0.75`), `ai_signal_review_fail_open` (VETO_ONLY only).
-- One decision/review per real signal attempt (daily Sniper quota still caps
-  real signals at 1/day by default). Simulated setups skip AI and quota.
+- One decision/review per real signal attempt. **Unlimited signals/day by
+  default**; enable `daily_quota_enabled` to cap real signals at
+  `max_signals_per_day` (1–5). Multiple signals still each pass AI Decision +
+  hard risk + session/news + per-candle dedup. Simulated setups skip AI and quota.
 - **Start:** in DECISION mode it runs one AI decision and sends an
   `AI MARKET BRIEF` (verdict + compact scenario body) to Telegram; it never
   inserts a signal or spends quota. If AI is unavailable, Start still succeeds,
@@ -343,6 +345,8 @@ Entry and session behaviour is **dashboard config**, persisted in
 - `entry_mode` (`MARKET` / `LIMIT_RETEST` / `BREAKOUT`), `broker_price_offset`,
   `max_entry_drift_points`, `max_candle_age_secs`.
 - `session_alerts_enabled`, `session_alert_lead_minutes`, `session_filter_enabled`.
+- `daily_quota_enabled` (**default OFF = unlimited**), `max_signals_per_day`
+  (1–5, only used when the toggle is on). Per-candle dedup remains active.
 - `ai_signal_review_enabled`, `ai_review_mode` (`DECISION` default /
   `VETO_ONLY`), `ai_signal_review_min_confidence`,
   `ai_signal_review_fail_open` (VETO_ONLY only; AI key/model stay in

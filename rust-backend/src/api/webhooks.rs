@@ -44,7 +44,7 @@ fn passphrase_matches(provided: Option<&str>, expected: &str) -> bool {
 }
 
 /// Webhook nhận nến mới từ sàn giao dịch (Binance / MetaTrader EA).
-/// Enforce: Daily Quota -> Dedup -> News Kill Switch -> Analyzer.
+/// Enforce: Optional daily quota -> Dedup -> News Kill Switch -> Analyzer.
 pub(super) async fn receive_candle_webhook(
     State(state): State<AppState>,
     Json(payload): Json<NewCandleWebhook>,
@@ -125,8 +125,13 @@ pub(super) async fn receive_candle_webhook(
     let now = Utc::now();
     let signals_snapshot = state.signals.read().await.clone();
 
-    // 1. Daily Sniper Quota (mặc định 1 lệnh thật/ngày, giờ Việt Nam UTC+7)
-    if PersistentStore::has_reached_daily_quota(&signals_snapshot, config.max_signals_per_day, now)
+    // 1. Daily quota tùy chọn (mặc định TẮT — không giới hạn lệnh/ngày).
+    if config.daily_quota_enabled
+        && PersistentStore::has_reached_daily_quota(
+            &signals_snapshot,
+            config.max_signals_per_day,
+            now,
+        )
     {
         return (
             StatusCode::OK,
@@ -274,11 +279,13 @@ pub(super) async fn receive_candle_webhook(
                 Json(json!({ "status": "blocked_duplicate" })),
             );
         }
-        if PersistentStore::has_reached_daily_quota(
-            &signals_now,
-            config.max_signals_per_day,
-            Utc::now(),
-        ) {
+        if config.daily_quota_enabled
+            && PersistentStore::has_reached_daily_quota(
+                &signals_now,
+                config.max_signals_per_day,
+                Utc::now(),
+            )
+        {
             warn!(
                 "🛑 [Candle Webhook] Quota ngày đã đạt sau phân tích — bỏ qua {}",
                 signal.dedup_key
@@ -324,7 +331,7 @@ pub(super) async fn receive_candle_webhook(
 }
 
 /// Webhook tiếp nhận cảnh báo tín hiệu trực tiếp từ TradingView.
-/// Tích hợp đầy đủ Daily Quota, Dedup, Kill Switch, Macro Bias Filter và Lot Size.
+/// Tích hợp đầy đủ optional Daily Quota, Dedup, Kill Switch, Macro Bias Filter và Lot Size.
 pub(super) async fn receive_tradingview_webhook(
     State(state): State<AppState>,
     Json(payload): Json<TradingViewWebhookPayload>,
@@ -488,9 +495,14 @@ pub(super) async fn receive_tradingview_webhook(
         );
     }
 
-    // Bước 2: Daily Sniper Quota
+    // Bước 2: Daily quota tùy chọn (mặc định TẮT).
     let signals_snapshot = state.signals.read().await.clone();
-    if PersistentStore::has_reached_daily_quota(&signals_snapshot, config.max_signals_per_day, now)
+    if config.daily_quota_enabled
+        && PersistentStore::has_reached_daily_quota(
+            &signals_snapshot,
+            config.max_signals_per_day,
+            now,
+        )
     {
         return (
             StatusCode::OK,
@@ -791,11 +803,13 @@ pub(super) async fn receive_tradingview_webhook(
             Json(json!({ "status": "blocked_duplicate" })),
         );
     }
-    if PersistentStore::has_reached_daily_quota(
-        &signals_now,
-        config.max_signals_per_day,
-        Utc::now(),
-    ) {
+    if config.daily_quota_enabled
+        && PersistentStore::has_reached_daily_quota(
+            &signals_now,
+            config.max_signals_per_day,
+            Utc::now(),
+        )
+    {
         warn!(
             "🛑 [TradingView Webhook] Quota ngày đã đạt sau phân tích — bỏ qua {}",
             signal.dedup_key
@@ -822,7 +836,7 @@ pub(super) async fn receive_tradingview_webhook(
         StatusCode::CREATED,
         Json(json!({
             "status": "signal_executed",
-            "message": "Tín hiệu TradingView đã được phê duyệt qua Sniper Quota, Dedup & Kill Switch!",
+            "message": "Tín hiệu TradingView đã được phê duyệt qua quota tùy chọn, Dedup & Kill Switch!",
             "signal": signal
         })),
     )

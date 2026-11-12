@@ -292,9 +292,13 @@ pub struct BotConfig {
     pub macro_bias: String,
     /// Kích hoạt bộ lọc quét Khối Lệnh Tổ Chức (Order Block Filter)
     pub order_block_filter: bool,
-    /// Số tín hiệu thật tối đa được phát mỗi ngày (mặc định 1 — Sniper Mode)
+    /// Số tín hiệu thật tối đa được phát mỗi ngày khi bật quota (mặc định 1).
     #[serde(default = "default_max_signals_per_day")]
     pub max_signals_per_day: usize,
+    /// Bật giới hạn số tín hiệu thật/ngày. Mặc định TẮT — bot phát mọi setup
+    /// đủ điều kiện; dedup theo nến, hard risk, AI Decision và session/news vẫn giữ.
+    #[serde(default)]
+    pub daily_quota_enabled: bool,
     /// Bật bộ lọc khung giờ thanh khoản Âu-Mỹ 13:00-23:00 GMT+7
     #[serde(default = "default_session_filter_enabled")]
     pub session_filter_enabled: bool,
@@ -535,6 +539,7 @@ impl Default for BotConfig {
             macro_bias: "AUTO".to_string(),
             order_block_filter: true,
             max_signals_per_day: default_max_signals_per_day(),
+            daily_quota_enabled: false,
             session_filter_enabled: default_session_filter_enabled(),
             data_source: default_data_source(),
             webhook_passphrase: String::new(),
@@ -721,6 +726,28 @@ mod tests {
         assert_eq!(config.gold_sl_buffer_points, 20.0);
         assert_eq!(config.min_risk_reward, 2.0);
         assert_eq!(config.max_signals_per_day, 1);
+    }
+
+    #[test]
+    fn daily_quota_disabled_by_default_and_backward_compatible() {
+        let defaults = BotConfig::default();
+        assert!(!defaults.daily_quota_enabled);
+        assert_eq!(defaults.max_signals_per_day, 1);
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        object.remove("daily_quota_enabled");
+
+        let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(!config.daily_quota_enabled);
+
+        let enabled = BotConfig {
+            daily_quota_enabled: true,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert!(enabled.daily_quota_enabled);
+        assert_eq!(enabled.max_signals_per_day, 1);
     }
 
     #[test]

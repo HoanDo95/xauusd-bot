@@ -212,7 +212,11 @@ pub async fn evaluate_and_dispatch(state: &AppState) -> usize {
             nearest_resistance: nearest_resistance(&resistances, current_price),
             upcoming_events: upcoming_events.clone(),
             signals_today,
-            max_signals_per_day: config.max_signals_per_day,
+            max_signals_per_day: if config.daily_quota_enabled {
+                config.max_signals_per_day
+            } else {
+                0
+            },
         };
 
         match telegram.send_session_alert(&briefing).await {

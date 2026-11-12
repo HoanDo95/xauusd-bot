@@ -244,6 +244,7 @@ struct StatusSnapshot {
     flow_quality: String,
     signals_today: usize,
     max_signals_per_day: usize,
+    daily_quota_enabled: bool,
     divergence_enabled: bool,
     ai_review_enabled: bool,
 }
@@ -280,6 +281,7 @@ async fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
         flow_quality,
         signals_today: PersistentStore::count_live_signals_today(&signals, now),
         max_signals_per_day: config.max_signals_per_day,
+        daily_quota_enabled: config.daily_quota_enabled,
         divergence_enabled: config.divergence_alert_enabled,
         ai_review_enabled: config.ai_signal_review_enabled,
     }
@@ -305,6 +307,14 @@ fn format_status_message(snapshot: &StatusSnapshot) -> String {
         .last_scan_age_secs
         .map(|age| format!("{age}s ago"))
         .unwrap_or_else(|| "—".to_string());
+    let signals_line = if snapshot.daily_quota_enabled {
+        format!(
+            "Signals today: {}/{}",
+            snapshot.signals_today, snapshot.max_signals_per_day
+        )
+    } else {
+        format!("Signals today: {} (không giới hạn)", snapshot.signals_today)
+    };
 
     format!(
         "📊 XAUUSD Bot\n\
@@ -312,7 +322,7 @@ fn format_status_message(snapshot: &StatusSnapshot) -> String {
          Data: {} · volume {}\n\
          Feed: {feed} · last scan {last_scan}\n\
          Macro: {} · {}% · {}\n\
-         Signals today: {}/{}\n\
+         {signals_line}\n\
          Divergence: {}\n\
          AI review: {}",
         TelegramNotifier::escape_html(&snapshot.data_source),
@@ -320,8 +330,6 @@ fn format_status_message(snapshot: &StatusSnapshot) -> String {
         TelegramNotifier::escape_html(&snapshot.macro_bias),
         snapshot.macro_confidence,
         TelegramNotifier::escape_html(&snapshot.flow_quality),
-        snapshot.signals_today,
-        snapshot.max_signals_per_day,
         if snapshot.divergence_enabled {
             "ON"
         } else {
@@ -392,6 +400,7 @@ mod tests {
             flow_quality: "CONFIRMING".to_string(),
             signals_today: 0,
             max_signals_per_day: 1,
+            daily_quota_enabled: true,
             divergence_enabled: true,
             ai_review_enabled: false,
         };
@@ -415,6 +424,29 @@ mod tests {
     }
 
     #[test]
+    fn status_message_shows_unlimited_when_daily_quota_disabled() {
+        let snapshot = StatusSnapshot {
+            scanner_active: true,
+            data_source: "BINANCE_PAXG".to_string(),
+            volume_source: "BINANCE_PAXG".to_string(),
+            feed_ok: true,
+            last_scan_age_secs: Some(12),
+            macro_bias: "BULLISH".to_string(),
+            macro_confidence: 80,
+            flow_quality: "CONFIRMING".to_string(),
+            signals_today: 3,
+            max_signals_per_day: 1,
+            daily_quota_enabled: false,
+            divergence_enabled: true,
+            ai_review_enabled: true,
+        };
+
+        let message = format_status_message(&snapshot);
+        assert!(message.contains("Signals today: 3 (không giới hạn)"));
+        assert!(!message.contains("Signals today: 3/1"));
+    }
+
+    #[test]
     fn status_message_handles_paused_and_missing_feed() {
         let snapshot = StatusSnapshot {
             scanner_active: false,
@@ -427,6 +459,7 @@ mod tests {
             flow_quality: "—".to_string(),
             signals_today: 1,
             max_signals_per_day: 1,
+            daily_quota_enabled: true,
             divergence_enabled: false,
             ai_review_enabled: true,
         };

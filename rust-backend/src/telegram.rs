@@ -1011,6 +1011,16 @@ impl TelegramNotifier {
                 .join("\n")
         };
 
+        // `max_signals_per_day == 0` = quota tắt: briefing ghi "Không giới hạn".
+        let quota_line = if briefing.max_signals_per_day == 0 {
+            "🎯 <b>Quota:</b> <code>Không giới hạn</code>".to_string()
+        } else {
+            format!(
+                "🎯 <b>Quota hôm nay:</b> <code>{}/{} lệnh thật</code>",
+                briefing.signals_today, briefing.max_signals_per_day
+            )
+        };
+
         format!(
             "🌍 <b>[PRE-SESSION BRIEFING] {} TRƯỚC {}</b>\n\
             ━━━━━━━━━━━━━━━━━━━━━━\n\
@@ -1023,7 +1033,7 @@ impl TelegramNotifier {
             🔴 <b>Kháng cự gần nhất:</b> {}\n\
             📅 <b>Tin High-Impact USD 12h tới:</b>\n\
             {}\n\
-            🎯 <b>Quota hôm nay:</b> <code>{}/{}</code> lệnh thật\n\
+            {}\n\
             ━━━━━━━━━━━━━━━━━━━━━━\n\
             ⚠️ <i>Đây chỉ là briefing tham khảo trước phiên, KHÔNG phải lệnh vào trực tiếp. Hãy chờ tín hiệu Sniper từ bot.</i>\n\
             ⚡ <i>Engine: Rust Gold Signal Bot v1.0 (Tokio/Axum)</i>",
@@ -1039,8 +1049,7 @@ impl TelegramNotifier {
             support,
             resistance,
             events_text,
-            briefing.signals_today,
-            briefing.max_signals_per_day
+            quota_line
         )
     }
 
@@ -1669,6 +1678,7 @@ mod tests {
         assert!(message.contains("SRC&lt;&amp;&gt;"));
         assert!(message.contains("US &lt;CPI&gt; &amp; &lt;script&gt;"));
         assert!(message.contains("KHÔNG phải lệnh vào trực tiếp"));
+        assert!(message.contains("1/1 lệnh thật"));
         assert!(!message.contains("<script>"));
 
         // Sau khi bỏ các thẻ HTML định dạng hợp lệ, không còn '<' thô nào.
@@ -1689,6 +1699,17 @@ mod tests {
 
         let message = TelegramNotifier::format_session_alert(&briefing);
         assert!(message.contains("Không có tin đỏ trong 12h tới"));
+    }
+
+    #[test]
+    fn format_session_alert_shows_unlimited_quota_when_disabled() {
+        let mut briefing = sample_session_briefing();
+        briefing.max_signals_per_day = 0;
+        briefing.signals_today = 3;
+
+        let message = TelegramNotifier::format_session_alert(&briefing);
+        assert!(message.contains("Quota:</b> <code>Không giới hạn</code>"));
+        assert!(!message.contains("3/0"));
     }
 
     fn sample_divergence_alert() -> DivergenceAlert {

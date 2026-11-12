@@ -32,8 +32,9 @@ export const Header: React.FC<Props> = ({
   dataSource,
   onOpenTestModal,
 }) => {
+  const quotaEnabled = config.daily_quota_enabled ?? false;
   const maxSignals = Math.max(1, config.max_signals_per_day || 1);
-  const quotaReached = signalsToday >= maxSignals;
+  const quotaReached = quotaEnabled && signalsToday >= maxSignals;
 
   const tabs: Array<{ id: DashboardTab; label: string }> = [
     { id: 'monitor', label: 'Live Trading Desk' },
@@ -54,7 +55,7 @@ export const Header: React.FC<Props> = ({
             Gold Sniper Bot
           </span>
           <span className="text-[10px] text-neutral-500 font-mono">
-            1 Signal / Day · XAU/USD
+            {quotaEnabled ? `${maxSignals} Signals / Day` : 'Unlimited Signals'} · XAU/USD
           </span>
         </div>
       </div>
@@ -82,12 +83,22 @@ export const Header: React.FC<Props> = ({
               ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
               : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
           }`}
-          title="Số lệnh THẬT đã phát hôm nay / giới hạn Sniper. Lệnh simulation không tính quota."
+          title={
+            quotaEnabled
+              ? 'Số lệnh THẬT đã phát hôm nay / giới hạn đã bật. Lệnh simulation không tính quota.'
+              : 'Không giới hạn số lệnh/ngày. Dedup theo nến vẫn chặn alert trùng.'
+          }
         >
-          <span>🎯 Quota Hôm Nay: {signalsToday}/{maxSignals} Lệnh</span>
-          <span className={quotaReached ? 'text-amber-400' : 'text-emerald-500'}>
-            {quotaReached ? '· Quota Reached' : '· Ready'}
+          <span>
+            {quotaEnabled
+              ? `🎯 Quota Hôm Nay: ${signalsToday}/${maxSignals} Lệnh`
+              : '🎯 Quota: Không giới hạn'}
           </span>
+          {quotaEnabled && (
+            <span className={quotaReached ? 'text-amber-400' : 'text-emerald-500'}>
+              {quotaReached ? '· Quota Reached' : '· Ready'}
+            </span>
+          )}
         </div>
 
         <div

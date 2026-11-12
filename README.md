@@ -1,7 +1,8 @@
-# XAUUSD Bot — Sniper 1 Signal / Day
+# XAUUSD Bot — Sniper Signal Engine
 
-A production-oriented XAU/USD signal engine with **100% free market data**, a hard
-**1 real signal/day** quota, Telegram delivery, and a trader dashboard.
+A production-oriented XAU/USD signal engine with **100% free market data**,
+Telegram delivery, a trader dashboard, and **unlimited signals/day by default**
+(optional 1–5/day cap).
 
 > **Risk disclaimer:** This software is for research and signal automation only.
 > It is **not financial advice**. Leveraged gold trading can lose more than your
@@ -32,8 +33,10 @@ A production-oriented XAU/USD signal engine with **100% free market data**, a ha
   (DST-aware), no weekend alerts, persisted dedup so a restart does not resend.
 - **Daily Plan 07:00**: read-only Telegram summary with macro/news context and
   the PRIMARY/ALTERNATE/WATCHLIST view; never consumes quota or inserts a signal.
-- **Sniper quota**: max 1 real signal/day (configurable 1–5), Vietnam trading day
-  (`UTC+7`), candle dedup key, session filter 13:00–23:00 GMT+7.
+- **Daily quota (optional)**: **unlimited by default** — every setup that passes
+  AI Decision, hard risk, session/news and per-candle dedup is sent. Turn on
+  `daily_quota_enabled` to cap real signals at `max_signals_per_day` (1–5) per
+  Vietnam trading day (`UTC+7`). Per-candle dedup still prevents duplicate alerts.
 - **Outcome tracking**: automatically updates `Active → Target1Hit / Target2Hit /
   StopLossHit` from subsequent closed candles, with conservative same-candle
   handling.
@@ -121,8 +124,8 @@ and `volume_filter_enabled = true`.
 ### Optional AI macro report
 
 AI is **optional** and only decorates the once-a-day (07:00) macro report. Core
-signal generation — EMA50/200 trend, S/R zones, pinbar, volume and quota — never
-calls an AI API.
+signal generation — EMA50/200 trend, S/R zones, pinbar, volume and the optional
+daily quota — never calls an AI API.
 
 - `AI_PROVIDER` is optional and case-insensitive: `OPENCODE_GO`, `GEMINI`,
   `OPENROUTER`, or `NONE`. Leave it empty to auto-detect:
@@ -172,8 +175,8 @@ every hard risk rule; the AI chooses the direction:
   below `ai_signal_review_min_confidence` means **no trade signal**.
 - After AI approval, the soft HTF/Volume Delta/RSI filters are **skipped** (the
   AI already weighed them as context). Hard checks still run: SL/TP ordering,
-  minimum R:R, risk budget, daily quota, session window, news kill switch and
-  dedup. The AI never sets or changes live SL/TP.
+  minimum R:R, risk budget, optional daily quota, session window, news kill
+  switch and dedup. The AI never sets or changes live SL/TP.
 - **Fail-closed on AI failure**: if `OPENCODE_GO_API_KEY` is missing, the
   provider errors/times out, or the JSON is malformed, there is no trade signal
   in `DECISION` mode regardless of `ai_signal_review_fail_open`.
@@ -183,8 +186,10 @@ every hard risk rule; the AI chooses the direction:
   sends the scenario summary and returns `aiError`; it does not block Start.
   The response includes `aiDecision` and `aiError`, and `/api/action-view`
   exposes the latest decision as `aiDecision`.
-- One AI decision call per real signal attempt (quota still caps real signals at
-  1/day by default). Simulated setups never call the AI and never consume quota.
+- One AI decision call per real signal attempt. Multiple signals per day are
+  possible by default; each still goes through AI Decision + hard risk +
+  session/news + per-candle dedup. Simulated setups never call the AI and never
+  consume quota.
 - Accepted signals carry `ai_verdict`, `ai_confidence` and `ai_reason`.
 
 **`VETO_ONLY` — legacy behaviour.** The AI reviews each real deterministic
@@ -472,6 +477,18 @@ fail, the engine labels data `FALLBACK_SEED`, shows it for the UI, and **never**
 analyses or tracks it. Simulated setups are stored with `is_simulated=true` and
 never consume real quota or appear in stats/outcome alerts.
 
+### Daily quota (dashboard config)
+
+| `daily_quota_enabled` | Behaviour |
+|---|---|
+| `false` (**default**) | No daily cap. Every setup that passes AI Decision + hard risk + session/news + per-candle dedup is sent; multiple signals/day are possible. |
+| `true` | Caps **real** signals at `max_signals_per_day` (1–5, default 1) per Vietnam trading day (`UTC+7`). Dedup still applies. |
+
+`max_signals_per_day` is kept for backward compatibility and only has effect when
+the toggle is on. Simulated signals never count toward the optional quota, and
+`/api/health` / `/api/signals` expose `dailyQuotaEnabled` plus
+`dailyQuotaReached` (always `false` when disabled).
+
 ### Session pre-alerts (dashboard config)
 
 When `session_alerts_enabled` is true, the engine sends a Telegram briefing
@@ -579,7 +596,7 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `GET` | `/api/health` | Health, live price, feed/volume source, spot basis/price source, daily quota, kill switch, `aiReviewMode` |
+| `GET` | `/api/health` | Health, live price, feed/volume source, spot basis/price source, optional daily quota state, kill switch, `aiReviewMode` |
 | `GET` | `/api/candles` | Live + last closed price, S/R zones, EMA50/200, trend, `dataSource`, `volumeSource`, `spotPrice`, `spotBasis`, `priceSource` |
 | `GET` | `/api/context` | Read-only D1/H4/H1 context + `rsi_m15`/`rsi_h1`/`rsi_h4` (204 until HTF ready) |
 | `GET` | `/api/signals` | Signal history + performance stats |

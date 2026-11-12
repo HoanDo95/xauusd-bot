@@ -328,12 +328,14 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
             let now = Utc::now();
             let signals_snapshot = state.signals.read().await.clone();
 
-            // 6.3 Daily Sniper Quota: tối đa `max_signals_per_day` lệnh THẬT/ngày.
-            if PersistentStore::has_reached_daily_quota(
-                &signals_snapshot,
-                config.max_signals_per_day,
-                now,
-            ) {
+            // 6.3 Daily quota là tùy chọn. Mặc định TẮT: phát mọi setup đủ điều kiện.
+            if config.daily_quota_enabled
+                && PersistentStore::has_reached_daily_quota(
+                    &signals_snapshot,
+                    config.max_signals_per_day,
+                    now,
+                )
+            {
                 continue;
             }
 
@@ -620,11 +622,13 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     );
                     continue;
                 }
-                if PersistentStore::has_reached_daily_quota(
-                    &signals_now,
-                    config.max_signals_per_day,
-                    Utc::now(),
-                ) {
+                if config.daily_quota_enabled
+                    && PersistentStore::has_reached_daily_quota(
+                        &signals_now,
+                        config.max_signals_per_day,
+                        Utc::now(),
+                    )
+                {
                     warn!(
                         "🛑 [Scanner] Quota ngày đã đạt sau phân tích — bỏ qua {} {}",
                         signal.signal_type, signal.symbol

@@ -47,10 +47,10 @@ export const ConfigPanel: React.FC<Props> = ({
     <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6 flex flex-col gap-6">
       <div className="flex flex-col gap-1">
         <h3 className="text-lg font-bold text-white tracking-tight">
-          Cấu hình Sniper & Quản lý Rủi ro (1 Lệnh / Ngày)
+          Cấu hình Sniper & Quản lý Rủi ro
         </h3>
         <p className="text-xs text-neutral-400">
-          Thông số được áp dụng trực tiếp cho Rust Engine & Express fallback: Sniper Quota, khung giờ vàng
+          Thông số được áp dụng trực tiếp cho Rust Engine & Express fallback: quota tùy chọn, khung giờ vàng
           Âu–Mỹ, đệm Stop Loss 5–25$ (M15 8–10$ / H1 15–20$), tự động giảm Lot Size để giữ nguyên % rủi ro
           và cảnh báo phân kỳ RSI độc lập (không phải entry, không tiêu hao quota).
         </p>
@@ -330,20 +330,43 @@ export const ConfigPanel: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Section 2: Daily Sniper Quota & Session Filter */}
+        {/* Section 2: Optional Daily Quota & Session Filter */}
         <div className="flex flex-col gap-4">
           <div className="text-xs font-bold text-emerald-400 uppercase tracking-wider border-b border-neutral-800 pb-2 flex items-center justify-between">
-            <span>2. Chế độ Bắn Tỉa (Daily Sniper Quota)</span>
+            <span>2. Giới hạn lệnh/ngày (tùy chọn) & Bộ lọc phiên</span>
             <span className="text-neutral-500 text-[11px] normal-case font-normal">
               Lệnh test simulation không tiêu tốn quota
             </span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+            {/* Daily quota toggle */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-semibold text-neutral-300">
+                Giới hạn số lệnh/ngày
+              </label>
+              <label className="flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={formData.daily_quota_enabled ?? false}
+                  onChange={(e) =>
+                    setFormData({ ...formData, daily_quota_enabled: e.target.checked })
+                  }
+                  className="accent-emerald-500 w-4 h-4 rounded cursor-pointer mt-0.5"
+                />
+                <span className="text-[11px] text-neutral-300 leading-snug">
+                  {formData.daily_quota_enabled ? 'ĐANG BẬT — có giới hạn' : 'ĐANG TẮT — không giới hạn'}
+                </span>
+              </label>
+              <span className="text-[11px] text-neutral-500">
+                Mặc định OFF — bot bắn mọi setup đủ điều kiện. Bật để giới hạn 1–5 lệnh/ngày.
+              </span>
+            </div>
+
             {/* Max signals per day */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-neutral-300">
-                Giới hạn Lệnh / Ngày (Daily Sniper Quota)
+                Giới hạn Lệnh / Ngày
               </label>
               <div className="relative">
                 <input
@@ -351,6 +374,7 @@ export const ConfigPanel: React.FC<Props> = ({
                   min="1"
                   max="5"
                   step="1"
+                  disabled={!(formData.daily_quota_enabled ?? false)}
                   value={formData.max_signals_per_day ?? 1}
                   onChange={(e) =>
                     setFormData({
@@ -358,11 +382,13 @@ export const ConfigPanel: React.FC<Props> = ({
                       max_signals_per_day: Math.max(1, Math.min(5, parseInt(e.target.value) || 1)),
                     })
                   }
-                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-emerald-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-emerald-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40 disabled:cursor-not-allowed"
                 />
                 <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">Lệnh</span>
               </div>
-              <span className="text-[11px] text-neutral-500">Mặc định 1 lệnh/ngày — chỉ 1 setup đẹp nhất</span>
+              <span className="text-[11px] text-neutral-500">
+                Chỉ áp dụng khi toggle bật (1–5 lệnh/ngày).
+              </span>
             </div>
 
             {/* Free live feed (read only) */}
@@ -394,7 +420,7 @@ export const ConfigPanel: React.FC<Props> = ({
                   className="accent-emerald-500 w-4 h-4 rounded cursor-pointer mt-0.5"
                 />
                 <span className="text-[11px] text-neutral-300 leading-snug">
-                  Ưu tiên phiên Âu - Mỹ <span className="font-mono text-emerald-400">13:00 - 23:00 VN</span> để chọn 1 lệnh đẹp nhất ngày
+                  Ưu tiên phiên Âu - Mỹ <span className="font-mono text-emerald-400">13:00 - 23:00 VN</span> để tập trung vào khung thanh khoản cao nhất
                 </span>
               </label>
               <span className="text-[11px] text-neutral-500">Tắt nếu muốn quét cả ngày (không khuyến nghị)</span>

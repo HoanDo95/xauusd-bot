@@ -79,6 +79,7 @@ const DEFAULT_CONFIG: BotConfig = {
   order_block_filter: true,
   webhook_passphrase: '',
   max_signals_per_day: 1,
+  daily_quota_enabled: false,
   session_filter_enabled: true,
   session_alerts_enabled: true,
   session_alert_lead_minutes: 60,
@@ -528,7 +529,8 @@ export default function DashboardPage() {
     }
   };
 
-  const quotaReached = signalsToday >= maxSignalsPerDay;
+  const quotaReached =
+    (config.daily_quota_enabled ?? false) && signalsToday >= maxSignalsPerDay;
   const emptyPrimary =
     actionView?.primaryScenario ??
     scenarios?.scenarios.find((scenario) => scenario.role === 'PRIMARY') ??
@@ -764,7 +766,10 @@ export default function DashboardPage() {
                       : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                   }`}
                 >
-                  🎯 Quota: {signalsToday}/{maxSignalsPerDay} lệnh hôm nay
+                  🎯 Quota:{' '}
+                  {config.daily_quota_enabled
+                    ? `${signalsToday}/${maxSignalsPerDay} lệnh hôm nay`
+                    : 'Không giới hạn'}
                 </span>
                 <span className="px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-md">
                   BUY: {signals.filter((s) => s.signal_type === 'BUY').length}
@@ -896,7 +901,7 @@ export default function DashboardPage() {
           thể mất toàn bộ vốn. Luôn tự kiểm chứng và chỉ sử dụng số vốn bạn chấp nhận mất.
         </p>
         <p className="mt-1 font-mono text-[10px] text-neutral-600">
-          XAUUSD Bot · Sniper 1 signal/day · Not financial advice
+          XAUUSD Bot · Unlimited by default · Not financial advice
         </p>
       </footer>
 
