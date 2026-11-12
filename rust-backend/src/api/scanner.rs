@@ -2,8 +2,9 @@ use super::live::current_live_view;
 use super::scenarios::current_scenarios;
 use super::{persist_state, AppState};
 use crate::models::BotConfig;
+use crate::scenarios::ScenarioResponse;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
-use serde_json::json;
+use serde_json::{json, Value};
 use tracing::{info, warn};
 
 const TELEGRAM_ERROR_MESSAGE: &str =
@@ -24,13 +25,18 @@ pub(super) fn apply_scanner_state(mut config: BotConfig, active: bool) -> BotCon
     config
 }
 
-/// POST /api/scanner/start — enable the scanner and push the reference scenario
-/// view to Telegram (the explicit user action that produced the Start click).
-///
-/// It never inserts a signal or consumes the Sniper quota. If the scanner is
-/// already active, the scenario view is still sent so Start always gives a view,
-/// but the transition is not logged as a new start.
-pub(super) async fn start_scanner(State(state): State<AppState>) -> impl IntoResponse {
+/// Result shared by the HTTP Start handler and the Telegram `/start` command.
+pub(crate) struct StartResult {
+    pub was_active: bool,
+    pub telegram_sent: bool,
+    pub telegram_error: Option<String>,
+    pub live_view: Value,
+    pub scenarios: ScenarioResponse,
+}
+
+/// Shared Start logic: flip `is_active`, persist, build the read-only views and
+/// send the reference scenario summary. Never inserts a signal or spends quota.
+pub(crate) async fn start_scanner_inner(state: &AppState) -> StartResult {
     let was_active = {
         let mut config = state.config.write().await;
         let was_active = config.is_active;
@@ -44,12 +50,12 @@ pub(super) async fn start_scanner(State(state): State<AppState>) -> impl IntoRes
         info!("▶️ Scanner đã bật — gửi scenario view tham khảo tới Telegram.");
     }
 
-    if let Err(err) = persist_state(&state).await {
+    if let Err(err) = persist_state(state).await {
         warn!("⚠️ Không lưu được trạng thái scanner start: {}", err);
     }
 
-    let live_view = current_live_view(&state).await;
-    let scenarios = current_scenarios(&state).await;
+    let live_view = current_live_view(state).await;
+    let scenarios = current_scenarios(state).await;
     let config = state.config.read().await.clone();
 
     let (telegram_sent, telegram_error) = if !telegram_configured(&config) {
@@ -66,40 +72,66 @@ pub(super) async fn start_scanner(State(state): State<AppState>) -> impl IntoRes
         }
     };
 
+    StartResult {
+        was_active,
+        telegram_sent,
+        telegram_error,
+        live_view,
+        scenarios,
+    }
+}
+
+/// POST /api/scanner/start — enable the scanner and push the reference scenario
+/// view to Telegram (the explicit user action that produced the Start click).
+///
+/// It never inserts a signal or consumes the Sniper quota. If the scanner is
+/// already active, the scenario view is still sent so Start always gives a view,
+/// but the transition is not logged as a new start.
+pub(super) async fn start_scanner(State(state): State<AppState>) -> impl IntoResponse {
+    let result = start_scanner_inner(&state).await;
+
     let mut payload = json!({
         "status": "started",
-        "telegramSent": telegram_sent,
-        "liveView": live_view,
-        "scenarios": scenarios,
+        "telegramSent": result.telegram_sent,
+        "liveView": result.live_view,
+        "scenarios": result.scenarios,
     });
-    if let Some(error) = telegram_error {
+    if let Some(error) = result.telegram_error {
         payload["telegramError"] = json!(error);
     }
 
     (StatusCode::OK, Json(payload))
 }
 
-/// POST /api/scanner/stop — pause the scanner. Only `is_active` changes; open
-/// signals and quota counters stay untouched.
-pub(super) async fn stop_scanner(State(state): State<AppState>) -> impl IntoResponse {
+/// Shared Stop logic: only `is_active` changes; open signals and quota counters
+/// stay untouched. Returns an error only when the state cannot be persisted.
+pub(crate) async fn stop_scanner_inner(state: &AppState) -> Result<(), String> {
     {
         let mut config = state.config.write().await;
         *config = apply_scanner_state(config.clone(), false);
     }
 
-    if let Err(err) = persist_state(&state).await {
-        warn!("⚠️ Không lưu được trạng thái scanner stop: {}", err);
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "status": "error",
-                "message": "Scanner đã dừng trong RAM nhưng ghi trạng thái xuống đĩa thất bại."
-            })),
-        );
-    }
-
+    persist_state(state).await?;
     info!("⏸ Scanner đã tắt.");
-    (StatusCode::OK, Json(json!({ "status": "stopped" })))
+    Ok(())
+}
+
+/// POST /api/scanner/stop — pause the scanner. Only `is_active` changes; open
+/// signals and quota counters stay untouched.
+pub(super) async fn stop_scanner(State(state): State<AppState>) -> impl IntoResponse {
+    match stop_scanner_inner(&state).await {
+        Ok(()) => (StatusCode::OK, Json(json!({ "status": "stopped" }))),
+        Err(err) => {
+            warn!("⚠️ Không lưu được trạng thái scanner stop: {}", err);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "status": "error",
+                    "message": "Scanner đã dừng trong RAM nhưng ghi trạng thái xuống đĩa thất bại."
+                })),
+            )
+        }
+    }
 }
 
 /// POST /api/scenarios/telegram — manual "Gửi Telegram" button on the Scenario

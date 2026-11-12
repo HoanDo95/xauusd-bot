@@ -14,7 +14,7 @@ pub(super) async fn get_scenarios(State(state): State<AppState>) -> impl IntoRes
 
 /// Shared read-only scenario builder used by `/api/scenarios`, scanner start and
 /// the manual scenario-Telegram handler. No side effects.
-pub(super) async fn current_scenarios(state: &AppState) -> ScenarioResponse {
+pub(crate) async fn current_scenarios(state: &AppState) -> ScenarioResponse {
     let config = state.config.read().await.clone();
     let candles = state.candles.read().await.clone();
     let live_price = *state.live_price.read().await;

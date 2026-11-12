@@ -203,6 +203,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 8c. Macro & Flow Worker — FRED/Yahoo/CFTC read-only, refresh mỗi 15 phút.
     macro_flow::spawn_macro_flow_worker(state.clone());
 
+    // 8d. Telegram command worker — /start, /stop, /view, /status, /help.
+    // Chỉ admin chat được phép; không quota, không chèn tín hiệu.
+    gold_signal_bot::telegram_commands::spawn_telegram_command_worker(state.clone());
+
     // 9. CORS + Router
     // Same-origin dashboard không cần CORS; chỉ mở cho các origin được cấu hình.
     let cors_origins = std::env::var("CORS_ORIGINS").unwrap_or_else(|_| {

@@ -39,6 +39,9 @@ A production-oriented XAU/USD signal engine with **100% free market data**, a ha
   signals are excluded.
 - **Telegram alerts**: HTML format with entry, SL, TP1, TP2, R:R, lot size, volume
   rationale, and a risk warning.
+- **Telegram commands**: authorized admin chat can use `/start`, `/stop`, `/view`,
+  `/status`, `/help`; `/start` sends the reference scenario view without spending
+  quota. Set `TELEGRAM_ADMIN_CHAT_ID` (falls back to a numeric `TELEGRAM_CHAT_ID`).
 - **Outcome alerts**: follow-up Telegram messages when TP1, TP2, or SL is hit.
 - **Dashboard**: dark trading UI, live candles, quota status, signal history,
   config, TradingView webhook sandbox.
@@ -251,22 +254,61 @@ when the strict signal engine says `no_setup`:
 Bullish breakout · Bearish breakdown · Bullish bounce · Bearish rejection
 ```
 
-Each scenario shows trigger, entry, SL, TP1/TP2, R:R, invalidation, confidence,
-macro/flow alignment and `VALID`/`NOT VIABLE`. It is read-only reference
-planning, not a confirmed signal; the card never inserts a signal or consumes
-quota.
+The API ranks them transparently instead of showing four equal ideas:
+
+- `priority = confidence`
+  `+100` when `valid`, `+30`/`-30` for macro ALIGNED/COUNTER, `+20` when the
+  scenario bias matches H4, `+10` for R:R ≥ `min_risk_reward`, and `+10` when
+  price is within `1.5 × ATR` of the entry.
+- Sorted by priority, then confidence, then validity.
+- `PRIMARY` is the highest-priority scenario. `ALTERNATE` is the first
+  subsequent scenario with the opposite bias (or the second scenario). All
+  remaining ideas are `WATCHLIST`.
+- Every scenario still shows trigger, entry, SL, TP1/TP2, R:R, invalidation,
+  confidence, macro/flow alignment and `VALID`/`NOT VIABLE`. The card shows
+  PRIMARY/ALTERNATE as two large cards and WATCHLIST as a compact expandable
+  list. This is read-only reference planning, not a confirmed signal; the card
+  never inserts a signal or consumes quota.
 
 Pressing **Start** now:
 
 1. Enables `is_active`.
 2. Builds the live view + scenario view immediately.
 3. Sends the scenario summary to Telegram (so you have a view even if the
-   dashboard is unreachable).
+   dashboard is unreachable). The message uses the compact
+   PRIMARY/ALTERNATE/WATCHLIST format.
 4. Returns the same view to the dashboard.
 
 The Scenario View card also has **Gửi Telegram** to resend the current snapshot
 on demand. Stop only pauses the scanner; it does not close open signals or reset
 quota.
+
+### Telegram bot commands
+
+The API runs a long-poll command worker. Commands are accepted only from the
+admin chat:
+
+```bash
+# rust-backend/.env
+TELEGRAM_ADMIN_CHAT_ID="-1001234567890"
+```
+
+If `TELEGRAM_ADMIN_CHAT_ID` is empty, a numeric `TELEGRAM_CHAT_ID` is used as the
+fallback. When neither is available, the bot replies with the sender's chat ID
+and the env line to add; it does not execute the command.
+
+| Command | Behaviour |
+|---|---|
+| `/start` | Enable the scanner, send the scenario summary, then reply. Does **not** consume quota or insert a signal. |
+| `/stop` | Pause the scanner. Open signals and quota are untouched. |
+| `/view` | Re-send the current live view + scenario summary. |
+| `/status` | Compact status: scanner, data/volume source, feed age, macro, quota, divergence, AI review. |
+| `/help` | List commands. |
+
+Commands support a `@botname` suffix (for example `/status@MyGoldBot`), are
+rate-limited to one per 2 seconds per chat, and unknown commands return `/help`.
+The worker drains old pending updates on startup and advances the update offset
+for every update so commands are not replayed.
 
 ### Entry execution (dashboard config)
 
@@ -326,7 +368,7 @@ rust-backend/src/
     webhooks.rs  ai.rs  news.rs  telegram.rs  simulation.rs
   analyzer.rs  models.rs  storage.rs  market_feed.rs
   news_filter.rs  scheduler.rs  telegram.rs  risk_manager.rs
-  market_context.rs  rsi.rs  volume_delta.rs  signal_review.rs
+  telegram_commands.rs  market_context.rs  rsi.rs  volume_delta.rs  signal_review.rs
   tracker.rs  session_alerts.rs
 
 src/app/
@@ -401,6 +443,10 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
 | `GET` | `/api/news-calendar` | ForexFactory events + kill switch |
 | `POST` | `/api/simulate-setup` | Simulated signal (never consumes live quota) |
 | `POST` | `/api/ai/review-signal` | Manual AI Risk Officer review (no Telegram, no quota) |
+| `GET` | `/api/scenarios` | Four ranked reference scenarios (`PRIMARY`/`ALTERNATE`/`WATCHLIST`); no quota |
+| `POST` | `/api/scanner/start` | Enable scanner + send scenario summary (no signal/quota) |
+| `POST` | `/api/scanner/stop` | Pause scanner (does not close open signals or reset quota) |
+| `POST` | `/api/scenarios/telegram` | Re-send the reference scenario snapshot (no quota) |
 | `POST` | `/api/telegram/test` | Telegram connection test |
 | `POST` | `/api/telegram/send-signal` | Send one existing signal to Telegram |
 | `POST` | `/api/webhook/tradingview` | TradingView alert (optional passphrase) |

@@ -398,8 +398,26 @@ docker compose logs -f api   # look for: TwelveData XAU/USD ... / Đã ghép vol
   signals and the Live Setup preview. It is advisory only: no code-level hard
   macro filter. The AI Risk Officer receives the macro/flow block and may
   lower confidence or STANDBY.
-- Scenario View (`GET /api/scenarios`) returns four reference scenarios even
-  when the signal engine says `no_setup`. Pressing Start
-  (`POST /api/scanner/start`) sends the scenario summary to Telegram and returns
-  the same view to the dashboard; it never inserts a signal or consumes quota.
-  `POST /api/scenarios/telegram` resends on demand.
+- Scenario View (`GET /api/scenarios`) returns four ranked reference scenarios
+  even when the signal engine says `no_setup`. Ranking is transparent:
+  `priority = confidence + 100 (valid) + 30/-30 (macro ALIGNED/COUNTER) + 20
+  (H4 bias match) + 10 (R:R >= min) + 10 (price within 1.5×ATR of entry)`.
+  The highest-priority idea is `PRIMARY`; the first opposite-bias idea is
+  `ALTERNATE`; the rest are `WATCHLIST`. The dashboard shows two large cards plus
+  a compact watchlist, and the Telegram summary uses the same three roles.
+  Pressing Start (`POST /api/scanner/start`) sends the scenario summary to
+  Telegram and returns the same view to the dashboard; it never inserts a signal
+  or consumes quota. `POST /api/scenarios/telegram` resends on demand.
+- Telegram commands are handled by a long-poll worker: `/start`, `/stop`,
+  `/view`, `/status`, `/help`. Authorize one admin chat in
+  `rust-backend/.env`:
+
+  ```bash
+  TELEGRAM_ADMIN_CHAT_ID="-1001234567890"
+  ```
+
+  If unset, a numeric `TELEGRAM_CHAT_ID` is used. With neither configured, the
+  bot replies with the sender's chat ID and the env line to add, without running
+  the command. `/start` sends the scenario summary and does **not** consume
+  quota; `/stop` only pauses the scanner. Commands are rate-limited to one per
+  2 seconds per chat and old pending updates are drained on startup.

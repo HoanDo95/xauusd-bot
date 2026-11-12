@@ -230,6 +230,10 @@ export interface Scenario {
   macro_alignment: 'ALIGNED' | 'COUNTER' | 'MIXED' | 'UNKNOWN' | string;
   /** Levels ordered + R:R >= min + risk within range. */
   valid: boolean;
+  /** Display ranking: PRIMARY | ALTERNATE | WATCHLIST. */
+  role: 'PRIMARY' | 'ALTERNATE' | 'WATCHLIST' | string;
+  /** Transparent ranking score; higher is stronger. */
+  priority: number;
   /** Vietnamese notes, including why the scenario is invalid. */
   notes: string[];
 }

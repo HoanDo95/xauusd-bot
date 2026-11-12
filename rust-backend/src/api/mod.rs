@@ -50,6 +50,11 @@ use simulation::simulate_setup;
 use telegram::{send_signal_telegram, trigger_test_telegram};
 use webhooks::{receive_candle_webhook, receive_tradingview_webhook};
 
+// Shared by the Telegram command worker (`/start`, `/stop`, `/view`).
+pub(crate) use live::current_live_view;
+pub(crate) use scanner::{start_scanner_inner, stop_scanner_inner};
+pub(crate) use scenarios::current_scenarios;
+
 /// Trạng thái ứng dụng chia sẻ an toàn giữa các luồng (Thread-safe Shared State)
 #[derive(Clone)]
 pub struct AppState {

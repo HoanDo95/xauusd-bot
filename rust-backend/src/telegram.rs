@@ -28,6 +28,96 @@ impl TelegramNotifier {
         }
     }
 
+    /// Long-poll `getUpdates` for the command worker. Empty token is a no-op so
+    /// tests and unconfigured deployments never touch the network.
+    pub async fn get_updates(
+        &self,
+        offset: i64,
+        timeout_secs: u64,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        if self.bot_token.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let url = format!("https://api.telegram.org/bot{}/getUpdates", self.bot_token);
+        let request = self
+            .client
+            .get(&url)
+            .query(&[
+                ("offset", offset.to_string()),
+                ("timeout", timeout_secs.to_string()),
+                ("allowed_updates", "[\"message\"]".to_string()),
+            ])
+            .timeout(std::time::Duration::from_secs(
+                timeout_secs.saturating_add(10),
+            ));
+
+        match request.send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let body: serde_json::Value =
+                        resp.json().await.map_err(|e| e.without_url().to_string())?;
+                    Ok(body
+                        .get("result")
+                        .and_then(|value| value.as_array())
+                        .cloned()
+                        .unwrap_or_default())
+                } else {
+                    let err_text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Lỗi không xác định".into());
+                    Err(format!("Telegram API Error: {err_text}"))
+                }
+            }
+            Err(err) => {
+                let err = err.without_url();
+                Err(format!("Network Error: {err}"))
+            }
+        }
+    }
+
+    /// Send one HTML-formatted message to the configured chat. Empty
+    /// token/chat keeps the simulator behavior used by the rest of the bot.
+    pub async fn send_html_message(&self, text: &str) -> Result<i64, String> {
+        if self.bot_token.is_empty() || self.chat_id.is_empty() {
+            info!("⚠️ [Telegram Simulator] HTML message (chưa cấu hình token/chat)");
+            return Ok(1001);
+        }
+
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
+        let payload = json!({
+            "chat_id": self.chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true
+        });
+
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let body: serde_json::Value =
+                        resp.json().await.map_err(|e| e.without_url().to_string())?;
+                    let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
+                    info!("✅ Đã gửi lệnh Telegram! Message ID: {}", msg_id);
+                    Ok(msg_id)
+                } else {
+                    let err_text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Lỗi không xác định".into());
+                    error!("❌ Telegram command API lỗi: {}", err_text);
+                    Err(format!("Telegram API Error: {err_text}"))
+                }
+            }
+            Err(err) => {
+                let err = err.without_url();
+                error!("❌ Không thể gửi lệnh Telegram: {}", err);
+                Err(format!("Network Error: {err}"))
+            }
+        }
+    }
+
     /// Escape các ký tự đặc biệt của Telegram HTML parse mode.
     /// Bắt buộc với mọi dữ liệu động (ticker, comment webhook, ghi chú phân tích),
     /// nếu không Telegram sẽ trả `400 Bad Request: can't parse entities`.
@@ -294,7 +384,7 @@ impl TelegramNotifier {
         }
     }
 
-    /// Định dạng snapshot 4 kịch bản tham khảo khi Scanner Start.
+    /// Định dạng snapshot kịch bản tham khảo khi Scanner Start.
     ///
     /// Đây là view tham khảo, KHÔNG phải tín hiệu vào lệnh: không quota, không
     /// lưu signal. Mọi text động đều được escape HTML trước khi gửi.
@@ -381,33 +471,89 @@ impl TelegramNotifier {
         let footer = "\nBot sẽ gửi tín hiệu thật khi đủ điều kiện.\n\
                       Đây là kịch bản tham khảo, không phải entry đã xác nhận.";
 
-        let render = |items: &[Scenario], truncated: bool| {
+        let primary_index = scenarios
+            .scenarios
+            .iter()
+            .position(|scenario| scenario.role.eq_ignore_ascii_case("PRIMARY"))
+            .or_else(|| (!scenarios.scenarios.is_empty()).then_some(0));
+        let alternate_index = scenarios
+            .scenarios
+            .iter()
+            .enumerate()
+            .find_map(|(index, scenario)| {
+                (Some(index) != primary_index && scenario.role.eq_ignore_ascii_case("ALTERNATE"))
+                    .then_some(index)
+            })
+            .or_else(|| {
+                scenarios
+                    .scenarios
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, _)| (Some(index) != primary_index).then_some(index))
+            });
+        let watchlist: Vec<&Scenario> = scenarios
+            .scenarios
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != primary_index && Some(*index) != alternate_index)
+            .map(|(_, scenario)| scenario)
+            .collect();
+
+        let render = |alternate_details: bool, watchlist_limit: usize, truncated: bool| {
             let mut message = header_lines.join("\n");
-            message.push_str("\n\n<b>KỊCH BẢN THAM KHẢO</b> (không phải tín hiệu)\n");
-            if items.is_empty() {
-                message.push_str("Chưa đủ dữ liệu để dựng kịch bản tham khảo.\n");
-            } else {
-                for (index, scenario) in items.iter().enumerate() {
-                    message.push_str(&scenario_block(index + 1, scenario));
+            message.push_str("\n\n");
+
+            match primary_index {
+                Some(index) => {
+                    message.push_str(&scenario_primary_block(&scenarios.scenarios[index]))
                 }
+                None => message.push_str("Chưa đủ dữ liệu để dựng kịch bản tham khảo.\n"),
             }
+
+            if let Some(index) = alternate_index {
+                message.push_str("\n\n");
+                message.push_str(&scenario_alternate_block(
+                    &scenarios.scenarios[index],
+                    alternate_details,
+                ));
+            }
+
+            if watchlist_limit > 0 && !watchlist.is_empty() {
+                message.push_str("\n\n");
+                let limit = watchlist_limit.min(watchlist.len());
+                message.push_str(&scenario_watchlist_line(
+                    &watchlist[..limit],
+                    limit < watchlist.len(),
+                ));
+            }
+
             if truncated {
-                message.push_str("…\n");
+                message.push_str("\n…");
             }
             message.push_str(footer);
             message
         };
 
-        let full = render(&scenarios.scenarios, false);
+        let full = render(true, watchlist.len(), false);
         if full.chars().count() <= MAX_SCENARIO_MESSAGE_CHARS {
             return full;
         }
 
-        // Too long: keep the first three reference scenarios and mark the cut.
-        render(
-            &scenarios.scenarios[..scenarios.scenarios.len().min(3)],
-            true,
-        )
+        // Too long: drop ALTERNATE details first, then trim the watchlist from
+        // the end. PRIMARY stays intact unless even the minimal render overflows.
+        let compact_alternate = render(false, watchlist.len(), true);
+        if compact_alternate.chars().count() <= MAX_SCENARIO_MESSAGE_CHARS {
+            return compact_alternate;
+        }
+        for limit in (0..watchlist.len()).rev() {
+            let candidate = render(false, limit, true);
+            if candidate.chars().count() <= MAX_SCENARIO_MESSAGE_CHARS {
+                return candidate;
+            }
+        }
+
+        let minimal = render(false, 0, true);
+        hard_truncate_scenario_message(&minimal, footer)
     }
 
     /// Gửi snapshot kịch bản tham khảo tới Telegram. Token/Chat trống = simulator.
@@ -715,47 +861,120 @@ impl TelegramNotifier {
     }
 }
 
-/// One numbered scenario block. Entry levels are shown only when `entry` exists;
-/// otherwise the first note becomes a single concise reference line.
-fn scenario_block(index: usize, scenario: &Scenario) -> String {
+/// PRIMARY block: full trigger, levels, invalidation.
+fn scenario_primary_block(scenario: &Scenario) -> String {
     let name = TelegramNotifier::escape_html(&truncate_chars(&scenario.name, 80));
     let alignment = TelegramNotifier::escape_html(&truncate_chars(&scenario.macro_alignment, 24));
+    let status = if scenario.valid { "VALID" } else { "NOT VALID" };
+    let trigger = TelegramNotifier::escape_html(&truncate_chars(&scenario.trigger, 220));
+    let mut lines = vec![
+        format!(
+            "🎯 PRIMARY — {name} [{alignment}] [{status}] · confidence {}",
+            scenario.confidence
+        ),
+        format!("Trigger: {trigger}"),
+    ];
 
-    match scenario.entry {
-        Some(entry) => {
-            let status = if scenario.valid { "VALID" } else { "NOT VALID" };
-            let trigger = TelegramNotifier::escape_html(&truncate_chars(&scenario.trigger, 220));
-            let mut levels = vec![format!("Entry {entry:.2}")];
-            if let Some(stop_loss) = scenario.stop_loss.filter(|value| value.is_finite()) {
-                levels.push(format!("SL {stop_loss:.2}"));
-            }
-            if let Some(take_profit_1) = scenario.take_profit_1.filter(|value| value.is_finite()) {
-                levels.push(format!("TP1 {take_profit_1:.2}"));
-            }
-            if let Some(take_profit_2) = scenario.take_profit_2.filter(|value| value.is_finite()) {
-                levels.push(format!("TP2 {take_profit_2:.2}"));
-            }
-            if let Some(risk_reward) = scenario.risk_reward.filter(|value| value.is_finite()) {
-                levels.push(format!("R:R 1:{risk_reward:.2}"));
-            }
+    if let Some(levels) = scenario_levels_line(scenario, true) {
+        lines.push(levels);
+    } else {
+        let note = scenario
+            .notes
+            .first()
+            .map(String::as_str)
+            .unwrap_or(&scenario.trigger);
+        lines.push(format!(
+            "Note: {}",
+            TelegramNotifier::escape_html(&truncate_chars(note, 200))
+        ));
+    }
 
-            format!(
-                "{index}. {name} [{alignment}] [{status}]\n   Trigger: {trigger}\n   {}\n",
-                levels.join(" · ")
-            )
-        }
-        None => {
-            let note = scenario
-                .notes
-                .first()
-                .map(String::as_str)
-                .unwrap_or(&scenario.trigger);
-            format!(
-                "{index}. {name} — {}\n",
-                TelegramNotifier::escape_html(&truncate_chars(note, 200))
-            )
+    lines.push(format!(
+        "Invalidation: {}",
+        TelegramNotifier::escape_html(&truncate_chars(&scenario.invalidation, 220))
+    ));
+    lines.join("\n")
+}
+
+/// ALTERNATE block: same levels on one line; details can be dropped when the
+/// message is too long, leaving only the role header.
+fn scenario_alternate_block(scenario: &Scenario, include_details: bool) -> String {
+    let name = TelegramNotifier::escape_html(&truncate_chars(&scenario.name, 80));
+    let alignment = TelegramNotifier::escape_html(&truncate_chars(&scenario.macro_alignment, 24));
+    let status = if scenario.valid { "VALID" } else { "NOT VALID" };
+    let header = format!(
+        "🔁 ALTERNATE — {name} [{alignment}] [{status}] · confidence {}",
+        scenario.confidence
+    );
+    if !include_details {
+        return header;
+    }
+
+    let mut parts = vec![format!(
+        "Trigger: {}",
+        TelegramNotifier::escape_html(&truncate_chars(&scenario.trigger, 120))
+    )];
+    if let Some(levels) = scenario_levels_line(scenario, false) {
+        parts.push(levels);
+    } else {
+        let note = scenario
+            .notes
+            .first()
+            .map(String::as_str)
+            .unwrap_or(&scenario.trigger);
+        parts.push(TelegramNotifier::escape_html(&truncate_chars(note, 120)));
+    }
+    format!("{header}\n{}", parts.join(" · "))
+}
+
+/// WATCHLIST compact one-liner: names only, plus valid/not-valid state.
+fn scenario_watchlist_line(items: &[&Scenario], truncated: bool) -> String {
+    let entries = items
+        .iter()
+        .map(|scenario| {
+            let name = TelegramNotifier::escape_html(&truncate_chars(&scenario.name, 60));
+            let status = if scenario.valid { "valid" } else { "not valid" };
+            format!("{name} ({status})")
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let mut line = format!("👀 Watchlist: {entries}");
+    if truncated {
+        line.push_str(" · …");
+    }
+    line
+}
+
+/// Entry/SL/TP levels for the compact scenario blocks. Returns None when the
+/// scenario has no numeric entry (e.g. a bounce/rejection waiting for a zone).
+fn scenario_levels_line(scenario: &Scenario, include_tp2: bool) -> Option<String> {
+    let entry = scenario.entry.filter(|value| value.is_finite())?;
+    let mut levels = vec![format!("Entry {entry:.2}")];
+    if let Some(stop_loss) = scenario.stop_loss.filter(|value| value.is_finite()) {
+        levels.push(format!("SL {stop_loss:.2}"));
+    }
+    if let Some(take_profit_1) = scenario.take_profit_1.filter(|value| value.is_finite()) {
+        levels.push(format!("TP1 {take_profit_1:.2}"));
+    }
+    if include_tp2 {
+        if let Some(take_profit_2) = scenario.take_profit_2.filter(|value| value.is_finite()) {
+            levels.push(format!("TP2 {take_profit_2:.2}"));
         }
     }
+    if let Some(risk_reward) = scenario.risk_reward.filter(|value| value.is_finite()) {
+        levels.push(format!("R:R 1:{risk_reward:.2}"));
+    }
+    Some(levels.join(" · "))
+}
+
+/// Last-resort cap: keep the message under Telegram's soft limit while always
+/// preserving the advisory footer.
+fn hard_truncate_scenario_message(message: &str, footer: &str) -> String {
+    let body = message.strip_suffix(footer).unwrap_or(message);
+    let budget = MAX_SCENARIO_MESSAGE_CHARS.saturating_sub(footer.chars().count() + 2);
+    let mut chars = body.chars();
+    let truncated: String = chars.by_ref().take(budget).collect();
+    format!("{truncated}…{footer}")
 }
 
 fn json_number(value: &serde_json::Value, key: &str) -> Option<f64> {
@@ -1155,6 +1374,8 @@ mod tests {
             confidence: 70,
             macro_alignment: "ALIGNED".to_string(),
             valid: false,
+            role: "WATCHLIST".to_string(),
+            priority: 70,
             notes: vec!["Chưa đủ điều kiện.".to_string()],
         }
     }
@@ -1175,6 +1396,20 @@ mod tests {
     }
 
     fn sample_scenario_response() -> ScenarioResponse {
+        let mut breakdown = base_scenario("bearish_breakdown", "Bearish breakdown", "BEARISH");
+        breakdown.trigger = "Đóng M15 dưới 3960.00 (phá hỗ trợ 3962.00)".to_string();
+        breakdown.entry = Some(3960.0);
+        breakdown.stop_loss = Some(3968.0);
+        breakdown.take_profit_1 = Some(3944.0);
+        breakdown.take_profit_2 = Some(3936.0);
+        breakdown.risk_reward = Some(2.0);
+        breakdown.confidence = 95;
+        breakdown.macro_alignment = "ALIGNED".to_string();
+        breakdown.valid = true;
+        breakdown.role = "PRIMARY".to_string();
+        breakdown.priority = 265;
+        breakdown.notes = vec!["Kịch bản breakdown cần nến M15 đóng cửa xác nhận.".to_string()];
+
         let mut breakout = base_scenario("bullish_breakout", "Bullish breakout", "BULLISH");
         breakout.trigger = "Đóng M15 trên 3997.00 (phá kháng cự 3995.00)".to_string();
         breakout.entry = Some(3997.0);
@@ -1182,25 +1417,25 @@ mod tests {
         breakout.take_profit_1 = Some(4005.0);
         breakout.take_profit_2 = Some(4010.0);
         breakout.risk_reward = Some(1.142857);
-        breakout.valid = true;
+        breakout.confidence = 50;
+        breakout.macro_alignment = "COUNTER".to_string();
+        breakout.valid = false;
+        breakout.role = "ALTERNATE".to_string();
+        breakout.priority = 120;
         breakout.notes = vec!["Kịch bản breakout cần nến M15 đóng cửa xác nhận.".to_string()];
 
-        let mut breakdown = base_scenario("bearish_breakdown", "Bearish breakdown", "BEARISH");
-        breakdown.trigger = "Đóng M15 dưới 3960.00 (phá hỗ trợ 3962.00)".to_string();
-        breakdown.entry = Some(3960.0);
-        breakdown.stop_loss = Some(3968.0);
-        breakdown.take_profit_1 = Some(3952.0);
-        breakdown.take_profit_2 = Some(3945.0);
-        breakdown.risk_reward = Some(1.0);
-        breakdown.macro_alignment = "COUNTER".to_string();
-        breakdown.notes = vec!["Kịch bản breakdown cần nến M15 đóng cửa xác nhận.".to_string()];
-
         let mut bounce = base_scenario("bullish_bounce", "Bullish bounce", "BULLISH");
+        bounce.confidence = 45;
         bounce.macro_alignment = "MIXED".to_string();
+        bounce.role = "WATCHLIST".to_string();
+        bounce.priority = 45;
         bounce.notes = vec!["Không có vùng hỗ trợ gần.".to_string()];
 
         let mut rejection = base_scenario("bearish_rejection", "Bearish rejection", "BEARISH");
+        rejection.confidence = 40;
         rejection.macro_alignment = "MIXED".to_string();
+        rejection.role = "WATCHLIST".to_string();
+        rejection.priority = 40;
         rejection.notes = vec!["Không có vùng kháng cự gần.".to_string()];
 
         ScenarioResponse {
@@ -1221,13 +1456,13 @@ mod tests {
                 macro_bias: "BEARISH".to_string(),
                 macro_confidence: 95,
             }),
-            scenarios: vec![breakout, breakdown, bounce, rejection],
+            scenarios: vec![breakdown, breakout, bounce, rejection],
             warnings: Vec::new(),
         }
     }
 
     #[test]
-    fn format_scenario_summary_includes_four_scenarios_and_status_tags() {
+    fn format_scenario_summary_includes_primary_alternate_and_watchlist() {
         let message = TelegramNotifier::format_scenario_summary(
             &sample_live_view(),
             &sample_scenario_response(),
@@ -1239,14 +1474,13 @@ mod tests {
             "Giá: 3980.50 · Nguồn: TWELVEDATA",
             "Macro/Flow: BEARISH · 95% · CONFIRMING",
             "D1 BEARISH · H4 BEARISH · H1 NEUTRAL · ATR H4 22.5",
-            "KỊCH BẢN THAM KHẢO",
-            "(không phải tín hiệu)",
-            "1. Bullish breakout [ALIGNED] [VALID]",
-            "Trigger: Đóng M15 trên 3997.00 (phá kháng cự 3995.00)",
-            "Entry 3997.00 · SL 3990.00 · TP1 4005.00 · TP2 4010.00 · R:R 1:1.14",
-            "2. Bearish breakdown [COUNTER] [NOT VALID]",
-            "3. Bullish bounce — Không có vùng hỗ trợ gần.",
-            "4. Bearish rejection — Không có vùng kháng cự gần.",
+            "🎯 PRIMARY — Bearish breakdown [ALIGNED] [VALID] · confidence 95",
+            "Trigger: Đóng M15 dưới 3960.00 (phá hỗ trợ 3962.00)",
+            "Entry 3960.00 · SL 3968.00 · TP1 3944.00 · TP2 3936.00 · R:R 1:2.00",
+            "Invalidation: Đóng M15 ngược hướng.",
+            "🔁 ALTERNATE — Bullish breakout [COUNTER] [NOT VALID] · confidence 50",
+            "Trigger: Đóng M15 trên 3997.00 (phá kháng cự 3995.00) · Entry 3997.00 · SL 3990.00 · TP1 4005.00 · R:R 1:1.14",
+            "👀 Watchlist: Bullish bounce (not valid) · Bearish rejection (not valid)",
             "Bot sẽ gửi tín hiệu thật khi đủ điều kiện.",
             "không phải entry đã xác nhận.",
         ] {
@@ -1255,6 +1489,21 @@ mod tests {
                 "missing message text: {expected}"
             );
         }
+    }
+
+    #[test]
+    fn format_scenario_summary_falls_back_to_first_two_scenarios() {
+        let mut response = sample_scenario_response();
+        for scenario in &mut response.scenarios {
+            scenario.role = "WATCHLIST".to_string();
+        }
+
+        let message = TelegramNotifier::format_scenario_summary(&sample_live_view(), &response);
+
+        assert!(message.contains("🎯 PRIMARY — Bearish breakdown"));
+        assert!(message.contains("🔁 ALTERNATE — Bullish breakout"));
+        assert!(message
+            .contains("👀 Watchlist: Bullish bounce (not valid) · Bearish rejection (not valid)"));
     }
 
     #[test]
@@ -1268,8 +1517,10 @@ mod tests {
         live_view["macroFlow"]["bias"] = json!("BEAR<script>");
 
         let mut response = sample_scenario_response();
-        response.scenarios[0].name = "Bull <breakout>".to_string();
+        response.scenarios[0].name = "Bear <breakdown>".to_string();
         response.scenarios[0].trigger = "Đóng <M15> & xác nhận".to_string();
+        response.scenarios[1].name = "Bull <breakout>".to_string();
+        response.scenarios[2].name = "Bounce <watch> & test".to_string();
         response.scenarios[2].notes = vec!["Không có <hỗ trợ> & vùng".to_string()];
 
         let message = TelegramNotifier::format_scenario_summary(&live_view, &response);
@@ -1277,25 +1528,27 @@ mod tests {
         assert!(message.contains("· XAU&lt;&amp;&gt;"));
         assert!(message.contains("SRC&lt;&amp;&gt;"));
         assert!(message.contains("BEAR&lt;script&gt;"));
-        assert!(message.contains("Bull &lt;breakout&gt;"));
+        assert!(message.contains("Bear &lt;breakdown&gt;"));
         assert!(message.contains("Đóng &lt;M15&gt; &amp; xác nhận"));
-        assert!(message.contains("Không có &lt;hỗ trợ&gt; &amp; vùng"));
+        assert!(message.contains("Bull &lt;breakout&gt;"));
+        assert!(message.contains("Bounce &lt;watch&gt; &amp; test"));
         assert!(!message.contains("<script>"));
     }
 
     #[test]
     fn format_scenario_summary_omits_entry_levels_for_no_level_scenario() {
-        let message = TelegramNotifier::format_scenario_summary(
-            &sample_live_view(),
-            &sample_scenario_response(),
-        );
+        let mut response = sample_scenario_response();
+        response.scenarios[0].role = "WATCHLIST".to_string();
+        response.scenarios[1].role = "WATCHLIST".to_string();
+        response.scenarios[2].role = "PRIMARY".to_string();
+        response.scenarios[3].role = "ALTERNATE".to_string();
+
+        let message = TelegramNotifier::format_scenario_summary(&sample_live_view(), &response);
 
         let start = message
-            .find("3. Bullish bounce")
-            .expect("bounce scenario block");
-        let end = message
-            .find("4. Bearish rejection")
-            .expect("rejection scenario block");
+            .find("🎯 PRIMARY — Bullish bounce")
+            .expect("bounce primary block");
+        let end = message.find("🔁 ALTERNATE").expect("alternate block");
         let no_level_block = &message[start..end];
 
         assert!(no_level_block.contains("Không có vùng hỗ trợ gần."));
@@ -1307,27 +1560,65 @@ mod tests {
     }
 
     #[test]
-    fn format_scenario_summary_caps_long_messages_to_three_scenarios() {
+    fn format_scenario_summary_caps_long_messages_and_trims_watchlist() {
         let mut response = sample_scenario_response();
-        response.scenarios = (0..12)
-            .map(|index| {
-                let mut scenario = base_scenario("long", "Bullish breakout", "BULLISH");
-                scenario.trigger = format!("{index} {}", "x".repeat(300));
-                scenario.entry = Some(3997.0);
-                scenario.stop_loss = Some(3990.0);
-                scenario.take_profit_1 = Some(4005.0);
-                scenario.take_profit_2 = Some(4010.0);
-                scenario.risk_reward = Some(1.14);
-                scenario.valid = true;
-                scenario
-            })
-            .collect();
+        let mut scenarios = vec![response.scenarios[0].clone(), response.scenarios[1].clone()];
+        scenarios[0].trigger = "x".repeat(300);
+        scenarios[0].invalidation = "y".repeat(300);
+        scenarios[1].trigger = "z".repeat(300);
+        for index in 0..40 {
+            let mut scenario = base_scenario(
+                "long",
+                &format!("Watchlist {index} {}", "w".repeat(80)),
+                "BULLISH",
+            );
+            scenario.trigger = format!("{index} {}", "x".repeat(300));
+            scenario.entry = Some(3997.0);
+            scenario.stop_loss = Some(3990.0);
+            scenario.take_profit_1 = Some(4005.0);
+            scenario.take_profit_2 = Some(4010.0);
+            scenario.risk_reward = Some(1.14);
+            scenario.valid = true;
+            scenario
+                .notes
+                .push(format!("{} {}", "note".repeat(20), index));
+            scenarios.push(scenario);
+        }
+        response.scenarios = scenarios;
 
         let message = TelegramNotifier::format_scenario_summary(&sample_live_view(), &response);
 
         assert!(message.chars().count() <= MAX_SCENARIO_MESSAGE_CHARS);
-        assert!(message.contains("3. Bullish breakout"));
-        assert!(!message.contains("4. Bullish breakout"));
-        assert!(message.contains("…\n\nBot sẽ gửi tín hiệu thật"));
+        assert!(message.contains("🎯 PRIMARY — Bearish breakdown"));
+        assert!(message.contains("🔁 ALTERNATE — Bullish breakout"));
+        assert!(
+            !message.contains("zzz"),
+            "ALTERNATE details must be dropped before the watchlist"
+        );
+        assert!(message.contains("👀 Watchlist:"));
+        assert!(message.contains("…"));
+        assert!(message.contains("Bot sẽ gửi tín hiệu thật khi đủ điều kiện."));
+    }
+
+    #[tokio::test]
+    async fn get_updates_without_token_is_a_network_free_noop() {
+        let notifier = TelegramNotifier::new(String::new(), String::new());
+        let updates = notifier
+            .get_updates(0, 0)
+            .await
+            .expect("empty token must not call Telegram");
+        assert!(updates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_html_message_without_token_is_a_simulator_success() {
+        let notifier = TelegramNotifier::new(String::new(), String::new());
+        assert_eq!(
+            notifier
+                .send_html_message("<b>test</b>")
+                .await
+                .expect("simulator"),
+            1001
+        );
     }
 }

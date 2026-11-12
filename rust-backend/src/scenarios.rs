@@ -46,6 +46,10 @@ pub struct Scenario {
     pub macro_alignment: String,
     /// Levels ordered + R:R >= min + risk within range.
     pub valid: bool,
+    /// PRIMARY | ALTERNATE | WATCHLIST — display ranking only.
+    pub role: String,
+    /// Transparent ranking score; higher is stronger.
+    pub priority: i32,
     /// Vietnamese notes, including why the scenario is invalid.
     pub notes: Vec<String>,
 }
@@ -257,6 +261,7 @@ pub fn build_scenarios(
         .into_iter()
         .map(|draft| finalize_scenario(draft, &inputs))
         .collect();
+    let scenarios = rank_scenarios(scenarios);
 
     ScenarioResponse {
         status: "ok".to_string(),
@@ -595,6 +600,15 @@ fn finalize_scenario(draft: ScenarioDraft, inputs: &ScenarioInputs<'_>) -> Scena
         inputs,
         &macro_alignment,
     );
+    let priority = scenario_priority(
+        confidence,
+        valid,
+        &macro_alignment,
+        draft.bias,
+        risk_reward,
+        entry,
+        inputs,
+    );
 
     Scenario {
         id: draft.id.to_string(),
@@ -611,8 +625,97 @@ fn finalize_scenario(draft: ScenarioDraft, inputs: &ScenarioInputs<'_>) -> Scena
         confidence,
         macro_alignment,
         valid,
+        role: "WATCHLIST".to_string(),
+        priority,
         notes,
     }
+}
+
+/// Transparent display ranking. It never gates a signal, quota or Telegram send;
+/// it only decides which reference scenario is shown first.
+fn scenario_priority(
+    confidence: u8,
+    valid: bool,
+    macro_alignment: &str,
+    bias: &str,
+    risk_reward: Option<f64>,
+    entry: Option<f64>,
+    inputs: &ScenarioInputs<'_>,
+) -> i32 {
+    let mut priority = i32::from(confidence);
+    if valid {
+        priority += 100;
+    }
+    match macro_alignment {
+        "ALIGNED" => priority += 30,
+        "COUNTER" => priority -= 30,
+        _ => {}
+    }
+    let directional_bias = matches!(bias, "BULLISH" | "BEARISH");
+    if directional_bias && bias == inputs.h4_bias {
+        priority += 20;
+    }
+    if risk_reward.is_some_and(|value| value + 1e-9 >= inputs.config.min_risk_reward) {
+        priority += 10;
+    }
+    if entry.is_some_and(|value| (inputs.price - value).abs() <= inputs.atr * 1.5) {
+        priority += 10;
+    }
+    priority
+}
+
+/// Sort by priority (confidence, validity as tie-breakers), then label one
+/// PRIMARY, one opposite-bias ALTERNATE and the rest WATCHLIST. The returned
+/// order is PRIMARY, ALTERNATE, then the remaining WATCHLIST by priority.
+fn rank_scenarios(mut scenarios: Vec<Scenario>) -> Vec<Scenario> {
+    scenarios.sort_by(|left, right| {
+        right
+            .priority
+            .cmp(&left.priority)
+            .then_with(|| right.confidence.cmp(&left.confidence))
+            .then_with(|| right.valid.cmp(&left.valid))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    if scenarios.is_empty() {
+        return scenarios;
+    }
+
+    let primary_bias = scenarios[0].bias.clone();
+    let alternate_index = scenarios
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, scenario)| biases_are_opposite(&primary_bias, &scenario.bias))
+        .map(|(index, _)| index)
+        .or_else(|| (scenarios.len() > 1).then_some(1));
+
+    for (index, scenario) in scenarios.iter_mut().enumerate() {
+        scenario.role = if index == 0 {
+            "PRIMARY"
+        } else if Some(index) == alternate_index {
+            "ALTERNATE"
+        } else {
+            "WATCHLIST"
+        }
+        .to_string();
+    }
+
+    // Keep ALTERNATE directly after PRIMARY even when a higher-priority
+    // WATCHLIST scenario originally sat between them.
+    if let Some(alternate_index) = alternate_index {
+        let alternate = scenarios.remove(alternate_index);
+        scenarios.insert(1, alternate);
+    }
+
+    scenarios
+}
+
+fn biases_are_opposite(left: &str, right: &str) -> bool {
+    matches!(
+        (left, right),
+        ("BULLISH", "BEARISH") | ("BEARISH", "BULLISH")
+    )
 }
 
 fn scenario_confidence(
@@ -942,6 +1045,23 @@ mod tests {
         )
     }
 
+    fn build_with_context(
+        candles: &[Candle],
+        context: Option<&MarketContext>,
+        macro_flow: Option<&MacroFlowSnapshot>,
+    ) -> ScenarioResponse {
+        build_scenarios(
+            candles,
+            &config(),
+            None,
+            context,
+            macro_flow,
+            "TEST",
+            "TEST_VOLUME",
+            BASE_TS,
+        )
+    }
+
     #[test]
     fn no_data_when_candles_are_below_lookback_requirement() {
         let response = build(&zigzag_candles(10), None);
@@ -956,15 +1076,31 @@ mod tests {
     }
 
     #[test]
-    fn zigzag_market_builds_four_reference_scenarios() {
+    fn zigzag_market_builds_four_ranked_reference_scenarios() {
         let response = build(&zigzag_candles(60), None);
 
         assert_eq!(response.status, "ok");
         assert_eq!(response.scenarios.len(), 4);
-        assert_eq!(response.scenarios[0].id, "bullish_breakout");
-        assert_eq!(response.scenarios[1].id, "bearish_breakdown");
-        assert_eq!(response.scenarios[2].id, "bullish_bounce");
-        assert_eq!(response.scenarios[3].id, "bearish_rejection");
+        assert_eq!(response.scenarios[0].role, "PRIMARY");
+        assert_eq!(response.scenarios[1].role, "ALTERNATE");
+        assert_eq!(response.scenarios[2].role, "WATCHLIST");
+        assert_eq!(response.scenarios[3].role, "WATCHLIST");
+
+        let mut ids: Vec<&str> = response
+            .scenarios
+            .iter()
+            .map(|scenario| scenario.id.as_str())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            vec![
+                "bearish_breakdown",
+                "bearish_rejection",
+                "bullish_bounce",
+                "bullish_breakout"
+            ]
+        );
 
         let market = response.market.expect("market block");
         assert!(market.nearest_support.is_some());
@@ -1052,6 +1188,90 @@ mod tests {
     }
 
     #[test]
+    fn bearish_macro_and_h4_rank_bearish_breakdown_primary() {
+        let candles = zigzag_candles(60);
+        let macro_flow = macro_snapshot("BEARISH", 95);
+        let mut context = crate::market_context::build_market_context(&[], &[], &[], "TEST", None);
+        context.d1.bias = "BEARISH".to_string();
+        context.h4.bias = "BEARISH".to_string();
+        context.h1.bias = "BEARISH".to_string();
+
+        let response = build_with_context(&candles, Some(&context), Some(&macro_flow));
+
+        assert_eq!(response.scenarios.len(), 4);
+        assert_eq!(response.scenarios[0].id, "bearish_breakdown");
+        assert_eq!(response.scenarios[0].role, "PRIMARY");
+        assert_eq!(response.scenarios[0].bias, "BEARISH");
+        assert!(response.scenarios[0].valid);
+        assert_eq!(response.scenarios[0].macro_alignment, "ALIGNED");
+
+        assert_eq!(response.scenarios[1].role, "ALTERNATE");
+        assert_eq!(response.scenarios[1].bias, "BULLISH");
+        assert!(response.scenarios[2..]
+            .iter()
+            .all(|scenario| scenario.role == "WATCHLIST"));
+        assert!(response
+            .scenarios
+            .iter()
+            .all(|scenario| scenario.priority <= response.scenarios[0].priority));
+    }
+
+    #[test]
+    fn all_invalid_scenarios_still_get_primary_and_alternate() {
+        let config = BotConfig {
+            lookback_period: 30,
+            min_risk_reward: 10.0,
+            ..BotConfig::default()
+        };
+        let response = build_scenarios(
+            &flat_candles(60),
+            &config,
+            None,
+            None,
+            None,
+            "TEST",
+            "TEST_VOLUME",
+            BASE_TS,
+        );
+
+        assert_eq!(response.scenarios.len(), 4);
+        assert!(response.scenarios.iter().all(|scenario| !scenario.valid));
+        assert_eq!(response.scenarios[0].role, "PRIMARY");
+        assert_eq!(response.scenarios[1].role, "ALTERNATE");
+        assert_eq!(response.scenarios[2].role, "WATCHLIST");
+        assert_eq!(response.scenarios[3].role, "WATCHLIST");
+        assert_ne!(response.scenarios[0].bias, response.scenarios[1].bias);
+    }
+
+    #[test]
+    fn priority_and_role_ordering_is_deterministic() {
+        let candles = zigzag_candles(60);
+        let macro_flow = macro_snapshot("BEARISH", 95);
+        let mut context = crate::market_context::build_market_context(&[], &[], &[], "TEST", None);
+        context.h4.bias = "BEARISH".to_string();
+
+        let first = build_with_context(&candles, Some(&context), Some(&macro_flow));
+        let second = build_with_context(&candles, Some(&context), Some(&macro_flow));
+
+        let signature = |response: &ScenarioResponse| {
+            response
+                .scenarios
+                .iter()
+                .map(|scenario| {
+                    (
+                        scenario.id.clone(),
+                        scenario.role.clone(),
+                        scenario.priority,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(signature(&first), signature(&second));
+        assert_eq!(first.scenarios[0].role, "PRIMARY");
+        assert_eq!(first.scenarios[1].role, "ALTERNATE");
+    }
+
+    #[test]
     fn build_scenarios_is_pure_and_repeatable() {
         let candles = zigzag_candles(60);
         let first = build(&candles, None);
@@ -1066,6 +1286,8 @@ mod tests {
             assert_eq!(left.take_profit_1, right.take_profit_1);
             assert_eq!(left.take_profit_2, right.take_profit_2);
             assert_eq!(left.valid, right.valid);
+            assert_eq!(left.role, right.role);
+            assert_eq!(left.priority, right.priority);
         }
     }
 
@@ -1119,6 +1341,8 @@ mod tests {
             "confidence",
             "macro_alignment",
             "valid",
+            "role",
+            "priority",
             "notes",
         ] {
             assert!(scenario.get(key).is_some(), "missing scenario key: {key}");

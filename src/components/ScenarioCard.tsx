@@ -91,6 +91,32 @@ const Level: React.FC<{ label: string; value: string; valueClass?: string }> = (
   </div>
 );
 
+type ScenarioRole = 'PRIMARY' | 'ALTERNATE';
+
+const WatchlistRow: React.FC<{ scenario: Scenario }> = ({ scenario }) => {
+  const confidence = Math.max(0, Math.min(100, scenario.confidence || 0));
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-md border border-neutral-800 bg-neutral-950/40 px-2.5 py-1.5 text-[10px] font-mono">
+      <div className="flex min-w-0 items-center gap-2">
+        <span
+          className={`shrink-0 px-1.5 py-0.5 rounded border text-[9px] font-bold ${biasTone(
+            scenario.bias
+          )}`}
+        >
+          {scenario.bias || 'UNKNOWN'}
+        </span>
+        <span className="truncate text-neutral-300">{scenario.name}</span>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <span className={scenario.valid ? 'text-emerald-400' : 'text-neutral-500'}>
+          {scenario.valid ? 'valid' : 'not valid'}
+        </span>
+        <span className="text-neutral-500">{confidence}%</span>
+      </div>
+    </div>
+  );
+};
+
 const MarketStrip: React.FC<{ market: ScenarioMarket; currentPrice: number | null }> = ({
   market,
   currentPrice,
@@ -127,19 +153,34 @@ const MarketStrip: React.FC<{ market: ScenarioMarket; currentPrice: number | nul
   </div>
 );
 
-const ScenarioTile: React.FC<{ scenario: Scenario }> = ({ scenario }) => {
+const ScenarioTile: React.FC<{ scenario: Scenario; role: ScenarioRole }> = ({
+  scenario,
+  role,
+}) => {
   const confidence = Math.max(0, Math.min(100, scenario.confidence || 0));
+  const isPrimary = role === 'PRIMARY';
+  const roleLabel = isPrimary ? '🎯 PRIMARY' : '🔁 ALTERNATE';
+  const roleTone = isPrimary
+    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+    : 'bg-amber-500/15 text-amber-300 border-amber-500/40';
+  const borderTone = isPrimary
+    ? 'border-emerald-500/40 bg-emerald-500/[0.03]'
+    : 'border-amber-500/40 bg-amber-500/[0.03]';
 
   return (
-    <div
-      className={`rounded-lg border p-3 flex flex-col gap-3 ${
-        scenario.valid
-          ? 'border-neutral-800 bg-neutral-950/50'
-          : 'border-neutral-800/80 bg-neutral-950/30'
-      }`}
-    >
+    <div className={`rounded-lg border p-3 flex flex-col gap-3 ${borderTone}`}>
       <div className="flex items-start justify-between gap-2">
         <div className="flex flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span
+              className={`px-1.5 py-0.5 rounded border text-[9px] font-mono font-bold ${roleTone}`}
+            >
+              {roleLabel}
+            </span>
+            <span className="text-[9px] font-mono text-neutral-500">
+              priority {scenario.priority ?? '—'}
+            </span>
+          </div>
           <h4 className="text-xs font-bold text-white leading-snug">{scenario.name}</h4>
           <span
             className={`self-start px-1.5 py-0.5 rounded border text-[9px] font-mono font-bold ${biasTone(
@@ -229,6 +270,16 @@ const ScenarioTile: React.FC<{ scenario: Scenario }> = ({ scenario }) => {
 export const ScenarioCard: React.FC<Props> = ({ data, onRefresh, onSendTelegram }) => {
   const market = data?.market;
   const scenarios = data?.scenarios ?? [];
+  const primary =
+    scenarios.find((scenario) => (scenario.role || '').toUpperCase() === 'PRIMARY') ??
+    scenarios[0];
+  const alternate =
+    scenarios.find(
+      (scenario) => (scenario.role || '').toUpperCase() === 'ALTERNATE' && scenario !== primary
+    ) ?? scenarios.find((scenario) => scenario !== primary);
+  const watchlist = scenarios.filter(
+    (scenario) => scenario !== primary && scenario !== alternate
+  );
   const [telegramState, setTelegramState] = useState<'idle' | 'sending' | 'sent' | 'error'>(
     'idle'
   );
@@ -250,10 +301,14 @@ export const ScenarioCard: React.FC<Props> = ({ data, onRefresh, onSendTelegram 
             <span className="px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider bg-neutral-800 text-neutral-400 border border-neutral-700">
               Read-only
             </span>
+            <span className="px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider bg-sky-500/10 text-sky-300 border border-sky-500/30">
+              1 chính + 1 đối chiếu + watchlist
+            </span>
           </div>
           <p className="text-[11px] text-neutral-500">
-            4 kịch bản tham khảo từ vùng S/R động, ATR và bối cảnh đa khung. Không phải entry đã
-            xác nhận.
+            PRIMARY là kịch bản ưu tiên, ALTERNATE là kịch bản đối chiếu, WATCHLIST là các kịch
+            bản phụ. Xếp hạng minh bạch từ confidence, VALID, macro/flow, H4 bias, R:R và khoảng
+            cách giá. Không phải entry đã xác nhận.
           </p>
         </div>
 
@@ -309,11 +364,24 @@ export const ScenarioCard: React.FC<Props> = ({ data, onRefresh, onSendTelegram 
       ) : (
         <>
           {market && <MarketStrip market={market} currentPrice={data.price} />}
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-            {scenarios.map((scenario) => (
-              <ScenarioTile key={scenario.id} scenario={scenario} />
-            ))}
-          </div>
+          {(primary || alternate) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {primary && <ScenarioTile scenario={primary} role="PRIMARY" />}
+              {alternate && <ScenarioTile scenario={alternate} role="ALTERNATE" />}
+            </div>
+          )}
+          {watchlist.length > 0 && (
+            <details className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
+              <summary className="cursor-pointer text-[11px] font-mono text-neutral-400">
+                👀 Watchlist ({watchlist.length}) — kịch bản phụ, chưa phải ưu tiên
+              </summary>
+              <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-1.5">
+                {watchlist.map((scenario) => (
+                  <WatchlistRow key={scenario.id} scenario={scenario} />
+                ))}
+              </div>
+            </details>
+          )}
         </>
       )}
 

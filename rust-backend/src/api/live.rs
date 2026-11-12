@@ -23,7 +23,7 @@ pub(super) async fn get_live_view(State(state): State<AppState>) -> impl IntoRes
 
 /// Shared read-only live-view builder used by `/api/live-view` and the scanner
 /// start/manual-Telegram handlers. No side effects.
-pub(super) async fn current_live_view(state: &AppState) -> Value {
+pub(crate) async fn current_live_view(state: &AppState) -> Value {
     let config = state.config.read().await.clone();
     let candles = state.candles.read().await.clone();
     let live_price = *state.live_price.read().await;
