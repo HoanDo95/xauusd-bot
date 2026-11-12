@@ -1,4 +1,5 @@
 use crate::ai_decision::AiDecision;
+use crate::api::EntryCheckResult;
 use crate::divergence_alerts::DivergenceAlert;
 use crate::models::{
     DailyMacroReport, EconomicEvent, EntryType, ImpactLevel, Signal, SignalStatus, SignalType,
@@ -927,6 +928,193 @@ impl TelegramNotifier {
         }
     }
 
+    /// Định dạng AI Entry Check thủ công.
+    ///
+    /// Đây là check theo yêu cầu: AI decision + entry plan tham khảo từ
+    /// candidate/scenario. KHÔNG phải trade signal, không quota, không auto-trade.
+    /// Mọi text động đều được escape HTML trước khi gửi.
+    pub fn format_entry_check(result: &EntryCheckResult) -> String {
+        let decision = &result.decision;
+        let symbol = result
+            .live_view
+            .get("signal")
+            .and_then(|signal| signal.get("symbol"))
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("XAU/USD");
+
+        let action = Self::escape_html(&truncate_chars(&decision.action, 16));
+        let confidence = if decision.confidence_score.is_finite() {
+            (decision.confidence_score * 100.0)
+                .round()
+                .clamp(0.0, 100.0) as u8
+        } else {
+            0
+        };
+        let selected = decision
+            .selected_scenario
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("NONE");
+        let reason = Self::escape_html(&truncate_chars(&decision.reason, 300));
+        let alignment = Self::escape_html(&truncate_chars(
+            decision
+                .macro_flow_alignment
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("UNKNOWN"),
+            24,
+        ));
+        let macro_flow = result.live_view.get("macroFlow");
+        let macro_bias = macro_flow
+            .and_then(|flow| flow.get("bias"))
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                result
+                    .scenarios
+                    .market
+                    .as_ref()
+                    .map(|market| market.macro_bias.clone())
+            })
+            .unwrap_or_else(|| "UNKNOWN".to_string());
+        let macro_confidence = macro_flow
+            .and_then(|flow| flow.get("confidence"))
+            .and_then(|value| value.as_u64())
+            .map(|value| value.min(100) as u8)
+            .or_else(|| {
+                result
+                    .scenarios
+                    .market
+                    .as_ref()
+                    .map(|market| market.macro_confidence)
+            })
+            .unwrap_or(0);
+
+        let mut macro_line = format!(
+            "Macro/Flow: {alignment} · bias {}",
+            Self::escape_html(&truncate_chars(&macro_bias, 40))
+        );
+        if macro_confidence > 0 {
+            macro_line.push_str(&format!(" · {macro_confidence}%"));
+        }
+        if let Some(note) = decision
+            .macro_flow_note
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            macro_line.push_str(&format!(
+                " — {}",
+                Self::escape_html(&truncate_chars(note, 200))
+            ));
+        }
+
+        let volume_source = result
+            .live_view
+            .get("volumeSource")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(&result.scenarios.volume_source);
+        let volume_line = if volume_source.trim().is_empty() {
+            "Volume: PAXG proxy".to_string()
+        } else {
+            format!(
+                "Volume: PAXG proxy · {}",
+                Self::escape_html(&truncate_chars(volume_source, 80))
+            )
+        };
+
+        let plan_block = match &result.entry_plan {
+            Some(plan) => {
+                let status = if plan.valid { "VALID" } else { "INVALID" };
+                let side = Self::escape_html(&truncate_chars(&plan.side, 16));
+                let source = Self::escape_html(&truncate_chars(&plan.source, 24));
+                let risk_reward = if plan.risk_reward.is_finite() {
+                    format!("1:{:.2}", plan.risk_reward)
+                } else {
+                    "—".to_string()
+                };
+                let mut block = format!(
+                    "Plan: {source} (reference) · {side} · {status}\n\
+                     Entry {} · SL {} · TP1 {} · TP2 {} · R:R {risk_reward}",
+                    format_level(Some(plan.entry)),
+                    format_level(Some(plan.stop_loss)),
+                    format_level(Some(plan.take_profit_1)),
+                    format_level(Some(plan.take_profit_2))
+                );
+                if !plan.note.trim().is_empty() {
+                    block.push_str(&format!(
+                        "\n⚠️ {}",
+                        Self::escape_html(&truncate_chars(&plan.note, 240))
+                    ));
+                }
+                block
+            }
+            None => {
+                "Plan: không có kế hoạch hợp lệ (AI không chọn candidate/scenario).".to_string()
+            }
+        };
+
+        format!(
+            "🧠 <b>AI ENTRY CHECK</b> — {}\n\
+             Action: <b>{action}</b> · confidence {confidence}%\n\
+             Selected scenario: {}\n\
+             Reason: {reason}\n\
+             {plan_block}\n\
+             {macro_line}\n\
+             {volume_line}\n\
+             Đây là check thủ công, KHÔNG phải trade signal tự động.",
+            Self::escape_html(&truncate_chars(symbol, 40)),
+            Self::escape_html(&truncate_chars(selected, 24))
+        )
+    }
+
+    /// Gửi AI Entry Check thủ công tới Telegram. Token/Chat trống = simulator
+    /// thành công. Không đụng quota, tín hiệu hay trạng thái giao dịch.
+    pub async fn send_entry_check(&self, result: &EntryCheckResult) -> Result<i64, String> {
+        if self.bot_token.is_empty() || self.chat_id.is_empty() {
+            info!("⚠️ [Telegram Simulator] AI entry check (chưa cấu hình token/chat)");
+            return Ok(1001);
+        }
+
+        let message_text = Self::format_entry_check(result);
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
+        let payload = json!({
+            "chat_id": self.chat_id,
+            "text": message_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true
+        });
+
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let body: serde_json::Value =
+                        resp.json().await.map_err(|e| e.without_url().to_string())?;
+                    let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
+                    info!(
+                        "✅ Đã gửi AI entry check tới Telegram! Message ID: {}",
+                        msg_id
+                    );
+                    Ok(msg_id)
+                } else {
+                    let err_text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Lỗi không xác định".into());
+                    error!("❌ Telegram AI entry check API lỗi: {}", err_text);
+                    Err(format!("Telegram API Error: {err_text}"))
+                }
+            }
+            Err(err) => {
+                let err = err.without_url();
+                error!("❌ Không thể gửi AI entry check tới Telegram: {}", err);
+                Err(format!("Network Error: {err}"))
+            }
+        }
+    }
+
     /// Gửi AI Market Brief (DECISION mode) tới Telegram. Token/Chat trống =
     /// simulator thành công. Không đụng quota, tín hiệu hay trạng thái giao dịch.
     pub async fn send_ai_market_brief(
@@ -1387,6 +1575,7 @@ fn truncate_chars(input: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::EntryPlan;
     use crate::models::{EconomicEvent, EntryType, MacroBias, SignalStatus, Timeframe, ZoneType};
     use crate::news_filter::ImpactLevel;
     use crate::scenarios::ScenarioMarket;
@@ -2009,6 +2198,96 @@ mod tests {
         assert!(message.contains("Macro/Flow: UNKNOWN — note &lt;unsafe&gt;"));
         assert!(!message.contains("<script>"));
         assert!(!message.contains("<unsafe>"));
+    }
+
+    fn sample_entry_check_result() -> EntryCheckResult {
+        EntryCheckResult {
+            decision: sample_ai_decision(),
+            live_view: sample_live_view(),
+            scenarios: sample_scenario_response(),
+            entry_plan: Some(EntryPlan {
+                side: "SELL".to_string(),
+                source: "PRIMARY".to_string(),
+                entry: 3960.0,
+                stop_loss: 3968.0,
+                take_profit_1: 3944.0,
+                take_profit_2: 3936.0,
+                risk_reward: 2.0,
+                valid: true,
+                note: "Kế hoạch tham khảo từ kịch bản PRIMARY.".to_string(),
+            }),
+            generated_at: "2026-11-12T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn format_entry_check_includes_decision_plan_and_disclaimer() {
+        let message = TelegramNotifier::format_entry_check(&sample_entry_check_result());
+
+        for expected in [
+            "🧠 <b>AI ENTRY CHECK</b> — XAU/USD",
+            "Action: <b>SELL</b> · confidence 78%",
+            "Selected scenario: PRIMARY",
+            "Reason: H4/H1 supply confluence + RSI overbought",
+            "Plan: PRIMARY (reference) · SELL · VALID",
+            "Entry 3960.00 · SL 3968.00 · TP1 3944.00 · TP2 3936.00 · R:R 1:2.00",
+            "Macro/Flow: ALIGNED · bias BEARISH · 95% — Real yield và DXY cùng hỗ trợ SELL.",
+            "Volume: PAXG proxy · BINANCE_PAXG_PROXY",
+            "Đây là check thủ công, KHÔNG phải trade signal tự động.",
+        ] {
+            assert!(
+                message.contains(expected),
+                "missing message text: {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_entry_check_escapes_dynamic_text() {
+        let mut result = sample_entry_check_result();
+        result.decision.reason = "risk <high> & <script>".to_string();
+        result.decision.selected_scenario = None;
+        result.live_view["signal"]["symbol"] = serde_json::json!("XAU<USD>&");
+        if let Some(plan) = result.entry_plan.as_mut() {
+            plan.note = "note <unsafe> & more".to_string();
+            plan.source = "PRIMARY<script>".to_string();
+        }
+
+        let message = TelegramNotifier::format_entry_check(&result);
+
+        assert!(message.contains("XAU&lt;USD&gt;&amp;"));
+        assert!(message.contains("Selected scenario: NONE"));
+        assert!(message.contains("Reason: risk &lt;high&gt; &amp; &lt;script&gt;"));
+        assert!(message.contains("Plan: PRIMARY&lt;script&gt; (reference)"));
+        assert!(message.contains("note &lt;unsafe&gt; &amp; more"));
+        assert!(!message.contains("<script>"));
+        assert!(!message.contains("<unsafe>"));
+    }
+
+    #[test]
+    fn format_entry_check_handles_missing_plan() {
+        let mut result = sample_entry_check_result();
+        result.entry_plan = None;
+
+        let message = TelegramNotifier::format_entry_check(&result);
+
+        assert!(message.contains("Plan: không có kế hoạch hợp lệ"));
+        assert!(!message.contains("Entry 3960.00"));
+        assert!(message.contains("Đây là check thủ công, KHÔNG phải trade signal tự động."));
+    }
+
+    #[test]
+    fn format_entry_check_marks_invalid_plan() {
+        let mut result = sample_entry_check_result();
+        if let Some(plan) = result.entry_plan.as_mut() {
+            plan.valid = false;
+            plan.note = "R:R dưới ngưỡng".to_string();
+        }
+
+        let message = TelegramNotifier::format_entry_check(&result);
+
+        assert!(message.contains("Plan: PRIMARY (reference) · SELL · INVALID"));
+        assert!(message.contains("⚠️ R:R dưới ngưỡng"));
     }
 
     #[test]

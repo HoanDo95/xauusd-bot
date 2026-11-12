@@ -333,6 +333,17 @@ in **Sniper & Risk Config**, not in env.
 - `POST /api/ai/review-signal` validates a signal manually without sending
   Telegram or consuming quota. `GET /api/health` exposes `aiReviewEnabled` and
   `aiReviewMode`.
+- `POST /api/ai/entry-check` (Telegram `/start-entry`) is an **on-demand** AI
+  entry check: it runs the same brief as Start, returns the AI action plus a
+  reference plan from the candidate/selected scenario (`CANDIDATE`, `PRIMARY`,
+  `ALTERNATE`, `WATCHLIST`), and validates levels with the same SL/TP ordering,
+  R:R and risk-budget rules. It never inserts/sends a trade signal, never sends
+  Telegram by itself, never consumes quota and never trades. Unsafe levels return
+  `valid=false` with the reason; AI STANDBY may still show the PRIMARY scenario
+  as a clearly-labelled reference. Success is HTTP 200
+  `{"status":"ok","result":{...}}`; unavailable/disabled is HTTP 503
+  `{"status":"unavailable","message":"..."}`. The command is admin-only and
+  rate-limited to one per 30 seconds per chat.
 
 RSI 70/30 is a context label, not an automatic reversal: `>=70` Overbought,
 `<=30` Oversold; divergence is a warning, not an entry.
@@ -431,7 +442,7 @@ docker compose logs -f api   # look for: TwelveData XAU/USD ... / Đã ghép vol
   Telegram and returns the same view to the dashboard; it never inserts a signal
   or consumes quota. `POST /api/scenarios/telegram` resends on demand.
 - Telegram commands are handled by a long-poll worker: `/start`, `/stop`,
-  `/view`, `/status`, `/help`. Authorize one admin chat in
+  `/view`, `/start-entry`, `/status`, `/help`. Authorize one admin chat in
   `rust-backend/.env`:
 
   ```bash
@@ -441,8 +452,11 @@ docker compose logs -f api   # look for: TwelveData XAU/USD ... / Đã ghép vol
   If unset, a numeric `TELEGRAM_CHAT_ID` is used. With neither configured, the
   bot replies with the sender's chat ID and the env line to add, without running
   the command. `/start` sends the scenario summary and does **not** consume
-  quota; `/stop` only pauses the scanner. Commands are rate-limited to one per
-  2 seconds per chat and old pending updates are drained on startup.
+  quota; `/stop` only pauses the scanner. `/start-entry` runs a manual AI entry
+  check (AI action + reference plan) and does **not** insert a signal, send an
+  automatic trade alert, consume quota or auto-trade. Commands are rate-limited
+  to one per 2 seconds per chat (`/start-entry`: one per 30 seconds), and old
+  pending updates are drained on startup.
 
 ## 16c. Action View
 

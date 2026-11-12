@@ -25,6 +25,7 @@ mod action;
 mod ai;
 mod config;
 mod divergence;
+mod entry_check;
 mod health;
 mod live;
 mod macro_flow;
@@ -41,6 +42,7 @@ use action::get_action_view;
 use ai::ai_review_signal;
 use config::{calculate_lot, get_config, update_config};
 use divergence::get_divergence_alerts;
+use entry_check::entry_check;
 use health::health_check;
 use live::get_live_view;
 use macro_flow::get_macro_flow;
@@ -55,7 +57,9 @@ use simulation::simulate_setup;
 use telegram::{send_signal_telegram, trigger_test_telegram};
 use webhooks::{receive_candle_webhook, receive_tradingview_webhook};
 
-// Shared by the Telegram command worker (`/start`, `/stop`, `/view`).
+// Shared by the Telegram command worker (`/start`, `/stop`, `/view`, `/start-entry`).
+pub(crate) use entry_check::run_entry_check;
+pub use entry_check::{EntryCheckResult, EntryPlan};
 pub(crate) use live::current_live_view;
 pub(crate) use scanner::{start_scanner_inner, stop_scanner_inner};
 pub(crate) use scenarios::current_scenarios;
@@ -176,6 +180,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/simulate-setup", post(simulate_setup))
         // Review thử tín hiệu bằng AI Risk Officer (không gửi Telegram, không tiêu hao quota)
         .route("/api/ai/review-signal", post(ai_review_signal))
+        // AI Entry Check thủ công: AI decision + entry plan tham khảo, không signal/quota/Telegram
+        .route("/api/ai/entry-check", post(entry_check))
         // Cảnh báo phân kỳ RSI độc lập (advisory, không phải entry, không tiêu hao quota)
         .route("/api/divergence-alerts", get(get_divergence_alerts))
         // Preview read-only: không gửi Telegram, không lưu tín hiệu, không tiêu hao quota

@@ -45,8 +45,10 @@ Telegram delivery, a trader dashboard, and **unlimited signals/day by default**
 - **Telegram alerts**: HTML format with entry, SL, TP1, TP2, R:R, lot size, volume
   rationale, and a risk warning.
 - **Telegram commands**: authorized admin chat can use `/start`, `/stop`, `/view`,
-  `/status`, `/help`; `/start` sends the reference scenario view without spending
-  quota. Set `TELEGRAM_ADMIN_CHAT_ID` (falls back to a numeric `TELEGRAM_CHAT_ID`).
+  `/start-entry`, `/status`, `/help`; `/start` sends the reference scenario view
+  without spending quota, and `/start-entry` runs a manual AI entry check (no
+  signal, no quota, no auto-trade). Set `TELEGRAM_ADMIN_CHAT_ID` (falls back to a
+  numeric `TELEGRAM_CHAT_ID`).
 - **Outcome alerts**: follow-up Telegram messages when TP1, TP2, or SL is hit.
 - **Dashboard**: dark trading UI, live candles, quota status, signal history,
   config, TradingView webhook sandbox.
@@ -208,6 +210,19 @@ on.
 Manual test endpoint: `POST /api/ai/review-signal` with
 `{"signal": {...}, "context": {...}}` (or a raw signal). It returns
 `{"status":"success","review":{...}}`, sends no Telegram and consumes no quota.
+
+**Manual AI Entry Check (`/start-entry` / `POST /api/ai/entry-check`).** This is
+an on-demand "what would the AI do right now?" check. It builds the same brief as
+Scanner Start, asks for one BUY/SELL/STANDBY decision, and returns a **reference**
+entry plan derived from the deterministic candidate or the selected scenario
+(`CANDIDATE` / `PRIMARY` / `ALTERNATE` / `WATCHLIST`). Levels are validated with
+the same SL/TP ordering, R:R and risk-budget checks as a live signal; an unsafe
+plan is returned with `valid=false` and the reason. It never inserts or sends a
+trade signal, never sends Telegram by itself, never consumes quota and never
+trades. AI STANDBY may still return the PRIMARY scenario as a clearly-labelled
+reference plan. The endpoint returns `{"status":"ok","result":{...}}` or HTTP 503
+`{"status":"unavailable","message":"..."}`. The Telegram command is admin-only
+and rate-limited to once per 30 seconds per chat.
 
 ### RSI context (Phase R1/R2)
 
@@ -453,11 +468,13 @@ and the env line to add; it does not execute the command.
 | `/start` | Enable the scanner, send the scenario summary, then reply. Does **not** consume quota or insert a signal. |
 | `/stop` | Pause the scanner. Open signals and quota are untouched. |
 | `/view` | Re-send the current live view + scenario summary. |
+| `/start-entry` | Manual AI entry check: AI action + reference plan. Admin-only, 30s cooldown, **no** signal/quota/auto-trade. |
 | `/status` | Compact status: scanner, data/volume source, feed age, macro, quota, divergence, AI review. |
 | `/help` | List commands. |
 
 Commands support a `@botname` suffix (for example `/status@MyGoldBot`), are
-rate-limited to one per 2 seconds per chat, and unknown commands return `/help`.
+rate-limited to one per 2 seconds per chat (except `/start-entry`, which is one
+per 30 seconds), and unknown commands return `/help`.
 The worker drains old pending updates on startup and advances the update offset
 for every update so commands are not replayed.
 
@@ -606,6 +623,7 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
 | `GET` | `/api/news-calendar` | ForexFactory events + kill switch |
 | `POST` | `/api/simulate-setup` | Simulated signal (never consumes live quota) |
 | `POST` | `/api/ai/review-signal` | Manual AI Risk Officer review (no Telegram, no quota) |
+| `POST` | `/api/ai/entry-check` | Manual AI decision + reference entry plan (no Telegram, no signal, no quota) |
 | `GET` | `/api/scenarios` | Four ranked reference scenarios (`PRIMARY`/`ALTERNATE`/`WATCHLIST`); no quota |
 | `GET` | `/api/live-view` | Read-only setup preview (Entry/SL/TP/R:R) or `no_setup`; no quota |
 | `GET` | `/api/action-view` | Read-only BUY/SELL/WAIT/NO_TRADE verdict + PRIMARY proximity + latest `aiDecision`; no quota |

@@ -8,6 +8,7 @@ import type {
   DailyMacroReport,
   DivergenceAlertsResponse,
   EconomicEvent,
+  EntryCheckResult,
   LiveViewResponse,
   MacroBias,
   MacroFlowResponse,
@@ -118,6 +119,16 @@ export interface HealthResponse {
 export interface AiReviewResponse {
   status: 'success' | 'disabled' | 'unavailable' | 'error';
   review?: AiSignalReview;
+  message?: string;
+}
+
+/**
+ * POST /api/ai/entry-check response. This is an on-demand check, not a trade
+ * signal: it never sends Telegram, inserts a signal, consumes quota or trades.
+ */
+export interface AiEntryCheckResponse {
+  status: 'ok' | 'unavailable';
+  result?: EntryCheckResult;
   message?: string;
 }
 
@@ -451,6 +462,34 @@ export function reviewSignal(
     method: 'POST',
     body: JSON.stringify(context ? { signal, context } : { signal }),
   });
+}
+
+/**
+ * POST /api/ai/entry-check — manual on-demand AI decision + reference entry plan.
+ * Never sends Telegram, inserts a signal, consumes quota or auto-trades. A 503
+ * response resolves to `status: 'unavailable'` so the card can show a compact
+ * error without throwing.
+ */
+export async function runAiEntryCheck(): Promise<AiEntryCheckResponse> {
+  try {
+    const res = await fetch('/api/ai/entry-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const payload = (await res.json().catch(() => ({}))) as Partial<AiEntryCheckResponse>;
+    if (!res.ok || payload.status !== 'ok' || !payload.result) {
+      return {
+        status: 'unavailable',
+        message: payload.message || `AI Entry Check không khả dụng (${res.status}).`,
+      };
+    }
+    return payload as AiEntryCheckResponse;
+  } catch {
+    return {
+      status: 'unavailable',
+      message: 'AI Entry Check chưa sẵn sàng từ backend.',
+    };
+  }
 }
 
 /** POST /api/calculate-lot — server-side position sizing. */

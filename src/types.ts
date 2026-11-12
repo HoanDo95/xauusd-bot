@@ -415,6 +415,34 @@ export interface AiDecision {
   model: string;
 }
 
+/**
+ * Reference entry plan from a manual AI Entry Check. Derived from the
+ * deterministic candidate or a scenario; never an inserted trade signal.
+ */
+export interface EntryPlan {
+  side: 'BUY' | 'SELL' | string;
+  source: 'CANDIDATE' | 'PRIMARY' | 'ALTERNATE' | 'WATCHLIST' | string;
+  entry: number;
+  stop_loss: number;
+  take_profit_1: number;
+  take_profit_2: number;
+  risk_reward: number;
+  valid: boolean;
+  note: string;
+}
+
+/**
+ * POST /api/ai/entry-check response. On-demand only: no Telegram send, no
+ * signal insertion/persistence, no quota consumption and no auto-trading.
+ */
+export interface EntryCheckResult {
+  decision: AiDecision;
+  live_view: LiveViewResponse;
+  scenarios: ScenarioResponse;
+  entry_plan: EntryPlan | null;
+  generated_at: string;
+}
+
 /** AI Chief Risk Officer review — veto-only, never live SL/TP. */
 export interface AiSignalReview {
   action: 'BUY' | 'SELL' | 'STANDBY' | string;

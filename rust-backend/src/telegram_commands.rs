@@ -1,11 +1,13 @@
-//! Telegram command worker: `/start`, `/stop`, `/view`, `/status`, `/help`.
+//! Telegram command worker: `/start`, `/stop`, `/view`, `/status`, `/start-entry`, `/help`.
 //!
 //! Commands are authorized to one admin chat (`TELEGRAM_ADMIN_CHAT_ID`, with
 //! `config.telegram_chat_id` as fallback). They only toggle `is_active` or send
-//! read-only scenario/status views — never quota, signals or trade state.
+//! read-only scenario/status/entry-check views — never quota, signals or trade
+//! state.
 
 use crate::api::{
-    current_live_view, current_scenarios, start_scanner_inner, stop_scanner_inner, AppState,
+    current_live_view, current_scenarios, run_entry_check, start_scanner_inner, stop_scanner_inner,
+    AppState,
 };
 use crate::storage::PersistentStore;
 use crate::telegram::TelegramNotifier;
@@ -18,10 +20,14 @@ const POLL_TIMEOUT_SECS: u64 = 25;
 const IDLE_SLEEP_SECS: u64 = 1;
 const ERROR_SLEEP_SECS: u64 = 5;
 const COMMAND_RATE_LIMIT: Duration = Duration::from_secs(2);
+/// AI Entry Check is expensive (one provider call), so it gets a longer
+/// per-chat cooldown than the cheap scanner/status commands.
+const ENTRY_CHECK_RATE_LIMIT: Duration = Duration::from_secs(30);
 const HELP_TEXT: &str = "🤖 <b>XAUUSD Bot commands</b>\n\
                          /start — Bật scanner + gửi scenario view\n\
                          /stop — Tạm dừng scanner\n\
                          /view — Gửi lại scenario view\n\
+                         /start-entry — AI entry check thủ công (không phải trade signal)\n\
                          /status — Trạng thái bot\n\
                          /help — Danh sách lệnh";
 
@@ -49,6 +55,7 @@ pub fn spawn_telegram_command_worker(state: AppState) {
             }
         };
         let mut last_command_at: HashMap<i64, Instant> = HashMap::new();
+        let mut last_entry_check_at: HashMap<i64, Instant> = HashMap::new();
 
         loop {
             let telegram = state.telegram.read().await.clone();
@@ -58,7 +65,14 @@ pub fn spawn_telegram_command_worker(state: AppState) {
                         if let Some(id) = update_id(&update) {
                             offset = offset.max(id.saturating_add(1));
                         }
-                        handle_update(&state, env_admin, &mut last_command_at, &update).await;
+                        handle_update(
+                            &state,
+                            env_admin,
+                            &mut last_command_at,
+                            &mut last_entry_check_at,
+                            &update,
+                        )
+                        .await;
                     }
                     tokio::time::sleep(Duration::from_secs(IDLE_SLEEP_SECS)).await;
                 }
@@ -75,6 +89,7 @@ async fn handle_update(
     state: &AppState,
     env_admin: Option<i64>,
     last_command_at: &mut HashMap<i64, Instant>,
+    last_entry_check_at: &mut HashMap<i64, Instant>,
     update: &serde_json::Value,
 ) {
     let Some(message) = update.get("message") else {
@@ -171,6 +186,39 @@ async fn handle_update(
                 warn!("⚠️ Telegram /status reply lỗi: {}", err);
             }
         }
+        "/start-entry" => {
+            if is_rate_limited_with(last_entry_check_at, chat_id, ENTRY_CHECK_RATE_LIMIT) {
+                info!(
+                    "⏳ Telegram /start-entry bị giới hạn 30s cho chat {}.",
+                    chat_id
+                );
+                return;
+            }
+            match run_entry_check(state).await {
+                Ok(result) => {
+                    if let Err(err) = notifier.send_entry_check(&result).await {
+                        warn!(
+                            "⚠️ Telegram /start-entry không gửi được entry check: {}",
+                            err
+                        );
+                        let _ = notifier
+                            .send_html_message("⚠️ Không gửi được AI Entry Check.")
+                            .await;
+                    }
+                }
+                Err(err) => {
+                    warn!("⚠️ Telegram /start-entry không khả dụng: {}", err);
+                    if let Err(send_err) = notifier
+                        .send_html_message(
+                            "⚠️ AI Entry Check không khả dụng. Kiểm tra AI Decision Mode/API key rồi thử lại.",
+                        )
+                        .await
+                    {
+                        warn!("⚠️ Telegram /start-entry reply lỗi: {}", send_err);
+                    }
+                }
+            }
+        }
         "/help" => {
             if let Err(err) = notifier.send_html_message(HELP_TEXT).await {
                 warn!("⚠️ Telegram /help reply lỗi: {}", err);
@@ -223,9 +271,17 @@ fn notifier_for_chat(bot_token: &str, chat_id: i64) -> TelegramNotifier {
 }
 
 fn is_rate_limited(last_command_at: &mut HashMap<i64, Instant>, chat_id: i64) -> bool {
+    is_rate_limited_with(last_command_at, chat_id, COMMAND_RATE_LIMIT)
+}
+
+fn is_rate_limited_with(
+    last_command_at: &mut HashMap<i64, Instant>,
+    chat_id: i64,
+    limit: Duration,
+) -> bool {
     let now = Instant::now();
     if let Some(last) = last_command_at.get(&chat_id) {
-        if now.saturating_duration_since(*last) < COMMAND_RATE_LIMIT {
+        if now.saturating_duration_since(*last) < limit {
             return true;
         }
     }
@@ -358,6 +414,10 @@ mod tests {
             parse_command("/status@GoldSignalBot extra"),
             Some("/status".to_string())
         );
+        assert_eq!(
+            parse_command("/start-entry@GoldSignalBot"),
+            Some("/start-entry".to_string())
+        );
         assert_eq!(parse_command("hello"), None);
         assert_eq!(parse_command("view"), None);
     }
@@ -385,6 +445,14 @@ mod tests {
         assert!(!is_rate_limited(&mut last, 42));
         assert!(is_rate_limited(&mut last, 42));
         assert!(!is_rate_limited(&mut last, 43));
+    }
+
+    #[test]
+    fn entry_check_uses_longer_rate_limit() {
+        let mut last = HashMap::new();
+        assert!(!is_rate_limited_with(&mut last, 42, ENTRY_CHECK_RATE_LIMIT));
+        assert!(is_rate_limited_with(&mut last, 42, ENTRY_CHECK_RATE_LIMIT));
+        assert!(ENTRY_CHECK_RATE_LIMIT >= Duration::from_secs(30));
     }
 
     #[test]
@@ -475,7 +543,14 @@ mod tests {
 
     #[test]
     fn help_text_lists_all_commands() {
-        for command in ["/start", "/stop", "/view", "/status", "/help"] {
+        for command in [
+            "/start",
+            "/stop",
+            "/view",
+            "/start-entry",
+            "/status",
+            "/help",
+        ] {
             assert!(
                 HELP_TEXT.contains(command),
                 "missing help command: {command}"

@@ -1,7 +1,8 @@
 'use client';
 
-import React from 'react';
-import { ActionVerdict, ActionViewResponse, AiDecision } from '../types';
+import React, { useState } from 'react';
+import { ActionVerdict, ActionViewResponse, AiDecision, EntryCheckResult } from '../types';
+import { runAiEntryCheck } from '../lib/api';
 
 interface Props {
   data: ActionViewResponse | null;
@@ -134,6 +135,23 @@ const Metric: React.FC<{
  * Telegram, inserts a signal, consumes quota or auto-trades for this endpoint.
  */
 export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
+  const [entryCheck, setEntryCheck] = useState<EntryCheckResult | null>(null);
+  const [entryCheckError, setEntryCheckError] = useState<string | null>(null);
+  const [entryCheckLoading, setEntryCheckLoading] = useState(false);
+
+  const handleEntryCheck = async () => {
+    setEntryCheckLoading(true);
+    setEntryCheckError(null);
+    const response = await runAiEntryCheck();
+    setEntryCheckLoading(false);
+    if (response.status === 'ok' && response.result) {
+      setEntryCheck(response.result);
+      return;
+    }
+    setEntryCheck(null);
+    setEntryCheckError(response.message || 'AI Entry Check không khả dụng.');
+  };
+
   if (!data) {
     return (
       <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-4 flex flex-col gap-2">
@@ -155,6 +173,14 @@ export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
   const aiAction = (ai?.action || '').toUpperCase();
   const aiDiffersFromVerdict =
     (aiAction === 'BUY' || aiAction === 'SELL') && aiAction !== data.verdict;
+  const entryCheckAction = (entryCheck?.decision.action || '').toUpperCase();
+  const entryCheckConfidence =
+    entryCheck && Number.isFinite(entryCheck.decision.confidence_score)
+      ? `${Math.round(
+          Math.min(1, Math.max(0, entryCheck.decision.confidence_score)) * 100
+        )}%`
+      : '—';
+  const entryPlan = entryCheck?.entry_plan ?? null;
   const proximity = (data.proximity || 'UNKNOWN').toUpperCase();
   const distanceLabel = price(data.distanceToTrigger);
   const distanceAtrLabel =
@@ -182,9 +208,19 @@ export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
             không lưu tín hiệu, không tiêu hao quota.
           </p>
         </div>
-        <span className="text-[10px] font-mono text-neutral-600">
-          {data.generated_at ? `Cập nhật ${timeLabel(data.generated_at)}` : 'Chưa có thời điểm'}
-        </span>
+        <div className="flex flex-col items-end gap-2">
+          <span className="text-[10px] font-mono text-neutral-600">
+            {data.generated_at ? `Cập nhật ${timeLabel(data.generated_at)}` : 'Chưa có thời điểm'}
+          </span>
+          <button
+            type="button"
+            onClick={handleEntryCheck}
+            disabled={entryCheckLoading}
+            className="px-2.5 py-1 rounded-md border border-indigo-500/40 bg-indigo-500/10 text-[10px] font-mono font-bold uppercase tracking-wider text-indigo-200 hover:bg-indigo-500/20 disabled:cursor-wait disabled:opacity-60 transition-colors"
+          >
+            {entryCheckLoading ? 'Đang check…' : 'AI Entry Check'}
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -237,6 +273,91 @@ export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
           <p className="text-[9px] text-neutral-500">
             AI là lớp quyết định chính; code vẫn giữ hard risk (SL/TP, R:R, risk budget, quota,
             session, news, dedup). Không auto-trade.
+          </p>
+        </div>
+      )}
+
+      {entryCheckError && (
+        <div className="rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-2 text-[11px] font-mono font-semibold text-rose-300">
+          ⚠️ {entryCheckError}
+        </div>
+      )}
+
+      {entryCheck && (
+        <div className="flex flex-col gap-2 rounded-lg border border-indigo-500/30 bg-indigo-500/5 px-3 py-2.5">
+          <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono">
+            <span
+              className={`px-2 py-0.5 rounded border font-bold ${aiActionTone(
+                entryCheckAction
+              )}`}
+            >
+              🧠 AI Entry Check: {entryCheckAction || 'UNKNOWN'} · {entryCheckConfidence}
+            </span>
+            {entryCheck.decision.selected_scenario && (
+              <span className="text-neutral-400">
+                Selected{' '}
+                <strong className="text-neutral-200">
+                  {entryCheck.decision.selected_scenario}
+                </strong>
+              </span>
+            )}
+            {entryPlan && (
+              <span
+                className={`px-1.5 py-0.5 rounded border text-[9px] font-bold ${
+                  entryPlan.valid
+                    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                    : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                }`}
+              >
+                Plan {entryPlan.source} · {entryPlan.valid ? 'VALID' : 'INVALID'}
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] text-neutral-300 leading-relaxed">
+            <span className="text-neutral-500">Reason:</span> {entryCheck.decision.reason}
+          </p>
+          {entryPlan ? (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 font-mono">
+                <Metric label="Entry" value={price(entryPlan.entry)} />
+                <Metric
+                  label="Stop Loss"
+                  value={price(entryPlan.stop_loss)}
+                  valueClass="text-rose-400"
+                />
+                <Metric
+                  label="TP1"
+                  value={price(entryPlan.take_profit_1)}
+                  valueClass="text-emerald-400"
+                />
+                <Metric
+                  label="TP2"
+                  value={price(entryPlan.take_profit_2)}
+                  valueClass="text-emerald-300"
+                />
+                <Metric
+                  label="R:R"
+                  value={
+                    Number.isFinite(entryPlan.risk_reward)
+                      ? `1:${entryPlan.risk_reward.toFixed(2)}`
+                      : '—'
+                  }
+                  valueClass="text-sky-300"
+                />
+                <Metric label="Side" value={entryPlan.side} />
+              </div>
+              <p className="text-[10px] text-neutral-400 leading-relaxed">
+                <span className="text-neutral-500">Note:</span> {entryPlan.note}
+              </p>
+            </>
+          ) : (
+            <p className="text-[10px] font-mono text-neutral-500">
+              AI không chọn candidate/scenario có level hợp lệ — không có entry plan tham khảo.
+            </p>
+          )}
+          <p className="text-[9px] text-neutral-500">
+            Check thủ công — không phải trade signal tự động; không gửi Telegram, không lưu tín
+            hiệu, không tiêu hao quota.
           </p>
         </div>
       )}
