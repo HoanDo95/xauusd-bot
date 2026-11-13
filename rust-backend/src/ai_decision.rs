@@ -399,6 +399,7 @@ pub(crate) fn build_decision_prompt(
         - For an early entry, approve the scenario and use its provided entry/SL/TP levels. The entry is a pending order at the scenario trigger, not a market chase.\n\
         - Anti-chase: if daily change <= {anti_chase_daily_change_pct:.2}% and (RSI H1 < {anti_chase_rsi_h1:.1} or M15 Bullish divergence), do not approve a bearish breakout/breakdown; prefer the pullback/rejection scenario or STANDBY. Mirror for bullish: daily change >= {anti_chase_bullish_change_pct:.2}% and (RSI H1 > {anti_chase_bullish_rsi_h1:.1} or M15 Bearish divergence).\n\
         - Confidence cap: a scenario may reach >=90% only when macro/D1/H4 agree, RSI H1 is 30-65, and there is no opposite M15 divergence. Otherwise treat the setup as 85/75/65 and do not claim 90%+.\n\
+        - Pullback confirmation exception: bearish_rejection with RSI M15 >=70 at resistance (mirror: bullish_bounce with RSI M15 <=30 at support) may reach >=90% even with an opposite M15 divergence when macro/D1-H4 and RSI H1 agree. This exception never applies to breakout/breakdown.\n\
         - Scenario confidence is a confluence/readiness score, not a win probability. Do not describe it as a probability of profit.\n\
         - If the candidate and scenarios disagree, prefer STANDBY unless one setup clearly has better structure and R:R.\n\
         - If data is missing, contradictory, or the setup is counter-macro without exceptional confluence, prefer STANDBY.\n\
@@ -883,6 +884,7 @@ mod tests {
         assert!(prompt.contains("pending order"));
         assert!(prompt.contains("Anti-chase"));
         assert!(prompt.contains("Confidence cap"));
+        assert!(prompt.contains("Pullback confirmation exception"));
         assert!(prompt.contains("Weight it below 10%"));
         assert!(prompt.contains("confluence/readiness score"));
         assert!(prompt.contains("\"selected_scenario\""));
