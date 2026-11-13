@@ -687,6 +687,7 @@ pub(super) async fn receive_tradingview_webhook(
         rsi_divergence: None,
         macro_flow_alignment: None,
         macro_flow_note: None,
+        cancel_reason: None,
     };
 
     // Bước 6a: Chặn tín hiệu sai cấu trúc hoặc vượt ngân sách rủi ro trước khi

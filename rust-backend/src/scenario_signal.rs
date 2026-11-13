@@ -185,6 +185,7 @@ pub fn signal_from_scenario(
             "Scenario {} · confidence {}% · entry tại trigger, chờ xác nhận",
             role, scenario.confidence
         )),
+        cancel_reason: None,
     })
 }
 

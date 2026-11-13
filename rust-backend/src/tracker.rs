@@ -82,6 +82,33 @@ pub fn evaluate_active_signals(signals: &mut [Signal], candles: &[Candle]) -> Ve
                 };
 
                 if filled_now {
+                    // Pullback Limit: nếu giá xuyên entry quá 0.5R mà nến
+                    // không đóng cửa từ chối, huỷ setup thay vì khớp vào đỉnh
+                    // overshoot (tránh gồng âm sát SL ngay lập tức).
+                    let risk = (signal.entry_price - signal.stop_loss).abs();
+                    let (overshoot, rejection_close) = match (signal.entry_type, signal.signal_type)
+                    {
+                        (EntryType::Limit, SignalType::Sell) => (
+                            candle.high - signal.entry_price,
+                            candle.close < signal.entry_price,
+                        ),
+                        (EntryType::Limit, SignalType::Buy) => (
+                            signal.entry_price - candle.low,
+                            candle.close > signal.entry_price,
+                        ),
+                        _ => (0.0, true),
+                    };
+                    if overshoot > risk * 0.5 && !rejection_close {
+                        status = SignalStatus::Cancelled;
+                        signal.cancel_reason = Some(format!(
+                            "Max overshoot: giá vượt entry {:.2} điểm > 0.5R ({:.2}) — huỷ setup, chờ vùng mới.",
+                            overshoot,
+                            risk * 0.5
+                        ));
+                        changed = true;
+                        break;
+                    }
+
                     filled = true;
                     signal.is_entry_filled = true;
                     changed = true;
@@ -92,6 +119,7 @@ pub fn evaluate_active_signals(signals: &mut [Signal], candles: &[Candle]) -> Ve
                 if idx + 1 >= MAX_FILL_CANDLES {
                     if status == SignalStatus::Active {
                         status = SignalStatus::Cancelled;
+                        signal.cancel_reason = Some("Hết 8 nến chờ khớp — huỷ setup.".to_string());
                         changed = true;
                     }
                     break;
@@ -328,6 +356,7 @@ mod tests {
             rsi_divergence: None,
             macro_flow_alignment: None,
             macro_flow_note: None,
+            cancel_reason: None,
         }
     }
 
@@ -417,6 +446,59 @@ mod tests {
         assert!(signals[0].is_entry_filled);
         assert_eq!(signals[0].status, SignalStatus::Target1Hit);
         assert_eq!(updates.len(), 1); // one final status update (fill + TP1 in same pass)
+    }
+
+    #[test]
+    fn limit_sell_cancels_on_max_overshoot_without_rejection_close() {
+        let mut signals = vec![signal(SignalType::Sell, 100.0, 110.0, 80.0, 70.0, 1)];
+        signals[0].entry_type = EntryType::Limit;
+        signals[0].is_entry_filled = false;
+
+        // High 106 = overshoot 6 > 0.5R (5); close 105 is not a rejection close.
+        let candles = vec![candle(2, 100.0, 106.0, 99.0, 105.0)];
+
+        evaluate_active_signals(&mut signals, &candles);
+
+        assert!(!signals[0].is_entry_filled);
+        assert_eq!(signals[0].status, SignalStatus::Cancelled);
+        assert!(signals[0]
+            .cancel_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("Max overshoot")));
+    }
+
+    #[test]
+    fn limit_sell_fills_when_candle_closes_back_below_entry() {
+        let mut signals = vec![signal(SignalType::Sell, 100.0, 110.0, 80.0, 70.0, 1)];
+        signals[0].entry_type = EntryType::Limit;
+        signals[0].is_entry_filled = false;
+
+        // High 106 overshoots, but close 99 rejects back below entry -> fill.
+        let candles = vec![candle(2, 100.0, 106.0, 99.0, 99.0)];
+
+        evaluate_active_signals(&mut signals, &candles);
+
+        assert!(signals[0].is_entry_filled);
+        assert_eq!(signals[0].status, SignalStatus::Active);
+    }
+
+    #[test]
+    fn limit_buy_cancels_on_max_overshoot_without_rejection_close() {
+        let mut signals = vec![signal(SignalType::Buy, 100.0, 90.0, 120.0, 130.0, 1)];
+        signals[0].entry_type = EntryType::Limit;
+        signals[0].is_entry_filled = false;
+
+        // Low 94 = overshoot 6 > 0.5R (5); close 95 is not a rejection close.
+        let candles = vec![candle(2, 100.0, 101.0, 94.0, 95.0)];
+
+        evaluate_active_signals(&mut signals, &candles);
+
+        assert!(!signals[0].is_entry_filled);
+        assert_eq!(signals[0].status, SignalStatus::Cancelled);
+        assert!(signals[0]
+            .cancel_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("Max overshoot")));
     }
 
     #[test]

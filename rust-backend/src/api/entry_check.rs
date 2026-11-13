@@ -16,7 +16,7 @@ use crate::models::{BotConfig, Signal, SignalType};
 use crate::risk_manager::PositionSizer;
 use crate::rsi::rsi_snapshot;
 use crate::scenario_signal::{best_early_entry_scenario, signal_from_scenario};
-use crate::scenarios::{Scenario, ScenarioResponse};
+use crate::scenarios::{scenario_triggered, Scenario, ScenarioResponse};
 use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
 use crate::volume_delta::compute_delta;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
@@ -357,7 +357,20 @@ pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult
     let plan_candidate = candidate
         .as_ref()
         .filter(|candidate| !candidate.dedup_key.contains("_SCENARIO_"));
-    let entry_plan = select_entry_plan(&decision, plan_candidate, &scenarios, &config);
+    let mut entry_plan = select_entry_plan(&decision, plan_candidate, &scenarios, &config);
+    if let (Some(plan), Some(candle)) = (entry_plan.as_mut(), candles.last()) {
+        if let Some(scenario) = scenarios
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.role.eq_ignore_ascii_case(&plan.source))
+        {
+            if scenario_triggered(scenario, candle) {
+                plan.early_entry = false;
+                plan.note
+                    .push_str(" · Trigger đã chạm — không còn là early entry, chờ vùng mới.");
+            }
+        }
+    }
 
     Ok(EntryCheckResult {
         decision,
@@ -462,6 +475,7 @@ mod tests {
             rsi_divergence: None,
             macro_flow_alignment: None,
             macro_flow_note: None,
+            cancel_reason: None,
         }
     }
 

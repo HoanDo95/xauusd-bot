@@ -1334,6 +1334,17 @@ impl TelegramNotifier {
             .outcome_at
             .map(|time| time.format("%Y-%m-%d %H:%M UTC").to_string())
             .unwrap_or_else(|| "vừa xong".to_string());
+        let cancel_line = signal
+            .cancel_reason
+            .as_deref()
+            .filter(|reason| !reason.trim().is_empty())
+            .map(|reason| {
+                format!(
+                    "📝 Lý do: {}\n",
+                    Self::escape_html(&truncate_chars(reason, 220))
+                )
+            })
+            .unwrap_or_default();
 
         format!(
             "{} <b>{} | {} {}</b>\n\
@@ -1342,6 +1353,7 @@ impl TelegramNotifier {
              💵 Entry: <code>${:.2}</code>\n\
              🎯 TP1: <code>${:.2}</code> | 🚀 TP2: <code>${:.2}</code> | 🛑 SL: <code>${:.2}</code>\n\
              📊 Kết quả: <b>{:+.2}R</b>\n\
+             {cancel_line}\
              ⏱ Thời điểm: {}\n\
              ━━━━━━━━━━━━━━━━━━━━━━\n\
              ⚠️ <i>Quản lý rủi ro kỷ luật. Đây không phải lời khuyên đầu tư.</i>",
@@ -1638,6 +1650,7 @@ mod tests {
             rsi_divergence: None,
             macro_flow_alignment: None,
             macro_flow_note: None,
+            cancel_reason: None,
         }
     }
 
@@ -1660,6 +1673,20 @@ mod tests {
         assert!(message.contains("TP1 HIT"));
         assert!(message.contains("+2.00R"));
         assert!(!message.contains("<script>"));
+    }
+
+    #[test]
+    fn format_outcome_message_includes_cancel_reason() {
+        let mut signal = sample_signal();
+        signal.status = SignalStatus::Cancelled;
+        signal.cancel_reason = Some("Max overshoot: giá vượt entry 21.00 điểm > 0.5R.".to_string());
+        signal.outcome_at = Some(Utc::now());
+
+        let message = TelegramNotifier::format_outcome_message(&signal);
+
+        assert!(message.contains("CANCELLED"));
+        assert!(message.contains("Max overshoot"));
+        assert!(message.contains("Lý do:"));
     }
 
     #[test]

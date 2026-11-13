@@ -243,6 +243,9 @@ pub struct Signal {
     /// Short Vietnamese macro/flow note (advisory only).
     #[serde(default)]
     pub macro_flow_note: Option<String>,
+    /// Lý do huỷ tín hiệu (max overshoot, hết nến chờ khớp, ...).
+    #[serde(default)]
+    pub cancel_reason: Option<String>,
 }
 
 fn default_entry_filled() -> bool {

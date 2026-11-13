@@ -207,6 +207,14 @@ every hard risk rule; the AI chooses the direction:
   swing high/low plus a structural buffer. If the structural SL is wider than
   the 45-point maximum risk, the scenario is invalid rather than tightened into
   the retest zone.
+- **Pullback max overshoot:** a `LIMIT` entry is cancelled instead of filled
+  when the fill candle overshoots entry by more than `0.5R` without closing back
+  through the level. The bot waits for a recalculated S/R zone rather than
+  entering at the top of a spike near the SL.
+- **Pullback confirmation:** `bearish_rejection` with RSI M15 `>=70` at
+  resistance (mirror: `bullish_bounce` with RSI M15 `<=30` at support) receives
+  a +10 confluence bonus and can reach `>=90` when macro/D1-H4 and RSI H1 are
+  healthy. This is confirmation of an exhausted pullback, not a breakout chase.
 - **PAXG volume is a weak proxy:** it is weighted below 10% in the AI brief and
   never used as the main reason for a signal. True XAU/USD tick volume requires
   a paid OANDA/FXCM/CME feed.

@@ -332,6 +332,12 @@ in **Sniper & Risk Config**, not in env.
 - **Structural SL:** breakout/breakdown SL is anchored beyond the recent M15
   swing high/low plus a buffer; if risk exceeds 45 points the scenario is
   invalid, not tightened into the retest zone.
+- **Pullback max overshoot:** a `LIMIT` fill is cancelled when the fill candle
+  overshoots entry by more than `0.5R` without a rejection close. The bot waits
+  for a recalculated S/R zone instead of filling near the SL.
+- **Pullback confirmation:** `bearish_rejection` with RSI M15 `>=70` at
+  resistance (mirror: `bullish_bounce` with RSI M15 `<=30` at support) gets a
+  +10 confluence bonus and can reach `>=90` when macro/D1-H4 and RSI H1 agree.
 - **PAXG volume:** weak proxy, weighted below 10%, never the main reason for a
   signal. True tick volume requires a paid OANDA/FXCM/CME feed.
 - **VETO_ONLY:** AI may only approve, contradict or return `STANDBY`.

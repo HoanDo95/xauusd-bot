@@ -469,6 +469,7 @@ impl GoldMarketAnalyzer {
                             rsi_divergence: None,
                             macro_flow_alignment: None,
                             macro_flow_note: None,
+                            cancel_reason: None,
                         });
                     }
                 }
@@ -638,6 +639,7 @@ impl GoldMarketAnalyzer {
                             rsi_divergence: None,
                             macro_flow_alignment: None,
                             macro_flow_note: None,
+                            cancel_reason: None,
                         });
                     }
                 }

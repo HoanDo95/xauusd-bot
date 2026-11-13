@@ -769,6 +769,7 @@ fn finalize_scenario(draft: ScenarioDraft, inputs: &ScenarioInputs<'_>) -> Scena
     }
 
     let confidence = scenario_confidence(
+        draft.id,
         draft.bias,
         draft.signal_type,
         entry,
@@ -997,7 +998,35 @@ fn apply_anti_chase_filter(scenarios: &mut [Scenario], inputs: &ScenarioInputs<'
     }
 }
 
+fn pullback_confirmation(
+    scenario_id: &str,
+    signal_type: SignalType,
+    inputs: &ScenarioInputs<'_>,
+) -> bool {
+    let rsi_h1_healthy = inputs
+        .rsi_h1
+        .is_some_and(|value| (30.0..=65.0).contains(&value));
+    if !rsi_h1_healthy {
+        return false;
+    }
+    match signal_type {
+        SignalType::Sell => {
+            scenario_id == "bearish_rejection"
+                && inputs
+                    .rsi_value
+                    .is_some_and(|value| value >= inputs.config.rsi_overbought)
+        }
+        SignalType::Buy => {
+            scenario_id == "bullish_bounce"
+                && inputs
+                    .rsi_value
+                    .is_some_and(|value| value <= inputs.config.rsi_oversold)
+        }
+    }
+}
+
 fn scenario_confidence(
+    scenario_id: &str,
     bias: &str,
     signal_type: SignalType,
     entry: Option<f64>,
@@ -1028,6 +1057,13 @@ fn scenario_confidence(
     if entry.is_some_and(|value| (inputs.price - value).abs() <= inputs.atr * 1.5) {
         score += 5;
     }
+    let pullback_confirmed = pullback_confirmation(scenario_id, signal_type, inputs);
+    if pullback_confirmed {
+        // RSI M15 overbought at resistance / oversold at support confirms the
+        // pullback exhaustion. This is a bonus, not a free pass: macro and
+        // RSI H1 health are still required below.
+        score += 10;
+    }
 
     match macro_alignment {
         "COUNTER" => score -= 15,
@@ -1054,17 +1090,19 @@ fn scenario_confidence(
     if !macro_aligned {
         cap = cap.min(85);
     }
-    if inputs.rsi_h1.is_some() && !rsi_h1_healthy {
-        cap = cap.min(85);
-    }
-    if rsi_h4_extreme {
-        cap = cap.min(85);
-    }
-    if opposite_divergence {
-        cap = cap.min(75);
-    }
-    if (inputs.rsi_h1.is_some() && !rsi_h1_healthy || rsi_h4_extreme) && opposite_divergence {
-        cap = cap.min(65);
+    if !pullback_confirmed {
+        if inputs.rsi_h1.is_some() && !rsi_h1_healthy {
+            cap = cap.min(85);
+        }
+        if rsi_h4_extreme {
+            cap = cap.min(85);
+        }
+        if opposite_divergence {
+            cap = cap.min(75);
+        }
+        if (inputs.rsi_h1.is_some() && !rsi_h1_healthy || rsi_h4_extreme) && opposite_divergence {
+            cap = cap.min(65);
+        }
     }
     score = score.min(cap);
 
@@ -1635,6 +1673,7 @@ mod tests {
         let config = config();
         let inputs = confidence_inputs(&config, 18.0, 50.0, RsiDivergence::Bullish, -2.8);
         let confidence = scenario_confidence(
+            "bearish_breakdown",
             "BEARISH",
             SignalType::Sell,
             Some(2680.0),
@@ -1650,6 +1689,7 @@ mod tests {
         let config = config();
         let inputs = confidence_inputs(&config, 45.0, 50.0, RsiDivergence::Bullish, 0.0);
         let confidence = scenario_confidence(
+            "bearish_breakdown",
             "BEARISH",
             SignalType::Sell,
             Some(2680.0),
@@ -1658,6 +1698,44 @@ mod tests {
             "ALIGNED",
         );
         assert!(confidence <= 75);
+    }
+
+    #[test]
+    fn rejection_at_overbought_rsi_gets_confirmation_bonus() {
+        let config = config();
+        let mut inputs = confidence_inputs(&config, 46.0, 24.0, RsiDivergence::Bullish, -1.8);
+        inputs.rsi_value = Some(71.5);
+
+        let confidence = scenario_confidence(
+            "bearish_rejection",
+            "BEARISH",
+            SignalType::Sell,
+            Some(2680.0),
+            Some(2.0),
+            &inputs,
+            "ALIGNED",
+        );
+
+        assert!(confidence >= 90);
+    }
+
+    #[test]
+    fn rejection_without_overbought_rsi_keeps_the_cap() {
+        let config = config();
+        let mut inputs = confidence_inputs(&config, 46.0, 24.0, RsiDivergence::Bullish, -1.8);
+        inputs.rsi_value = Some(60.0);
+
+        let confidence = scenario_confidence(
+            "bearish_rejection",
+            "BEARISH",
+            SignalType::Sell,
+            Some(2680.0),
+            Some(2.0),
+            &inputs,
+            "ALIGNED",
+        );
+
+        assert!(confidence <= 65);
     }
 
     #[test]
