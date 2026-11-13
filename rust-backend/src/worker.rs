@@ -7,7 +7,7 @@ use crate::api::{attach_macro_flow_alignment, persist_state, AppState};
 use crate::market_context::{
     build_market_context, htf_allows_signal, shift_candles_prices, MarketContext,
 };
-use crate::market_feed::{MarketDataFeed, MarketFeedSnapshot};
+use crate::market_feed::{MarketDataFeed, MarketFeedSnapshot, VOLUME_SOURCE_OANDA_TICK};
 use crate::models::{BotConfig, Candle, Signal, Timeframe};
 use crate::news_filter::ImpactLevel;
 use crate::risk_manager::PositionSizer;
@@ -95,6 +95,7 @@ pub async fn apply_spot_basis(
 pub fn normalize_data_source(config: &mut BotConfig) {
     config.data_source = match config.data_source.trim().to_uppercase().as_str() {
         "TWELVEDATA" => "TWELVEDATA",
+        "OANDA" => "OANDA",
         _ => "BINANCE_PAXG",
     }
     .to_string();
@@ -133,7 +134,6 @@ pub async fn fetch_market_context(
     spot_basis: Option<f64>,
     broker_price_offset: f64,
 ) -> Option<(MarketContext, Vec<Candle>, Vec<Candle>)> {
-    let use_twelve = data_source.trim().eq_ignore_ascii_case("TWELVEDATA");
     let ((mut h4, h4_source), (mut d1, d1_source), (mut h1, h1_source)) = tokio::join!(
         market_feed.fetch_htf_candles_with_source(Timeframe::H4, 300, data_source),
         market_feed.fetch_daily_htf_candles_with_source(300, data_source),
@@ -143,10 +143,10 @@ pub async fn fetch_market_context(
     // TwelveData đã là giá XAU/USD spot nên chỉ cộng broker offset thủ công;
     // Binance vẫn dùng spot basis (nếu có) như trước.
     let binance_shift = htf_shift_amount(spot_basis, broker_price_offset);
-    let twelve_shift = broker_price_offset;
+    let spot_shift = broker_price_offset;
     let shift_for = |source_label: &str| {
-        if source_label.starts_with("TWELVEDATA") {
-            twelve_shift
+        if source_label.starts_with("TWELVEDATA") || source_label.starts_with("OANDA") {
+            spot_shift
         } else {
             binance_shift
         }
@@ -173,17 +173,24 @@ pub async fn fetch_market_context(
         warn!("⚠️ [HTF Context] Không có nến H1, panel H1 sẽ trống.");
     }
 
-    let twelve_context = use_twelve && h4_source.starts_with("TWELVEDATA");
+    let twelve_context = h4_source.starts_with("TWELVEDATA");
+    let oanda_context = h4_source.starts_with("OANDA");
     let volume_proxy_matched = twelve_context
         && [&h4_source, &d1_source, &h1_source]
             .iter()
             .any(|source| source.contains("+PAXG_VOLUME"));
-    let price_source = if twelve_context {
+    let price_source = if oanda_context {
+        h4_source.clone()
+    } else if twelve_context {
         twelve_htf_price_source(volume_proxy_matched).to_string()
     } else {
         htf_price_source(spot_basis)
     };
-    let context_spot_basis = if twelve_context { None } else { spot_basis };
+    let context_spot_basis = if twelve_context || oanda_context {
+        None
+    } else {
+        spot_basis
+    };
 
     Some((
         build_market_context(&d1, &h4, &h1, &price_source, context_spot_basis),
@@ -434,6 +441,7 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
             // Ở DECISION mode, soft filters (volume/macro bias) được nới lỏng để
             // AI có thể review candidate; hard risk vẫn do code kiểm tra.
             let live_price = *state.live_price.read().await;
+            let active_volume_source = state.active_volume_source.read().await.clone();
             let decision_mode = ai_decision_enabled(&config);
             let candidate_config = if decision_mode {
                 relaxed_candidate_config(&config)
@@ -479,7 +487,6 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     let events = state.news_filter.read().await.calendar_events.clone();
                     let macro_flow = state.macro_flow.read().await.clone();
                     let active_data_source = state.active_data_source.read().await.clone();
-                    let active_volume_source = state.active_volume_source.read().await.clone();
                     let delta = compute_delta(&candles, config.volume_delta_lookback);
                     let scenarios = build_scenarios(
                         &candles,
@@ -495,13 +502,19 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     // Macro/flow alignment is advisory context for the AI and UI.
                     attach_macro_flow_alignment(&mut signal, macro_flow.as_ref());
 
+                    let delta_for_ai =
+                        if active_volume_source.eq_ignore_ascii_case(VOLUME_SOURCE_OANDA_TICK) {
+                            None
+                        } else {
+                            Some(&delta)
+                        };
                     let decision = review_market_decision(
                         Some(&signal),
                         context.as_ref(),
                         macro_flow.as_ref(),
                         Some(&scenarios),
                         Some(&rsi),
-                        Some(&delta),
+                        delta_for_ai,
                         &events,
                         &config,
                     )
@@ -525,9 +538,11 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     if decision.macro_flow_note.is_some() {
                         signal.macro_flow_note = decision.macro_flow_note.clone();
                     }
-                    signal.delta_ratio = Some(delta.delta_ratio);
-                    signal.cvd = Some(delta.cvd);
-                    signal.delta = Some(delta.delta);
+                    if !active_volume_source.eq_ignore_ascii_case(VOLUME_SOURCE_OANDA_TICK) {
+                        signal.delta_ratio = Some(delta.delta_ratio);
+                        signal.cvd = Some(delta.cvd);
+                        signal.delta = Some(delta.delta);
+                    }
 
                     let (blocked, reason) = decision_blocks_or_approves(
                         &signal,
@@ -607,19 +622,25 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     // 6.7c Volume Delta/CVD tùy chọn (mặc định OFF).
                     // Chỉ áp dụng cho tín hiệu thật; simulation bỏ qua hoàn toàn.
                     if config.volume_delta_filter_enabled && !signal.is_simulated {
-                        let (allowed, reason, snapshot) =
-                            delta_allows_signal(signal.signal_type.as_str(), &candles, &config);
-                        if !allowed {
+                        if active_volume_source.eq_ignore_ascii_case(VOLUME_SOURCE_OANDA_TICK) {
                             warn!(
-                                "🛑 [Volume Delta] Bỏ qua {} {}: {}",
-                                signal.signal_type, signal.symbol, reason
+                                "⚠️ [Volume Delta] OANDA tick volume không có buy/sell delta — bỏ qua filter."
                             );
-                            continue;
+                        } else {
+                            let (allowed, reason, snapshot) =
+                                delta_allows_signal(signal.signal_type.as_str(), &candles, &config);
+                            if !allowed {
+                                warn!(
+                                    "🛑 [Volume Delta] Bỏ qua {} {}: {}",
+                                    signal.signal_type, signal.symbol, reason
+                                );
+                                continue;
+                            }
+                            signal.delta_ratio = Some(snapshot.delta_ratio);
+                            signal.cvd = Some(snapshot.cvd);
+                            signal.delta = Some(snapshot.delta);
+                            info!("📊 [Volume Delta] {} — {}", signal.id, reason);
                         }
-                        signal.delta_ratio = Some(snapshot.delta_ratio);
-                        signal.cvd = Some(snapshot.cvd);
-                        signal.delta = Some(snapshot.delta);
-                        info!("📊 [Volume Delta] {} — {}", signal.id, reason);
                     }
 
                     // 6.7d RSI filter tùy chọn (mặc định OFF).
@@ -983,6 +1004,13 @@ mod tests {
         let mut already_binance = BotConfig::default();
         normalize_data_source(&mut already_binance);
         assert_eq!(already_binance.data_source, "BINANCE_PAXG");
+
+        let mut oanda = BotConfig {
+            data_source: " oanda ".to_string(),
+            ..BotConfig::default()
+        };
+        normalize_data_source(&mut oanda);
+        assert_eq!(oanda.data_source, "OANDA");
 
         let mut unknown = BotConfig {
             data_source: "garbage".to_string(),

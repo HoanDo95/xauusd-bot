@@ -10,7 +10,9 @@ use tracing::{info, warn};
 /// Nhãn nguồn volume ổn định cho dashboard/health.
 pub const VOLUME_SOURCE_BINANCE_PAXG: &str = "BINANCE_PAXG";
 pub const VOLUME_SOURCE_BINANCE_PAXG_PROXY: &str = "BINANCE_PAXG_PROXY";
+pub const VOLUME_SOURCE_OANDA_TICK: &str = "OANDA_TICK";
 pub const VOLUME_SOURCE_NONE: &str = "NONE";
+pub const SOURCE_OANDA_XAUUSD: &str = "OANDA_XAUUSD";
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
@@ -47,6 +49,9 @@ pub struct MarketDataFeed {
     client: Client,
     twelve_data_api_key: Option<String>,
     twelve_cache: Arc<tokio::sync::Mutex<HashMap<String, (Instant, MarketFeedSnapshot)>>>,
+    oanda_api_token: Option<String>,
+    oanda_base_url: String,
+    oanda_cache: Arc<tokio::sync::Mutex<HashMap<String, (Instant, MarketFeedSnapshot)>>>,
 }
 
 impl MarketDataFeed {
@@ -60,11 +65,28 @@ impl MarketDataFeed {
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
+        let oanda_api_token = std::env::var("OANDA_API_TOKEN")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let oanda_base_url = match std::env::var("OANDA_ENV")
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase()
+            .as_str()
+        {
+            "live" | "trade" => "https://api-fxtrade.oanda.com",
+            _ => "https://api-fxpractice.oanda.com",
+        }
+        .to_string();
 
         Self {
             client,
             twelve_data_api_key,
             twelve_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            oanda_api_token,
+            oanda_base_url,
+            oanda_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -77,6 +99,36 @@ impl MarketDataFeed {
 
     pub fn has_twelve_data_key(&self) -> bool {
         self.twelve_data_api_key.is_some()
+    }
+
+    pub fn has_oanda_token(&self) -> bool {
+        self.oanda_api_token.is_some()
+    }
+
+    /// Test/runtime override for the OANDA token.
+    pub fn with_oanda_token(mut self, token: impl Into<String>) -> Self {
+        let value = token.into().trim().to_string();
+        self.oanda_api_token = if value.is_empty() { None } else { Some(value) };
+        self
+    }
+
+    async fn cached_oanda_snapshot(&self, label: &str) -> Option<MarketFeedSnapshot> {
+        let cache = self.oanda_cache.lock().await;
+        cache.get(label).and_then(|(fetched_at, snapshot)| {
+            if fetched_at.elapsed() < twelve_cache_ttl(label) && !snapshot.candles.is_empty() {
+                Some(snapshot.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    async fn store_oanda_snapshot(&self, label: &str, snapshot: &MarketFeedSnapshot) {
+        if snapshot.candles.is_empty() {
+            return;
+        }
+        let mut cache = self.oanda_cache.lock().await;
+        cache.insert(label.to_string(), (Instant::now(), snapshot.clone()));
     }
 
     async fn cached_twelve_snapshot(&self, label: &str) -> Option<MarketFeedSnapshot> {
@@ -182,7 +234,9 @@ impl MarketDataFeed {
         timeframe: Timeframe,
         limit: usize,
     ) -> Vec<Candle> {
-        let preferred = if self.twelve_data_api_key.is_some() {
+        let preferred = if self.oanda_api_token.is_some() {
+            "OANDA"
+        } else if self.twelve_data_api_key.is_some() {
             "TWELVEDATA"
         } else {
             "BINANCE_PAXG"
@@ -208,7 +262,18 @@ impl MarketDataFeed {
         limit: usize,
         source: &str,
     ) -> (Vec<Candle>, String) {
-        let use_twelve = source.trim().eq_ignore_ascii_case("TWELVEDATA");
+        let use_oanda = source.trim().eq_ignore_ascii_case("OANDA");
+        if use_oanda && self.oanda_api_token.is_some() {
+            if let Some(snapshot) = self.fetch_oanda_snapshot(timeframe, limit).await {
+                return (snapshot.candles, SOURCE_OANDA_XAUUSD.to_string());
+            }
+            warn!(
+                "⚠️ OANDA HTF {} không khả dụng, fallback sang nguồn khác.",
+                timeframe
+            );
+        }
+        let use_twelve = source.trim().eq_ignore_ascii_case("TWELVEDATA")
+            || (use_oanda && self.has_twelve_data_key());
         if use_twelve && self.has_twelve_data_key() {
             let (twelve, binance) = tokio::join!(
                 self.fetch_twelve_snapshot(timeframe, limit),
@@ -251,7 +316,15 @@ impl MarketDataFeed {
         limit: usize,
         source: &str,
     ) -> (Vec<Candle>, String) {
-        let use_twelve = source.trim().eq_ignore_ascii_case("TWELVEDATA");
+        let use_oanda = source.trim().eq_ignore_ascii_case("OANDA");
+        if use_oanda && self.oanda_api_token.is_some() {
+            if let Some(snapshot) = self.fetch_oanda_daily_snapshot(limit).await {
+                return (snapshot.candles, SOURCE_OANDA_XAUUSD.to_string());
+            }
+            warn!("⚠️ OANDA D1 không khả dụng, fallback sang nguồn khác.");
+        }
+        let use_twelve = source.trim().eq_ignore_ascii_case("TWELVEDATA")
+            || (use_oanda && self.has_twelve_data_key());
         if use_twelve && self.has_twelve_data_key() {
             let (twelve, binance) = tokio::join!(
                 self.fetch_twelve_daily_snapshot(limit),
@@ -373,8 +446,23 @@ impl MarketDataFeed {
         broker_price_offset: f64,
     ) -> MarketFeedSnapshot {
         let limit = limit.max(5);
-        let prefer_twelve = preferred_source.trim().eq_ignore_ascii_case("TWELVEDATA");
+        let preferred = preferred_source.trim().to_uppercase();
+        let prefer_oanda = preferred == "OANDA";
+        let mut prefer_twelve = preferred == "TWELVEDATA";
         let has_twelve = self.twelve_data_api_key.is_some();
+
+        if prefer_oanda {
+            if self.oanda_api_token.is_some() {
+                if let Some(mut oanda) = self.fetch_oanda_snapshot(timeframe, limit).await {
+                    Self::apply_broker_offset(&mut oanda, broker_price_offset);
+                    return oanda;
+                }
+                warn!("⚠️ OANDA không khả dụng, fallback sang nguồn khác.");
+            } else {
+                warn!("⚠️ OANDA chưa có OANDA_API_TOKEN, fallback sang nguồn khác.");
+            }
+            prefer_twelve = has_twelve;
+        }
 
         let mut snapshot = if prefer_twelve && has_twelve {
             // TwelveData chỉ có OHLC; lấy Binance song song để làm volume proxy.
@@ -503,6 +591,123 @@ impl MarketDataFeed {
                 None
             }
         }
+    }
+
+    async fn fetch_oanda_snapshot(
+        &self,
+        timeframe: Timeframe,
+        limit: usize,
+    ) -> Option<MarketFeedSnapshot> {
+        let token = self.oanda_api_token.as_deref()?;
+        let cache_label = twelve_cache_label(timeframe);
+        if let Some(cached) = self.cached_oanda_snapshot(cache_label).await {
+            return Some(cached);
+        }
+
+        match self
+            .fetch_oanda_data(
+                oanda_granularity(timeframe),
+                timeframe,
+                timeframe_millis(timeframe),
+                limit,
+                token,
+            )
+            .await
+        {
+            Ok(snapshot) if !snapshot.candles.is_empty() => {
+                self.store_oanda_snapshot(cache_label, &snapshot).await;
+                Some(snapshot)
+            }
+            Ok(_) => {
+                warn!("⚠️ OANDA trả về rỗng.");
+                None
+            }
+            Err(err) => {
+                warn!("⚠️ OANDA lỗi ({}).", err);
+                None
+            }
+        }
+    }
+
+    async fn fetch_oanda_daily_snapshot(&self, limit: usize) -> Option<MarketFeedSnapshot> {
+        let token = self.oanda_api_token.as_deref()?;
+        let cache_label = "D1";
+        if let Some(cached) = self.cached_oanda_snapshot(cache_label).await {
+            return Some(cached);
+        }
+
+        match self
+            .fetch_oanda_data("D", Timeframe::H4, DAY_MS, limit, token)
+            .await
+        {
+            Ok(snapshot) if !snapshot.candles.is_empty() => {
+                self.store_oanda_snapshot(cache_label, &snapshot).await;
+                Some(snapshot)
+            }
+            Ok(_) => {
+                warn!("⚠️ OANDA D1 trả về rỗng.");
+                None
+            }
+            Err(err) => {
+                warn!("⚠️ OANDA D1 lỗi ({}).", err);
+                None
+            }
+        }
+    }
+
+    async fn fetch_oanda_data(
+        &self,
+        granularity: &str,
+        timeframe_tag: Timeframe,
+        step_ms: i64,
+        limit: usize,
+        token: &str,
+    ) -> Result<MarketFeedSnapshot, String> {
+        let url = format!(
+            "{}/v3/instruments/XAU_USD/candles?granularity={}&count={}&price=M&order=A",
+            self.oanda_base_url,
+            granularity,
+            limit + 1
+        );
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| format!("OANDA request error: {}", e.without_url()))?;
+
+        if !response.status().is_success() {
+            return Err(format!("OANDA HTTP {}", response.status()));
+        }
+
+        let payload: Value = response
+            .json()
+            .await
+            .map_err(|e| format!("OANDA JSON parse error: {}", e.without_url()))?;
+        if let Some(message) = payload.get("errorMessage").and_then(|value| value.as_str()) {
+            return Err(format!("OANDA API error: {}", message));
+        }
+
+        let (candles, live_price) = Self::parse_oanda_candles_with_now(
+            &payload,
+            timeframe_tag,
+            step_ms,
+            Utc::now().timestamp_millis(),
+            limit,
+        );
+        info!(
+            "📡 [MarketFeed] OANDA XAU/USD granularity={}: {} nến đã đóng cửa, live={:?}.",
+            granularity,
+            candles.len(),
+            live_price
+        );
+        Ok(MarketFeedSnapshot {
+            candles,
+            source: SOURCE_OANDA_XAUUSD.to_string(),
+            live_price,
+            volume_source: VOLUME_SOURCE_OANDA_TICK.to_string(),
+        })
     }
 
     /// Cộng offset broker vào toàn bộ OHLC của nến đã đóng và giá live, làm tròn 2 chữ số.
@@ -764,6 +969,79 @@ impl MarketDataFeed {
     }
 
     /// Parser dùng chung cho intraday và D1 (`step_ms` = 24 giờ).
+    /// Parse OANDA v3 candles. `complete=true` candles become closed candles;
+    /// the incomplete candle's mid close is returned as live price. OANDA only
+    /// exposes tick volume, so `taker_buy_volume` is always 0.
+    pub(crate) fn parse_oanda_candles_with_now(
+        payload: &Value,
+        timeframe: Timeframe,
+        step_ms: i64,
+        now_ms: i64,
+        limit: usize,
+    ) -> (Vec<Candle>, Option<f64>) {
+        let Some(rows) = payload.get("candles").and_then(|value| value.as_array()) else {
+            return (Vec::new(), None);
+        };
+
+        let mut candles = Vec::new();
+        let mut live_price = None;
+        for row in rows {
+            let Some(mid) = row.get("mid") else {
+                continue;
+            };
+            let (Some(open), Some(high), Some(low), Some(close)) = (
+                mid.get("o").and_then(value_to_f64),
+                mid.get("h").and_then(value_to_f64),
+                mid.get("l").and_then(value_to_f64),
+                mid.get("c").and_then(value_to_f64),
+            ) else {
+                continue;
+            };
+            let Some(time) = row
+                .get("time")
+                .and_then(|value| value.as_str())
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.timestamp_millis())
+            else {
+                continue;
+            };
+
+            let complete = row
+                .get("complete")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            if !complete {
+                live_price = Some(round2(close));
+                continue;
+            }
+            // Defensive: ignore a candle whose close time is still in the future.
+            if time.saturating_add(step_ms) > now_ms {
+                continue;
+            }
+            let volume = row
+                .get("volume")
+                .and_then(value_to_f64)
+                .unwrap_or(0.0)
+                .max(0.0);
+            candles.push(Candle {
+                timestamp: time,
+                open: round2(open),
+                high: round2(high),
+                low: round2(low),
+                close: round2(close),
+                volume,
+                taker_buy_volume: 0.0,
+                timeframe,
+            });
+        }
+
+        candles.sort_by_key(|candle| candle.timestamp);
+        if candles.len() > limit {
+            candles = candles.split_off(candles.len() - limit);
+        }
+        (candles, live_price)
+    }
+
     pub(crate) fn parse_twelve_data_snapshot_with_step(
         payload: &Value,
         timeframe: Timeframe,
@@ -907,6 +1185,14 @@ fn twelve_interval(timeframe: Timeframe) -> &'static str {
         Timeframe::M15 => "15min",
         Timeframe::H1 => "1h",
         Timeframe::H4 => "4h",
+    }
+}
+
+fn oanda_granularity(timeframe: Timeframe) -> &'static str {
+    match timeframe {
+        Timeframe::M15 => "M15",
+        Timeframe::H1 => "H1",
+        Timeframe::H4 => "H4",
     }
 }
 
@@ -1489,7 +1775,49 @@ mod tests {
     fn test_volume_source_labels_match_dashboard_contract() {
         assert_eq!(VOLUME_SOURCE_BINANCE_PAXG, "BINANCE_PAXG");
         assert_eq!(VOLUME_SOURCE_BINANCE_PAXG_PROXY, "BINANCE_PAXG_PROXY");
+        assert_eq!(VOLUME_SOURCE_OANDA_TICK, "OANDA_TICK");
         assert_eq!(VOLUME_SOURCE_NONE, "NONE");
+        assert_eq!(SOURCE_OANDA_XAUUSD, "OANDA_XAUUSD");
+    }
+
+    #[test]
+    fn test_oanda_candles_parse_closed_volume_and_live_price() {
+        let payload = json!({
+            "candles": [
+                {
+                    "complete": true,
+                    "volume": 1234,
+                    "time": "2026-11-13T03:30:00.000000000Z",
+                    "mid": {"o": "3900.0", "h": "3910.0", "l": "3895.0", "c": "3905.0"}
+                },
+                {
+                    "complete": false,
+                    "volume": 100,
+                    "time": "2026-11-13T03:45:00.000000000Z",
+                    "mid": {"o": "3905.0", "h": "3915.0", "l": "3900.0", "c": "3912.0"}
+                }
+            ]
+        });
+        let now_ms = DateTime::parse_from_rfc3339("2026-11-13T03:50:00Z")
+            .expect("timestamp")
+            .timestamp_millis();
+
+        let (candles, live_price) = MarketDataFeed::parse_oanda_candles_with_now(
+            &payload,
+            Timeframe::M15,
+            15 * 60 * 1000,
+            now_ms,
+            300,
+        );
+
+        assert_eq!(candles.len(), 1);
+        assert_eq!(candles[0].volume, 1234.0);
+        assert_eq!(candles[0].taker_buy_volume, 0.0);
+        let expected_timestamp = DateTime::parse_from_rfc3339("2026-11-13T03:30:00Z")
+            .expect("timestamp")
+            .timestamp_millis();
+        assert_eq!(candles[0].timestamp, expected_timestamp);
+        assert_eq!(live_price, Some(3912.0));
     }
 
     #[test]

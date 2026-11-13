@@ -80,6 +80,7 @@ Telegram delivery, a trader dashboard, and **unlimited signals/day by default**
 |---|---|---|
 | Gold OHLCV + volume (default) | Binance `PAXGUSDT` public API | none |
 | Gold OHLC + volume proxy | TwelveData `time_series` XAU/USD + Binance `PAXGUSDT` volume | optional `TWELVEDATA_API_KEY` |
+| Gold OHLC + tick volume | OANDA v20 `XAU_USD` candles (`volume` = tick volume) | optional `OANDA_API_TOKEN` |
 | Spot `XAU/USD` reference (basis only) | TwelveData free `/price`, fallback `gold-api.com` | optional |
 | US high-impact calendar | ForexFactory public JSON | none |
 | Trend | EMA50/200 computed locally | none |
@@ -122,6 +123,15 @@ turn `use_auto_spot_basis` off to use only the manual offset. If both spot
 providers fail, the engine keeps Binance PAXG candles with the manual offset
 and reports `spotBasis: null`. Defaults remain `data_source = "BINANCE_PAXG"`
 and `volume_filter_enabled = true`.
+
+In `OANDA` mode, OHLC and volume come from the OANDA v20 `XAU_USD` candles
+(`granularity=M15/H1/H4/D`, `price=M`, `order=A`). OANDA exposes **tick
+volume**, not consolidated real volume, and has no taker buy/sell split, so
+`volumeSource = "OANDA_TICK"` and delta/CVD is disabled; the AI uses it only as
+relative volume/surge context. Responses are cached per timeframe (M15 300s,
+H1/H4 900s, D1 3600s). Set `OANDA_API_TOKEN` and `OANDA_ENV=practice` (default)
+or `live`. If OANDA is unavailable, the feed falls back to TwelveData when its
+key exists, then Binance PAXG.
 
 ### Optional AI macro report
 

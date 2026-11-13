@@ -225,6 +225,11 @@ fn format_rsi_block(rsi: Option<&RsiSnapshot>, context: Option<&MarketContext>) 
 }
 
 fn format_delta_block(delta: Option<&DeltaSnapshot>, volume_source: &str) -> String {
+    if volume_source.eq_ignore_ascii_case("OANDA_TICK") {
+        return "Volume: OANDA tick volume (XAU/USD). Buy/sell delta and CVD are unavailable; \
+                use only relative volume/surge context, never as institutional order flow."
+            .to_string();
+    }
     let Some(delta) = delta else {
         return "Volume Delta/CVD: unavailable.".to_string();
     };

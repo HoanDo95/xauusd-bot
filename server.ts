@@ -111,7 +111,7 @@ interface BotConfig {
   session_filter_enabled: boolean;
   session_alerts_enabled: boolean;
   session_alert_lead_minutes: number;
-  data_source: 'BINANCE_PAXG' | 'TWELVEDATA';
+  data_source: 'BINANCE_PAXG' | 'TWELVEDATA' | 'OANDA';
   webhook_passphrase: string;
   entry_mode: 'MARKET' | 'LIMIT_RETEST' | 'BREAKOUT';
   broker_price_offset: number;
@@ -418,7 +418,12 @@ function normalizeConfig(input: Partial<BotConfig>): BotConfig {
       15,
       120
     ),
-    data_source: input.data_source === 'TWELVEDATA' ? 'TWELVEDATA' : 'BINANCE_PAXG',
+    data_source:
+      input.data_source === 'TWELVEDATA'
+        ? 'TWELVEDATA'
+        : input.data_source === 'OANDA'
+          ? 'OANDA'
+          : 'BINANCE_PAXG',
     webhook_passphrase:
       typeof input.webhook_passphrase === 'string'
         ? input.webhook_passphrase

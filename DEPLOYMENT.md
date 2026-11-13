@@ -448,6 +448,22 @@ docker compose restart api
 docker compose logs -f api   # look for: TwelveData XAU/USD ... / Đã ghép volume ...
 ```
 
+### OANDA tick volume (optional, free demo)
+
+Create a free OANDA demo account, copy the v20 API token, then set:
+
+```bash
+# rust-backend/.env
+OANDA_API_TOKEN="your_oanda_v20_token"
+OANDA_ENV="practice"          # or "live"
+```
+
+Select `data_source=OANDA` in the dashboard (or `POST /api/config`). The feed
+uses `XAU_USD` M15/H1/H4/D1 candles with `volume` = tick volume. OANDA has no
+taker buy/sell split, so `volumeSource=OANDA_TICK`, delta/CVD is disabled, and
+the AI treats volume as relative context only. If OANDA fails, the feed falls
+back to TwelveData when `TWELVEDATA_API_KEY` is set, then Binance PAXG.
+
 ## 16b. Divergence alerts and Live Setup preview
 
 - `divergence_alert_enabled` (default true) sends standalone RSI divergence

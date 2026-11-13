@@ -396,14 +396,21 @@ export const ConfigPanel: React.FC<Props> = ({
               <label className="text-xs font-semibold text-neutral-300">
                 Nguồn dữ liệu Live (Miễn phí)
               </label>
-              <div className="w-full bg-sky-500/10 border border-sky-500/30 rounded-lg px-3 py-2 text-xs font-mono text-sky-300">
-                {formData.data_source === 'TWELVEDATA'
-                  ? '📡 TwelveData XAU/USD + Binance PAXG volume proxy'
-                  : '📡 Binance PAXG/USDT (OHLCV + Volume)'}
-              </div>
+              <select
+                value={formData.data_source ?? 'BINANCE_PAXG'}
+                onChange={(e) =>
+                  setFormData({ ...formData, data_source: e.target.value as 'BINANCE_PAXG' | 'TWELVEDATA' | 'OANDA' })
+                }
+                className="w-full bg-neutral-950 border border-neutral-800 focus:border-sky-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
+              >
+                <option value="BINANCE_PAXG">Binance PAXG/USDT (OHLCV + proxy volume)</option>
+                <option value="TWELVEDATA">TwelveData XAU/USD + PAXG volume proxy</option>
+                <option value="OANDA">OANDA XAU/USD + tick volume</option>
+              </select>
               <span className="text-[11px] text-neutral-500">
-                TwelveData XAU/USD cung cấp OHLC; volume lấy từ Binance PAXG proxy. Nếu proxy lỗi,
-                tắt bộ lọc Volume Absorption bên trên.
+                OANDA cần <span className="font-mono text-neutral-400">OANDA_API_TOKEN</span> (demo
+                là đủ). OANDA cho tick volume XAU/USD, không có taker buy/sell; delta/CVD sẽ tắt.
+                TwelveData vẫn dùng PAXG proxy.
               </span>
             </div>
 
