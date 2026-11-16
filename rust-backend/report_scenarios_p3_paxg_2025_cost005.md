@@ -3,7 +3,7 @@
 Period: **2025-01-01** to **2025-12-31** (UTC) · symbol **PAXGUSDT** · interval **15m**
 Data: Binance public klines (PAXGUSDT XAU/USD proxy) cached at `/home/jason/Downloads/Be-foundation/tool-xauusd/gold-signal-bot/rust-backend/data/backtest/PAXGUSDT_M15.jsonl` (175329 candles loaded, 35040 in period, 0 missing M15 bars).
 
-Command: `target/release/backtest_scenarios --start 2025-01-01 --end 2025-12-31 --cost-r 0.05 --out-json /tmp/p3_paxg.json --out-md /tmp/p3_paxg.md`
+Command: `target/release/backtest_scenarios --start 2025-01-01 --end 2025-12-31 --cost-r 0.05 --out-json /tmp/p3b_paxg.json --out-md /tmp/p3b_paxg.md`
 Cost assumption: **0.05R per trade** (already subtracted from all R metrics).
 
 ## Fill model
@@ -37,7 +37,7 @@ Cost assumption: **0.05R per trade** (already subtracted from all R metrics).
 | sl_cap_only | 630 | 191 | 331 | 108 | 30.3% | 0.112 | 0.112 | 1.20 | 18.01 | 70.80 | 20.3% | 17.1% |
 | current | 607 | 189 | 329 | 89 | 31.1% | 0.110 | 0.110 | 1.19 | 36.21 | 66.46 | 20.9% | 14.7% |
 | quantum_v2 | 592 | 179 | 312 | 101 | 30.2% | 0.123 | 0.123 | 1.22 | 35.02 | 72.64 | 20.1% | 17.1% |
-| quantum_v3 | 592 | 179 | 312 | 101 | 30.2% | 0.123 | 0.123 | 1.22 | 35.02 | 72.64 | 20.1% | 17.1% |
+| quantum_v3 | 339 | 99 | 167 | 73 | 29.2% | 0.172 | 0.172 | 1.32 | 12.87 | 58.42 | 18.0% | 21.5% |
 | anti_chase_off | 607 | 189 | 329 | 89 | 31.1% | 0.110 | 0.110 | 1.19 | 36.21 | 66.46 | 20.9% | 14.7% |
 | aligned_only | 607 | 189 | 329 | 89 | 31.1% | 0.110 | 0.110 | 1.19 | 36.21 | 66.46 | 20.9% | 14.7% |
 | aligned_only_no_anti_chase | 607 | 189 | 329 | 89 | 31.1% | 0.110 | 0.110 | 1.19 | 36.21 | 66.46 | 20.9% | 14.7% |
@@ -51,7 +51,7 @@ Cost assumption: **0.05R per trade** (already subtracted from all R metrics).
 | sl_cap_only | 630 | 0 | 771 | 0 | 969 |
 | current | 606 | 1 | 552 | 0 | 695 |
 | quantum_v2 | 589 | 3 | 516 | 0 | 650 |
-| quantum_v3 | 589 | 3 | 516 | 0 | 650 |
+| quantum_v3 | 321 | 18 | 121 | 0 | 207 |
 | anti_chase_off | 606 | 1 | 546 | 0 | 688 |
 | aligned_only | 606 | 1 | 552 | 0 | 695 |
 | aligned_only_no_anti_chase | 606 | 1 | 546 | 0 | 688 |
@@ -86,6 +86,7 @@ Cost assumption: **0.05R per trade** (already subtracted from all R metrics).
 | PRIMARY skipped by aligned_only (COUNTER) | 0 |
 | BUY skipped by RSI H1 < 30 | 574 |
 | Trigger found within 8 bars | 1159 |
+| Triggers skipped by quantum confirmation | 0 |
 | Entries filled at level | 606 |
 | Entries gapped (filled at open) | 1 |
 | Entries skipped, no fill | 552 |

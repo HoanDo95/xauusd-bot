@@ -594,10 +594,19 @@ candidate analyzer accepts bullish/bearish engulfing in addition to pinbar, and
 the v2 score uses the M15 RSI/SMA14 cross plus
 `quantum_volume_confirm_ratio` (default `1.2`).
 
-The scenario backtest does **not** exercise the analyzer engulfing path:
-`quantum_v3` is identical to `quantum_v2` on PAXG 2025, Dukascopy 2025 and
-2022–2023. Keep both flags off until a dedicated trigger-confirmation backtest
-is implemented; do not treat v3 as validated.
+The live tracker and the scenario backtest now share the same confirmation gate:
+breakouts require a directional close plus volume expansion; limit/touch fills
+require pinbar/engulfing plus volume. A/B at 0.05R cost:
+
+| Dataset | current | quantum_v3 |
+|---|---:|---:|
+| PAXG 2025 | +0.110R · PF 1.19 · DD 36.21 | **+0.172R · PF 1.32 · DD 12.87** |
+| Dukascopy 2025 | **+0.141R · PF 1.24 · DD 27.95** | +0.091R · PF 1.16 · DD 14.15 |
+| Dukascopy 2022–2023 | +0.031R · PF 1.05 · DD 26.58 | **+0.077R · PF 1.14 · DD 13.72** |
+
+`quantum_v3` produces ~40% fewer signals and much lower drawdown; Dukascopy
+2025 average R is lower. Keep both flags off by default and enable them only
+for a deliberate forward-test.
 
 ### Pending-order staleness guard
 

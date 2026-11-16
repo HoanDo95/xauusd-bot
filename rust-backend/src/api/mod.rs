@@ -9,7 +9,7 @@ use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot, RsiSnapshot}
 use crate::signal_review::{review_blocks_signal, review_signal};
 use crate::storage::{PersistentState, PersistentStore};
 use crate::telegram::TelegramNotifier;
-use crate::tracker::evaluate_active_signals;
+use crate::tracker::{evaluate_active_signals, PendingConfirmation};
 use crate::volume_delta::delta_allows_signal;
 use axum::{
     routing::{get, post},
@@ -203,10 +203,18 @@ pub fn create_router(state: AppState) -> Router {
 
 /// Cập nhật TP1/TP2/SL cho các tín hiệu đang mở dựa trên nến hiện có.
 pub(crate) async fn evaluate_outcomes(state: &AppState) -> usize {
+    let config = state.config.read().await.clone();
     let candles = state.candles.read().await.clone();
     let updates = {
         let mut signals = state.signals.write().await;
-        evaluate_active_signals(&mut signals, &candles)
+        evaluate_active_signals(
+            &mut signals,
+            &candles,
+            PendingConfirmation {
+                enabled: config.quantum_trigger_confirmation_enabled,
+                volume_ratio: config.quantum_volume_confirm_ratio,
+            },
+        )
     };
     if !updates.is_empty() {
         for update in updates.iter().filter(|signal| !signal.is_simulated) {

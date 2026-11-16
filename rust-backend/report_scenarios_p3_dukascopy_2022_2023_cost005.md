@@ -3,7 +3,7 @@
 Period: **2022-01-01** to **2023-12-31** (UTC) · symbol **XAUUSD** · interval **15m**
 Data: Dukascopy XAUUSD M15 bid (tick volume) cached at `data/backtest/dukascopy/xauusd-m15-bid-2022-2023.csv` (47194 candles loaded, 47194 in period, 22498 missing M15 bars).
 
-Command: `target/release/backtest_scenarios --start 2022-01-01 --end 2023-12-31 --symbol XAUUSD --csv data/backtest/dukascopy/xauusd-m15-bid-2022-2023.csv --cost-r 0.05 --out-json /tmp/p3_duk2223.json --out-md /tmp/p3_duk2223.md`
+Command: `target/release/backtest_scenarios --start 2022-01-01 --end 2023-12-31 --symbol XAUUSD --csv data/backtest/dukascopy/xauusd-m15-bid-2022-2023.csv --cost-r 0.05 --out-json /tmp/p3b_duk2223.json --out-md /tmp/p3b_duk2223.md`
 Cost assumption: **0.05R per trade** (already subtracted from all R metrics).
 
 ## Fill model
@@ -37,7 +37,7 @@ Cost assumption: **0.05R per trade** (already subtracted from all R metrics).
 | sl_cap_only | 662 | 162 | 369 | 131 | 24.5% | -0.018 | -0.018 | 0.97 | 38.64 | -11.65 | 13.0% | 19.8% |
 | current | 601 | 158 | 340 | 103 | 26.3% | 0.031 | 0.031 | 1.05 | 26.58 | 18.70 | 14.0% | 17.1% |
 | quantum_v2 | 588 | 152 | 318 | 118 | 25.9% | 0.059 | 0.059 | 1.10 | 27.01 | 34.60 | 14.0% | 20.1% |
-| quantum_v3 | 588 | 152 | 318 | 118 | 25.9% | 0.059 | 0.059 | 1.10 | 27.01 | 34.60 | 14.0% | 20.1% |
+| quantum_v3 | 382 | 89 | 195 | 98 | 23.3% | 0.077 | 0.077 | 1.14 | 13.72 | 29.41 | 10.7% | 25.7% |
 | anti_chase_off | 604 | 159 | 342 | 103 | 26.3% | 0.031 | 0.031 | 1.05 | 26.58 | 18.55 | 13.9% | 17.1% |
 | aligned_only | 601 | 158 | 340 | 103 | 26.3% | 0.031 | 0.031 | 1.05 | 26.58 | 18.70 | 14.0% | 17.1% |
 | aligned_only_no_anti_chase | 604 | 159 | 342 | 103 | 26.3% | 0.031 | 0.031 | 1.05 | 26.58 | 18.55 | 13.9% | 17.1% |
@@ -51,7 +51,7 @@ Cost assumption: **0.05R per trade** (already subtracted from all R metrics).
 | sl_cap_only | 662 | 0 | 794 | 0 | 987 |
 | current | 601 | 0 | 557 | 0 | 671 |
 | quantum_v2 | 587 | 1 | 523 | 0 | 618 |
-| quantum_v3 | 587 | 1 | 523 | 0 | 618 |
+| quantum_v3 | 346 | 36 | 94 | 0 | 179 |
 | anti_chase_off | 604 | 0 | 557 | 0 | 671 |
 | aligned_only | 601 | 0 | 557 | 0 | 671 |
 | aligned_only_no_anti_chase | 604 | 0 | 557 | 0 | 671 |
@@ -86,6 +86,7 @@ Cost assumption: **0.05R per trade** (already subtracted from all R metrics).
 | PRIMARY skipped by aligned_only (COUNTER) | 0 |
 | BUY skipped by RSI H1 < 30 | 806 |
 | Trigger found within 8 bars | 1158 |
+| Triggers skipped by quantum confirmation | 0 |
 | Entries filled at level | 601 |
 | Entries gapped (filled at open) | 0 |
 | Entries skipped, no fill | 557 |

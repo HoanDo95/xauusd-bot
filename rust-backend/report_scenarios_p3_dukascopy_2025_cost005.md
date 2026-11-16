@@ -3,7 +3,7 @@
 Period: **2025-01-01** to **2025-12-31** (UTC) · symbol **XAUUSD** · interval **15m**
 Data: Dukascopy XAUUSD M15 bid (tick volume) cached at `data/backtest/dukascopy/xauusd-m15-bid-2025.csv` (23550 candles loaded, 23550 in period, 11302 missing M15 bars).
 
-Command: `target/release/backtest_scenarios --start 2025-01-01 --end 2025-12-31 --symbol XAUUSD --csv data/backtest/dukascopy/xauusd-m15-bid-2025.csv --cost-r 0.05 --out-json /tmp/p3_duk.json --out-md /tmp/p3_duk.md`
+Command: `target/release/backtest_scenarios --start 2025-01-01 --end 2025-12-31 --symbol XAUUSD --csv data/backtest/dukascopy/xauusd-m15-bid-2025.csv --cost-r 0.05 --out-json /tmp/p3b_duk.json --out-md /tmp/p3b_duk.md`
 Cost assumption: **0.05R per trade** (already subtracted from all R metrics).
 
 ## Fill model
@@ -37,7 +37,7 @@ Cost assumption: **0.05R per trade** (already subtracted from all R metrics).
 | sl_cap_only | 414 | 135 | 228 | 51 | 32.6% | 0.128 | 0.128 | 1.22 | 23.00 | 52.95 | 18.1% | 12.3% |
 | current | 400 | 140 | 224 | 36 | 35.0% | 0.141 | 0.141 | 1.24 | 27.95 | 56.42 | 21.5% | 9.0% |
 | quantum_v2 | 390 | 129 | 218 | 43 | 33.1% | 0.137 | 0.137 | 1.23 | 30.09 | 53.58 | 18.5% | 11.0% |
-| quantum_v3 | 390 | 129 | 218 | 43 | 33.1% | 0.137 | 0.137 | 1.23 | 30.09 | 53.58 | 18.5% | 11.0% |
+| quantum_v3 | 228 | 66 | 124 | 38 | 28.9% | 0.091 | 0.091 | 1.16 | 14.15 | 20.79 | 14.5% | 16.7% |
 | anti_chase_off | 399 | 140 | 223 | 36 | 35.1% | 0.144 | 0.144 | 1.24 | 26.92 | 57.47 | 21.6% | 9.0% |
 | aligned_only | 400 | 140 | 224 | 36 | 35.0% | 0.141 | 0.141 | 1.24 | 27.95 | 56.42 | 21.5% | 9.0% |
 | aligned_only_no_anti_chase | 399 | 140 | 223 | 36 | 35.1% | 0.144 | 0.144 | 1.24 | 26.92 | 57.47 | 21.6% | 9.0% |
@@ -51,7 +51,7 @@ Cost assumption: **0.05R per trade** (already subtracted from all R metrics).
 | sl_cap_only | 414 | 0 | 514 | 0 | 652 |
 | current | 400 | 0 | 397 | 0 | 517 |
 | quantum_v2 | 390 | 0 | 348 | 0 | 450 |
-| quantum_v3 | 390 | 0 | 348 | 0 | 450 |
+| quantum_v3 | 203 | 25 | 84 | 0 | 159 |
 | anti_chase_off | 399 | 0 | 400 | 0 | 519 |
 | aligned_only | 400 | 0 | 397 | 0 | 517 |
 | aligned_only_no_anti_chase | 399 | 0 | 400 | 0 | 519 |
@@ -86,6 +86,7 @@ Cost assumption: **0.05R per trade** (already subtracted from all R metrics).
 | PRIMARY skipped by aligned_only (COUNTER) | 0 |
 | BUY skipped by RSI H1 < 30 | 444 |
 | Trigger found within 8 bars | 797 |
+| Triggers skipped by quantum confirmation | 0 |
 | Entries filled at level | 400 |
 | Entries gapped (filled at open) | 0 |
 | Entries skipped, no fill | 397 |

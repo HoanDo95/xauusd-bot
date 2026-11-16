@@ -1,3 +1,4 @@
+use crate::analyzer::GoldMarketAnalyzer;
 use crate::models::{Candle, EntryType, Signal, SignalStatus, SignalType};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -28,9 +29,79 @@ fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
+/// Pending-order confirmation gate. When enabled, a pending Limit/Breakout
+/// must see a directional close (breakout) or rejection/engulfing (limit) plus
+/// a volume expansion before it fills.
+#[derive(Debug, Clone, Copy)]
+pub struct PendingConfirmation {
+    pub enabled: bool,
+    pub volume_ratio: f64,
+}
+
+impl Default for PendingConfirmation {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            volume_ratio: 1.2,
+        }
+    }
+}
+
 /// Huỷ pending Limit/Breakout nếu giá đi xa entry hơn 1.5R trước khi khớp.
 /// Đây là lớp bảo vệ chống tín hiệu "stale" khi thị trường đã chạy khỏi trigger.
 const MAX_PENDING_DISTANCE_R: f64 = 1.5;
+
+/// Xác nhận nến trigger: volume mở rộng + close đúng hướng.
+fn pending_confirmation_ok(
+    signal: &Signal,
+    candles: &[Candle],
+    index: usize,
+    volume_ratio: f64,
+) -> bool {
+    let Some(candle) = candles.get(index) else {
+        return false;
+    };
+
+    let period = 20;
+    let start = index.saturating_sub(period);
+    let window = &candles[start..index];
+    let average_volume = if window.is_empty() {
+        0.0
+    } else {
+        window.iter().map(|candle| candle.volume).sum::<f64>() / window.len() as f64
+    };
+    let volume_ok = average_volume > 0.0 && candle.volume >= average_volume * volume_ratio.max(1.0);
+    if !volume_ok {
+        return false;
+    }
+
+    let previous = index
+        .checked_sub(1)
+        .and_then(|previous| candles.get(previous));
+    match signal.entry_type {
+        EntryType::Breakout => match signal.signal_type {
+            SignalType::Buy => candle.close > signal.entry_price && candle.close > candle.open,
+            SignalType::Sell => candle.close < signal.entry_price && candle.close < candle.open,
+        },
+        EntryType::Limit => match signal.signal_type {
+            SignalType::Buy => {
+                let (bullish_pinbar, _) = GoldMarketAnalyzer::check_pinbar_rejection(candle, 2.0);
+                let (bullish_engulfing, _) = previous
+                    .map(|previous| GoldMarketAnalyzer::check_engulfing(previous, candle))
+                    .unwrap_or((false, false));
+                bullish_pinbar || bullish_engulfing
+            }
+            SignalType::Sell => {
+                let (_, bearish_pinbar) = GoldMarketAnalyzer::check_pinbar_rejection(candle, 2.0);
+                let (_, bearish_engulfing) = previous
+                    .map(|previous| GoldMarketAnalyzer::check_engulfing(previous, candle))
+                    .unwrap_or((false, false));
+                bearish_pinbar || bearish_engulfing
+            }
+        },
+        EntryType::Market => true,
+    }
+}
 
 /// Theo dõi các tín hiệu đang mở và cập nhật TP1/TP2/SL từ nến ĐÃ ĐÓNG CỬA.
 ///
@@ -39,7 +110,11 @@ const MAX_PENDING_DISTANCE_R: f64 = 1.5;
 /// - Nếu cùng một cây nến vừa quét SL vừa chạm TP1 → tính SL (kịch bản xấu nhất).
 /// - Sau khi đã chạm TP1, nếu sau đó chạm SL thì giữ TP1Hit (đã chốt lời),
 ///   nhưng nếu chạm TP2 trước thì nâng lên TP2Hit.
-pub fn evaluate_active_signals(signals: &mut [Signal], candles: &[Candle]) -> Vec<Signal> {
+pub fn evaluate_active_signals(
+    signals: &mut [Signal],
+    candles: &[Candle],
+    confirmation: PendingConfirmation,
+) -> Vec<Signal> {
     const MAX_FILL_CANDLES: usize = 8;
 
     if candles.is_empty() {
@@ -66,11 +141,13 @@ pub fn evaluate_active_signals(signals: &mut [Signal], candles: &[Candle]) -> Ve
         let mut changed = false;
         let mut filled = signal.is_entry_filled;
 
-        for (idx, candle) in candles
+        let mut waited = 0usize;
+        for (index, candle) in candles
             .iter()
-            .filter(|candle| candle.timestamp > cutoff)
             .enumerate()
+            .filter(|(_, candle)| candle.timestamp > cutoff)
         {
+            waited += 1;
             // Lệnh Limit/Breakout chưa khớp: chờ giá chạm entry.
             if !filled {
                 let filled_now = match signal.entry_type {
@@ -84,8 +161,10 @@ pub fn evaluate_active_signals(signals: &mut [Signal], candles: &[Candle]) -> Ve
                         SignalType::Sell => candle.low <= signal.entry_price,
                     },
                 };
+                let confirmed = !confirmation.enabled
+                    || pending_confirmation_ok(signal, candles, index, confirmation.volume_ratio);
 
-                if filled_now {
+                if filled_now && confirmed {
                     // Pullback Limit: nếu giá xuyên entry quá 0.5R mà nến
                     // không đóng cửa từ chối, huỷ setup thay vì khớp vào đỉnh
                     // overshoot (tránh gồng âm sát SL ngay lập tức).
@@ -140,7 +219,7 @@ pub fn evaluate_active_signals(signals: &mut [Signal], candles: &[Candle]) -> Ve
                     break;
                 }
 
-                if idx + 1 >= MAX_FILL_CANDLES {
+                if waited >= MAX_FILL_CANDLES {
                     if status == SignalStatus::Active {
                         status = SignalStatus::Cancelled;
                         signal.cancel_reason = Some("Hết 8 nến chờ khớp — huỷ setup.".to_string());
@@ -404,6 +483,88 @@ mod tests {
         }
     }
 
+    fn candle_vol(
+        timestamp: i64,
+        open: f64,
+        high: f64,
+        low: f64,
+        close: f64,
+        volume: f64,
+    ) -> Candle {
+        let mut candle = candle(timestamp, open, high, low, close);
+        candle.volume = volume;
+        candle
+    }
+
+    #[test]
+    fn pending_sell_breakout_requires_confirmed_close_when_enabled() {
+        let mut signals = vec![signal(SignalType::Sell, 100.0, 110.0, 80.0, 70.0, 1)];
+        signals[0].entry_type = EntryType::Breakout;
+        signals[0].is_entry_filled = false;
+        let mut candles: Vec<Candle> = (-20..0)
+            .map(|timestamp| candle(timestamp, 100.0, 100.0, 100.0, 100.0))
+            .collect();
+        candles.push(candle_vol(2, 100.0, 101.0, 99.0, 100.5, 2000.0));
+
+        evaluate_active_signals(
+            &mut signals,
+            &candles,
+            PendingConfirmation {
+                enabled: true,
+                volume_ratio: 1.2,
+            },
+        );
+
+        assert!(!signals[0].is_entry_filled);
+        assert_eq!(signals[0].status, SignalStatus::Active);
+    }
+
+    #[test]
+    fn pending_sell_breakout_fills_on_confirmed_close_when_enabled() {
+        let mut signals = vec![signal(SignalType::Sell, 100.0, 110.0, 80.0, 70.0, 1)];
+        signals[0].entry_type = EntryType::Breakout;
+        signals[0].is_entry_filled = false;
+        let mut candles: Vec<Candle> = (-20..0)
+            .map(|timestamp| candle(timestamp, 100.0, 100.0, 100.0, 100.0))
+            .collect();
+        candles.push(candle_vol(2, 100.0, 101.0, 99.0, 99.5, 2000.0));
+
+        evaluate_active_signals(
+            &mut signals,
+            &candles,
+            PendingConfirmation {
+                enabled: true,
+                volume_ratio: 1.2,
+            },
+        );
+
+        assert!(signals[0].is_entry_filled);
+        assert_eq!(signals[0].status, SignalStatus::Active);
+    }
+
+    #[test]
+    fn pending_sell_breakout_requires_volume_when_enabled() {
+        let mut signals = vec![signal(SignalType::Sell, 100.0, 110.0, 80.0, 70.0, 1)];
+        signals[0].entry_type = EntryType::Breakout;
+        signals[0].is_entry_filled = false;
+        let mut candles: Vec<Candle> = (-20..0)
+            .map(|timestamp| candle(timestamp, 100.0, 100.0, 100.0, 100.0))
+            .collect();
+        candles.push(candle_vol(2, 100.0, 101.0, 99.0, 99.5, 500.0));
+
+        evaluate_active_signals(
+            &mut signals,
+            &candles,
+            PendingConfirmation {
+                enabled: true,
+                volume_ratio: 1.2,
+            },
+        );
+
+        assert!(!signals[0].is_entry_filled);
+        assert_eq!(signals[0].status, SignalStatus::Active);
+    }
+
     #[test]
     fn buy_signal_hits_tp1_then_tp2() {
         let mut signals = vec![signal(SignalType::Buy, 100.0, 95.0, 110.0, 115.0, 1)];
@@ -412,7 +573,8 @@ mod tests {
             candle(3, 110.5, 116.0, 110.0, 115.5),
         ];
 
-        let updates = evaluate_active_signals(&mut signals, &candles);
+        let updates =
+            evaluate_active_signals(&mut signals, &candles, PendingConfirmation::default());
 
         assert_eq!(updates.len(), 1);
         assert_eq!(signals[0].status, SignalStatus::Target2Hit);
@@ -424,7 +586,7 @@ mod tests {
         let mut signals = vec![signal(SignalType::Buy, 100.0, 95.0, 110.0, 115.0, 1)];
         let candles = vec![candle(2, 100.0, 101.0, 94.0, 95.5)];
 
-        evaluate_active_signals(&mut signals, &candles);
+        evaluate_active_signals(&mut signals, &candles, PendingConfirmation::default());
 
         assert_eq!(signals[0].status, SignalStatus::StopLossHit);
     }
@@ -434,7 +596,7 @@ mod tests {
         let mut signals = vec![signal(SignalType::Buy, 100.0, 95.0, 110.0, 115.0, 1)];
         let candles = vec![candle(2, 100.0, 111.0, 94.0, 100.0)];
 
-        evaluate_active_signals(&mut signals, &candles);
+        evaluate_active_signals(&mut signals, &candles, PendingConfirmation::default());
 
         assert_eq!(signals[0].status, SignalStatus::StopLossHit);
     }
@@ -444,7 +606,7 @@ mod tests {
         let mut signals = vec![signal(SignalType::Sell, 100.0, 105.0, 90.0, 85.0, 1)];
         let candles = vec![candle(2, 100.0, 101.0, 89.0, 90.5)];
 
-        evaluate_active_signals(&mut signals, &candles);
+        evaluate_active_signals(&mut signals, &candles, PendingConfirmation::default());
 
         assert_eq!(signals[0].status, SignalStatus::Target1Hit);
     }
@@ -454,7 +616,8 @@ mod tests {
         let mut signals = vec![signal(SignalType::Buy, 100.0, 95.0, 110.0, 115.0, 10)];
         let candles = vec![candle(10, 100.0, 111.0, 94.0, 100.0)];
 
-        let updates = evaluate_active_signals(&mut signals, &candles);
+        let updates =
+            evaluate_active_signals(&mut signals, &candles, PendingConfirmation::default());
 
         assert_eq!(updates.len(), 0);
         assert_eq!(signals[0].status, SignalStatus::Active);
@@ -472,7 +635,8 @@ mod tests {
             candle(4, 101.0, 110.0, 100.0, 109.0), // TP1
         ];
 
-        let updates = evaluate_active_signals(&mut signals, &candles);
+        let updates =
+            evaluate_active_signals(&mut signals, &candles, PendingConfirmation::default());
 
         assert!(signals[0].is_entry_filled);
         assert_eq!(signals[0].status, SignalStatus::Target1Hit);
@@ -488,7 +652,7 @@ mod tests {
         // High 106 = overshoot 6 > 0.5R (5); close 105 is not a rejection close.
         let candles = vec![candle(2, 100.0, 106.0, 99.0, 105.0)];
 
-        evaluate_active_signals(&mut signals, &candles);
+        evaluate_active_signals(&mut signals, &candles, PendingConfirmation::default());
 
         assert!(!signals[0].is_entry_filled);
         assert_eq!(signals[0].status, SignalStatus::Cancelled);
@@ -507,7 +671,7 @@ mod tests {
         // High 106 overshoots, but close 99 rejects back below entry -> fill.
         let candles = vec![candle(2, 100.0, 106.0, 99.0, 99.0)];
 
-        evaluate_active_signals(&mut signals, &candles);
+        evaluate_active_signals(&mut signals, &candles, PendingConfirmation::default());
 
         assert!(signals[0].is_entry_filled);
         assert_eq!(signals[0].status, SignalStatus::Active);
@@ -522,7 +686,7 @@ mod tests {
         // Low 94 = overshoot 6 > 0.5R (5); close 95 is not a rejection close.
         let candles = vec![candle(2, 100.0, 101.0, 94.0, 95.0)];
 
-        evaluate_active_signals(&mut signals, &candles);
+        evaluate_active_signals(&mut signals, &candles, PendingConfirmation::default());
 
         assert!(!signals[0].is_entry_filled);
         assert_eq!(signals[0].status, SignalStatus::Cancelled);
@@ -542,7 +706,7 @@ mod tests {
             .map(|timestamp| candle(timestamp, 100.0, 101.0, 100.0, 100.5))
             .collect();
 
-        evaluate_active_signals(&mut signals, &candles);
+        evaluate_active_signals(&mut signals, &candles, PendingConfirmation::default());
 
         assert!(!signals[0].is_entry_filled);
         assert_eq!(signals[0].status, SignalStatus::Cancelled);
@@ -557,7 +721,7 @@ mod tests {
         // risk 10; 1.5R = 15. High 116 = adverse 16; low 100.5 > entry -> no fill.
         let candles = vec![candle(2, 101.0, 116.0, 100.5, 115.0)];
 
-        evaluate_active_signals(&mut signals, &candles);
+        evaluate_active_signals(&mut signals, &candles, PendingConfirmation::default());
 
         assert!(!signals[0].is_entry_filled);
         assert_eq!(signals[0].status, SignalStatus::Cancelled);
@@ -576,7 +740,7 @@ mod tests {
         // risk 10; 1.5R = 15. High 114 = adverse 14; low 100.5 > entry -> no fill.
         let candles = vec![candle(2, 101.0, 114.0, 100.5, 113.0)];
 
-        evaluate_active_signals(&mut signals, &candles);
+        evaluate_active_signals(&mut signals, &candles, PendingConfirmation::default());
 
         assert!(!signals[0].is_entry_filled);
         assert_eq!(signals[0].status, SignalStatus::Active);
@@ -591,7 +755,7 @@ mod tests {
         // Low 99.5 <= entry -> fill; the high is far away but fill happens first.
         let candles = vec![candle(2, 100.0, 116.0, 99.5, 105.0)];
 
-        evaluate_active_signals(&mut signals, &candles);
+        evaluate_active_signals(&mut signals, &candles, PendingConfirmation::default());
 
         assert!(signals[0].is_entry_filled);
         assert_eq!(signals[0].status, SignalStatus::Active);
@@ -606,7 +770,7 @@ mod tests {
         // risk 10; 1.5R = 15. Low 84 = adverse 16; high 99.5 < entry -> no fill.
         let candles = vec![candle(2, 99.0, 99.5, 84.0, 85.0)];
 
-        evaluate_active_signals(&mut signals, &candles);
+        evaluate_active_signals(&mut signals, &candles, PendingConfirmation::default());
 
         assert!(!signals[0].is_entry_filled);
         assert_eq!(signals[0].status, SignalStatus::Cancelled);
@@ -628,7 +792,7 @@ mod tests {
             candle(4, 101.5, 112.0, 101.0, 111.5), // TP1
         ];
 
-        evaluate_active_signals(&mut signals, &candles);
+        evaluate_active_signals(&mut signals, &candles, PendingConfirmation::default());
 
         assert!(signals[0].is_entry_filled);
         assert_eq!(signals[0].status, SignalStatus::Target1Hit);

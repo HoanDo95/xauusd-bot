@@ -909,6 +909,57 @@ enum FillOutcome {
 /// ABOVE/BELOW BREAKOUT: the level fills at `scenario.entry` unless the trigger
 /// candle opens beyond it. A gap fill at the candle open is accepted only when
 /// slippage is at most `0.5R`; otherwise the trade is skipped.
+/// Quantum trigger confirmation: require a directional close/rejection and a
+/// volume expansion before a scenario trigger is accepted.
+fn trigger_confirmation_ok(
+    side: SignalType,
+    trigger_direction: &str,
+    candles: &[Candle],
+    index: usize,
+    volume_ratio: f64,
+) -> bool {
+    let Some(candle) = candles.get(index) else {
+        return false;
+    };
+    let previous = index
+        .checked_sub(1)
+        .and_then(|previous| candles.get(previous));
+
+    let period = 20;
+    let start = index.saturating_sub(period);
+    let window = &candles[start..index];
+    let average_volume = if window.is_empty() {
+        0.0
+    } else {
+        window.iter().map(|candle| candle.volume).sum::<f64>() / window.len() as f64
+    };
+    let volume_ok = average_volume > 0.0 && candle.volume >= average_volume * volume_ratio.max(1.0);
+    if !volume_ok {
+        return false;
+    }
+
+    let direction = trigger_direction.trim().to_ascii_uppercase();
+    match (side, direction.as_str()) {
+        (SignalType::Buy, "ABOVE") => candle.close > candle.open,
+        (SignalType::Sell, "BELOW") => candle.close < candle.open,
+        (SignalType::Buy, "TOUCH") => {
+            let (bullish_pinbar, _) = GoldMarketAnalyzer::check_pinbar_rejection(candle, 2.0);
+            let (bullish_engulfing, _) = previous
+                .map(|previous| GoldMarketAnalyzer::check_engulfing(previous, candle))
+                .unwrap_or((false, false));
+            bullish_pinbar || bullish_engulfing
+        }
+        (SignalType::Sell, "TOUCH") => {
+            let (_, bearish_pinbar) = GoldMarketAnalyzer::check_pinbar_rejection(candle, 2.0);
+            let (_, bearish_engulfing) = previous
+                .map(|previous| GoldMarketAnalyzer::check_engulfing(previous, candle))
+                .unwrap_or((false, false));
+            bearish_pinbar || bearish_engulfing
+        }
+        _ => false,
+    }
+}
+
 fn resolve_fill(
     side: SignalType,
     trigger_direction: &str,
@@ -1459,6 +1510,7 @@ struct Funnel {
     primary_skipped_counter: usize,
     buy_rsi_h1_skipped: usize,
     trigger_found: usize,
+    trigger_confirmation_skipped: usize,
     skipped_no_forward: usize,
     entries_filled_at_level: usize,
     entries_gapped: usize,
@@ -1873,6 +1925,12 @@ fn write_funnel_markdown(output: &mut String, funnel: &Funnel, trigger_wait_bars
         output,
         "| Trigger found within {} bars | {} |",
         trigger_wait_bars, funnel.trigger_found
+    )
+    .expect("write to string");
+    writeln!(
+        output,
+        "| Triggers skipped by quantum confirmation | {} |",
+        funnel.trigger_confirmation_skipped
     )
     .expect("write to string");
     writeln!(
@@ -2292,6 +2350,18 @@ fn run_variant(
         let mut trigger_index: Option<usize> = None;
         for (j, candle) in m15.iter().enumerate().take(last_trigger + 1).skip(i + 1) {
             if scenario_triggered(scenario, candle) {
+                if options.quantum_trigger_confirmation_enabled
+                    && !trigger_confirmation_ok(
+                        side,
+                        &scenario.trigger_direction,
+                        m15,
+                        j,
+                        options.quantum_volume_confirm_ratio,
+                    )
+                {
+                    funnel.trigger_confirmation_skipped += 1;
+                    continue;
+                }
                 // Dedup the same scenario id + entry price within one M15 candle.
                 let key = (
                     scenario.id.clone(),

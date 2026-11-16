@@ -25,7 +25,7 @@ use crate::session_alerts::evaluate_and_dispatch;
 use crate::signal_review::{review_blocks_signal, review_signal};
 use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
 use crate::storage::PersistentStore;
-use crate::tracker::evaluate_active_signals;
+use crate::tracker::{evaluate_active_signals, PendingConfirmation};
 use crate::volume_delta::{compute_delta, delta_allows_signal};
 use chrono::Utc;
 use std::time::Instant;
@@ -380,7 +380,14 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                 // Cập nhật TP1/TP2/SL cho các tín hiệu đang mở trước khi ghi đè nến.
                 let updates = {
                     let mut signals = state.signals.write().await;
-                    evaluate_active_signals(&mut signals, &fresh_candles)
+                    evaluate_active_signals(
+                        &mut signals,
+                        &fresh_candles,
+                        PendingConfirmation {
+                            enabled: config.quantum_trigger_confirmation_enabled,
+                            volume_ratio: config.quantum_volume_confirm_ratio,
+                        },
+                    )
                 };
                 *state.candles.write().await = fresh_candles;
                 *state.live_price.write().await = snapshot.live_price;
