@@ -499,6 +499,78 @@ export const ConfigPanel: React.FC<Props> = ({
               </div>
             </div>
 
+            {/* Strategy filters from the 2025 backtest */}
+            <div className="flex flex-col gap-2 md:col-span-2 xl:col-span-4 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+              <div className="text-xs font-bold uppercase tracking-wider text-amber-300">
+                🧪 Strategy filters (backtest 2025)
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <label className="flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={formData.counter_macro_filter_enabled ?? true}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        counter_macro_filter_enabled: e.target.checked,
+                      })
+                    }
+                    className="accent-amber-500 w-4 h-4 rounded cursor-pointer mt-0.5"
+                  />
+                  <span className="text-[11px] text-neutral-300 leading-snug">
+                    Chặn COUNTER-macro entry
+                    <span className="block text-[10px] text-neutral-500">Backtest: -0.50R/trade</span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={formData.bearish_rejection_enabled ?? false}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        bearish_rejection_enabled: e.target.checked,
+                      })
+                    }
+                    className="accent-amber-500 w-4 h-4 rounded cursor-pointer mt-0.5"
+                  />
+                  <span className="text-[11px] text-neutral-300 leading-snug">
+                    Bật bearish_rejection
+                    <span className="block text-[10px] text-neutral-500">Backtest: -0.57R/trade</span>
+                  </span>
+                </label>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-semibold text-neutral-400">
+                    RSI H1 tối thiểu cho BUY
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="50"
+                    step="1"
+                    value={formData.min_rsi_h1_for_buy ?? 30}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        min_rsi_h1_for_buy: Math.max(
+                          0,
+                          Math.min(50, parseFloat(e.target.value) || 0)
+                        ),
+                      })
+                    }
+                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-amber-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
+                  />
+                  <span className="text-[10px] text-neutral-500">
+                    0 = tắt · backtest &lt;30: -0.32R
+                  </span>
+                </div>
+              </div>
+              <p className="text-[11px] text-neutral-500">
+                Các filter này dựa trên backtest 2025 (PAXG proxy, chưa tính spread/commission).
+                Có thể tắt để tham khảo, nhưng nên giữ bật cho đến khi có backtest XAU/USD đầy đủ.
+              </p>
+            </div>
+
             {/* Free live feed (read only) */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-neutral-300">

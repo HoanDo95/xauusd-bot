@@ -42,6 +42,7 @@ pub fn best_early_entry_scenario(
     scenarios.scenarios.iter().find(|scenario| {
         scenario.valid
             && scenario.confidence >= min_confidence
+            && !scenario.macro_alignment.eq_ignore_ascii_case("COUNTER")
             && matches!(
                 scenario.role.trim().to_uppercase().as_str(),
                 "PRIMARY" | "ALTERNATE"

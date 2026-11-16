@@ -546,6 +546,12 @@ export interface BotConfig {
   max_daily_loss_r?: number;
   /** Cooldown between same-direction signals in minutes (0 = off). Default 60. */
   same_direction_cooldown_minutes?: number;
+  /** Block COUNTER-macro entries (backtest 2025 negative). Default true. */
+  counter_macro_filter_enabled?: boolean;
+  /** Enable bearish_rejection scenario. Backtest 2025 negative; default false. */
+  bearish_rejection_enabled?: boolean;
+  /** Minimum RSI H1 for BUY entries (0 = off). Default 30. */
+  min_rsi_h1_for_buy?: number;
   /** Prefer the high-liquidity Vietnam session 13:00 – 23:00 (GMT+7). */
   session_filter_enabled: boolean;
   /** Send informational Telegram briefings before London/New York opens (Mon–Fri, DST-aware). */

@@ -321,6 +321,15 @@ pub struct BotConfig {
     /// Cooldown giữa hai tín hiệu cùng hướng (phút, 0 = tắt). Mặc định 60.
     #[serde(default = "default_same_direction_cooldown_minutes")]
     pub same_direction_cooldown_minutes: i64,
+    /// Chặn entry COUNTER-macro. Backtest 2025: -0.50R/trade. Mặc định BẬT.
+    #[serde(default = "default_true")]
+    pub counter_macro_filter_enabled: bool,
+    /// Bật kịch bản bearish_rejection. Backtest 2025: -0.57R/trade. Mặc định TẮT.
+    #[serde(default)]
+    pub bearish_rejection_enabled: bool,
+    /// RSI H1 tối thiểu cho BUY entry (0 = tắt). Mặc định 30.
+    #[serde(default = "default_min_rsi_h1_for_buy")]
+    pub min_rsi_h1_for_buy: f64,
     /// Bật bộ lọc khung giờ thanh khoản Âu-Mỹ 13:00-23:00 GMT+7
     #[serde(default = "default_session_filter_enabled")]
     pub session_filter_enabled: bool,
@@ -487,6 +496,10 @@ fn default_same_direction_cooldown_minutes() -> i64 {
     60
 }
 
+fn default_min_rsi_h1_for_buy() -> f64 {
+    30.0
+}
+
 fn default_entry_mode() -> String {
     "MARKET".to_string()
 }
@@ -617,6 +630,9 @@ impl Default for BotConfig {
             max_daily_risk_percent: default_max_daily_risk_percent(),
             max_daily_loss_r: default_max_daily_loss_r(),
             same_direction_cooldown_minutes: default_same_direction_cooldown_minutes(),
+            counter_macro_filter_enabled: true,
+            bearish_rejection_enabled: false,
+            min_rsi_h1_for_buy: default_min_rsi_h1_for_buy(),
             session_filter_enabled: default_session_filter_enabled(),
             data_source: default_data_source(),
             webhook_passphrase: String::new(),
@@ -696,6 +712,7 @@ impl BotConfig {
         self.max_daily_risk_percent = finite_or(self.max_daily_risk_percent, 3.0).clamp(0.0, 20.0);
         self.max_daily_loss_r = finite_or(self.max_daily_loss_r, 2.0).clamp(0.0, 20.0);
         self.same_direction_cooldown_minutes = self.same_direction_cooldown_minutes.clamp(0, 1440);
+        self.min_rsi_h1_for_buy = finite_or(self.min_rsi_h1_for_buy, 30.0).clamp(0.0, 50.0);
         self.pre_news_buffer_minutes = self.pre_news_buffer_minutes.clamp(0, 120);
         self.post_news_buffer_minutes = self.post_news_buffer_minutes.clamp(0, 120);
 
@@ -882,6 +899,36 @@ mod tests {
         assert_eq!(clamped.max_daily_risk_percent, 20.0);
         assert_eq!(clamped.max_daily_loss_r, 20.0);
         assert_eq!(clamped.same_direction_cooldown_minutes, 1440);
+    }
+
+    #[test]
+    fn strategy_filters_default_and_are_backward_compatible() {
+        let defaults = BotConfig::default();
+        assert!(defaults.counter_macro_filter_enabled);
+        assert!(!defaults.bearish_rejection_enabled);
+        assert_eq!(defaults.min_rsi_h1_for_buy, 30.0);
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        for key in [
+            "counter_macro_filter_enabled",
+            "bearish_rejection_enabled",
+            "min_rsi_h1_for_buy",
+        ] {
+            object.remove(key);
+        }
+
+        let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(config.counter_macro_filter_enabled);
+        assert!(!config.bearish_rejection_enabled);
+        assert_eq!(config.min_rsi_h1_for_buy, 30.0);
+
+        let clamped = BotConfig {
+            min_rsi_h1_for_buy: 99.0,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(clamped.min_rsi_h1_for_buy, 50.0);
     }
 
     #[test]

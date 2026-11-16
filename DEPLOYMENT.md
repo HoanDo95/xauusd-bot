@@ -376,6 +376,12 @@ in **Sniper & Risk Config**, not in env.
   final signal gate for the scanner and both webhook paths; simulated signals
   are ignored. After TP1 the outcome alert suggests break-even, partial profit
   and M15-structure trailing.
+- **Backtest-derived strategy filters:** `counter_macro_filter_enabled=true`
+  skips COUNTER-macro entries; `bearish_rejection_enabled=false` disables the
+  negative-expectancy rejection scenario; `min_rsi_h1_for_buy=30.0` blocks BUY
+  entries in deep H1 oversold. COUNTER PRIMARY scenarios are replaced by an
+  ALIGNED scenario, or marked non-tradable if none exists. These values come
+  from the 2025 PAXG-proxy backtest and should be revalidated on XAU/USD data.
 - **VETO_ONLY:** AI may only approve, contradict or return `STANDBY`.
   `ai_signal_review_fail_open` (default `true`) applies only here; `false`
   makes it fail-closed.

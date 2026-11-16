@@ -290,6 +290,20 @@ After TP1, the tracker attaches a `management_note` to the outcome alert:
 move SL to break-even for the remaining position, consider taking 50% at TP1,
 and trail by M15 structure. The bot still never places or modifies orders.
 
+**Backtest-derived strategy filters (2025 PAXG proxy):**
+
+| Config | Default | Meaning |
+|---|---|---|
+| `counter_macro_filter_enabled` | `true` | Skip entries whose macro/flow alignment is `COUNTER` (backtest: -0.50R/trade) |
+| `bearish_rejection_enabled` | `false` | Enable the `bearish_rejection` scenario (backtest: -0.57R/trade) |
+| `min_rsi_h1_for_buy` | `30.0` | Block BUY entries when RSI H1 is below this value (0 = off; backtest <30: -0.32R) |
+
+COUNTER-macro PRIMARY scenarios are no longer promoted: the ranking prefers an
+`ALIGNED` scenario for PRIMARY. If no aligned scenario exists, the counter
+scenario is shown as non-tradable and Action View returns `NO_TRADE`. These
+filters are based on a PAXG-proxy backtest without spread/commission and should
+be revalidated on true XAU/USD data.
+
 ### RSI context (Phase R1/R2)
 
 RSI is **advisory/context first**. The Rust engine computes Wilder RSI on

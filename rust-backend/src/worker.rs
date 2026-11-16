@@ -10,7 +10,9 @@ use crate::market_context::{
 use crate::market_feed::{MarketDataFeed, MarketFeedSnapshot, VOLUME_SOURCE_OANDA_TICK};
 use crate::models::{BotConfig, Candle, Signal, Timeframe};
 use crate::news_filter::ImpactLevel;
-use crate::risk_guardrails::evaluate_risk_guardrails;
+use crate::risk_guardrails::{
+    buy_rsi_h1_block_reason, counter_macro_block_reason, evaluate_risk_guardrails,
+};
 use crate::risk_manager::PositionSizer;
 use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot};
 use crate::scenario_signal::{best_early_entry_scenario, signal_from_scenario};
@@ -756,6 +758,28 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     warn!(
                         "🛑 [Scanner] Quota ngày đã đạt sau phân tích — bỏ qua {} {}",
                         signal.signal_type, signal.symbol
+                    );
+                    continue;
+                }
+
+                if let Some(reason) = counter_macro_block_reason(&config, &signal) {
+                    warn!(
+                        "🛑 [Macro Filter] Bỏ qua {} {}: {}",
+                        signal.signal_type, signal.symbol, reason
+                    );
+                    continue;
+                }
+                let rsi_h1 = state
+                    .market_context
+                    .read()
+                    .await
+                    .as_ref()
+                    .and_then(|context| context.rsi_h1.as_ref())
+                    .and_then(|snapshot| snapshot.value);
+                if let Some(reason) = buy_rsi_h1_block_reason(&config, &signal, rsi_h1) {
+                    warn!(
+                        "🛑 [RSI H1 Guard] Bỏ qua {} {}: {}",
+                        signal.signal_type, signal.symbol, reason
                     );
                     continue;
                 }

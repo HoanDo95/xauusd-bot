@@ -9,7 +9,9 @@ use crate::models::{
     TradingViewWebhookPayload,
 };
 use crate::news_filter::MacroBias;
-use crate::risk_guardrails::evaluate_risk_guardrails;
+use crate::risk_guardrails::{
+    buy_rsi_h1_block_reason, counter_macro_block_reason, evaluate_risk_guardrails,
+};
 use crate::risk_manager::PositionSizer;
 use crate::rsi::rsi_snapshot;
 use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
@@ -294,6 +296,28 @@ pub(super) async fn receive_candle_webhook(
             return (
                 StatusCode::OK,
                 Json(json!({ "status": "blocked_by_quota" })),
+            );
+        }
+        let rsi_h1 = state
+            .market_context
+            .read()
+            .await
+            .as_ref()
+            .and_then(|context| context.rsi_h1.as_ref())
+            .and_then(|snapshot| snapshot.value);
+        if let Some(reason) = counter_macro_block_reason(&config, &signal)
+            .or_else(|| buy_rsi_h1_block_reason(&config, &signal, rsi_h1))
+        {
+            warn!(
+                "🛑 [Candle Webhook] Macro/RSI filter — bỏ qua {}: {}",
+                signal.dedup_key, reason
+            );
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "blocked_by_macro_filter",
+                    "reason": reason
+                })),
             );
         }
         let guardrail = evaluate_risk_guardrails(
@@ -838,6 +862,28 @@ pub(super) async fn receive_tradingview_webhook(
         return (
             StatusCode::OK,
             Json(json!({ "status": "blocked_by_quota" })),
+        );
+    }
+    let rsi_h1 = state
+        .market_context
+        .read()
+        .await
+        .as_ref()
+        .and_then(|context| context.rsi_h1.as_ref())
+        .and_then(|snapshot| snapshot.value);
+    if let Some(reason) = counter_macro_block_reason(&config, &signal)
+        .or_else(|| buy_rsi_h1_block_reason(&config, &signal, rsi_h1))
+    {
+        warn!(
+            "🛑 [TradingView Webhook] Macro/RSI filter — bỏ qua {}: {}",
+            signal.dedup_key, reason
+        );
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "status": "blocked_by_macro_filter",
+                "reason": reason
+            })),
         );
     }
     let guardrail = evaluate_risk_guardrails(

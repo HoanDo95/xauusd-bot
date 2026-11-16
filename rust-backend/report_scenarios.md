@@ -19,127 +19,127 @@ Command: `target/release/backtest_scenarios --start 2025-01-01 --end 2025-12-31`
 
 | Variant | Anti-chase | Skip COUNTER | Description |
 | --- | --- | --- | --- |
-| current | ON | no | Anti-chase ON; all valid PRIMARY scenarios. |
-| anti_chase_off | OFF | no | Anti-chase OFF; all valid PRIMARY scenarios. |
-| aligned_only | ON | yes | Anti-chase ON; skip PRIMARY scenarios with macro_alignment = COUNTER. |
-| aligned_only_no_anti_chase | OFF | yes | Anti-chase OFF; skip PRIMARY scenarios with macro_alignment = COUNTER. |
+| legacy | ON | no | Anti-chase ON; bearish_rejection ON; no BUY RSI H1 guard; all valid PRIMARY. |
+| current | ON | no | Anti-chase ON; bearish_rejection OFF; BUY RSI H1 guard ON; all valid PRIMARY. |
+| anti_chase_off | OFF | no | Anti-chase OFF; bearish_rejection OFF; BUY RSI H1 guard ON; all valid PRIMARY. |
+| aligned_only | ON | yes | Anti-chase ON; bearish_rejection OFF; BUY RSI H1 guard ON; skip COUNTER PRIMARY. |
+| aligned_only_no_anti_chase | OFF | yes | Anti-chase OFF; bearish_rejection OFF; BUY RSI H1 guard ON; skip COUNTER PRIMARY. |
 
 | Variant | Trades | Wins | Losses | Timeouts | Win rate | Avg R | Expectancy | PF | Max DD (R) | Total R | TP2 before SL | Timeout rate |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| current | 638 | 159 | 354 | 125 | 24.9% | 0.029 | 0.029 | 1.05 | 28.13 | 18.46 | 15.8% | 19.6% |
-| anti_chase_off | 630 | 159 | 346 | 125 | 25.2% | 0.044 | 0.044 | 1.08 | 27.13 | 27.52 | 16.0% | 19.8% |
-| aligned_only | 617 | 163 | 331 | 123 | 26.4% | 0.082 | 0.082 | 1.15 | 27.41 | 50.28 | 16.7% | 19.9% |
-| aligned_only_no_anti_chase | 615 | 162 | 330 | 123 | 26.3% | 0.082 | 0.082 | 1.15 | 29.41 | 50.34 | 16.4% | 20.0% |
+| legacy | 617 | 163 | 331 | 123 | 26.4% | 0.082 | 0.082 | 1.15 | 27.41 | 50.28 | 16.7% | 19.9% |
+| current | 584 | 161 | 302 | 121 | 27.6% | 0.124 | 0.124 | 1.23 | 16.81 | 72.33 | 17.6% | 20.7% |
+| anti_chase_off | 582 | 160 | 301 | 121 | 27.5% | 0.124 | 0.124 | 1.23 | 17.98 | 72.40 | 17.3% | 20.8% |
+| aligned_only | 584 | 161 | 302 | 121 | 27.6% | 0.124 | 0.124 | 1.23 | 16.81 | 72.33 | 17.6% | 20.7% |
+| aligned_only_no_anti_chase | 582 | 160 | 301 | 121 | 27.5% | 0.124 | 0.124 | 1.23 | 17.98 | 72.40 | 17.3% | 20.8% |
 
 ### Fill accounting
 
 | Variant | Filled at level | Gapped at open | Skipped, no fill | Counter skipped | Entry outside trigger range |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| current | 638 | 0 | 781 | 0 | 983 |
-| anti_chase_off | 630 | 0 | 777 | 0 | 976 |
-| aligned_only | 617 | 0 | 785 | 239 | 980 |
-| aligned_only_no_anti_chase | 615 | 0 | 786 | 189 | 978 |
+| legacy | 617 | 0 | 785 | 0 | 980 |
+| current | 584 | 0 | 780 | 0 | 973 |
+| anti_chase_off | 582 | 0 | 781 | 0 | 971 |
+| aligned_only | 584 | 0 | 780 | 0 | 973 |
+| aligned_only_no_anti_chase | 582 | 0 | 781 | 0 | 971 |
 
 ## Current variant headline
 
 | Metric | Value |
 | --- | ---: |
-| Trades | 638 |
-| Wins (TP1) | 159 |
-| Losses (SL) | 354 |
-| Timeouts | 125 |
-| Win rate | 24.9% |
-| Avg R | 0.029 |
-| Expectancy (R/trade) | 0.029 |
-| Profit factor | 1.05 |
-| Max drawdown (R) | 28.13 |
-| Total R | 18.46 |
-| TP2 before SL | 15.8% (101 of 638 trades) |
-| Timeout rate | 19.6% |
+| Trades | 584 |
+| Wins (TP1) | 161 |
+| Losses (SL) | 302 |
+| Timeouts | 121 |
+| Win rate | 27.6% |
+| Avg R | 0.124 |
+| Expectancy (R/trade) | 0.124 |
+| Profit factor | 1.23 |
+| Max drawdown (R) | 16.81 |
+| Total R | 72.33 |
+| TP2 before SL | 17.6% (103 of 584 trades) |
+| Timeout rate | 20.7% |
 
-**Uncertainty:** avg R 95% CI [-0.072, 0.130] · t=0.56 · SE=0.051 · n=638.
+**Uncertainty:** avg R 95% CI [0.017, 0.231] · t=2.27 · SE=0.054 · n=584.
 
 ### Funnel
 
 | Stage | Count |
 | --- | ---: |
 | M15 bars in period | 35040 |
-| Bars skipped while a trade was open | 28713 |
-| Setups evaluated | 6327 |
-| PRIMARY valid with levels | 5794 |
+| Bars skipped while a trade was open | 27602 |
+| Setups evaluated | 7438 |
+| PRIMARY valid with levels | 6631 |
 | PRIMARY skipped by aligned_only (COUNTER) | 0 |
-| Trigger found within 8 bars | 1419 |
-| Entries filled at level | 638 |
+| BUY skipped by RSI H1 < 30 | 508 |
+| Trigger found within 8 bars | 1364 |
+| Entries filled at level | 584 |
 | Entries gapped (filled at open) | 0 |
-| Entries skipped, no fill | 781 |
+| Entries skipped, no fill | 780 |
 | ... of which gap > 0.5R | 0 |
-| Entry inside trigger candle range | 436 |
-| Entry outside trigger candle range (diagnostic) | 983 |
+| Entry inside trigger candle range | 391 |
+| Entry outside trigger candle range (diagnostic) | 973 |
 | Skipped (no forward data) | 0 |
 | Period-end forced exits | 1 |
-| Trades simulated | 638 |
+| Trades simulated | 584 |
 
 ## By scenario (current)
 
 | Key | Trades | Wins | Losses | Timeouts | Win rate | Avg R | Profit factor | Max DD (R) | TP2 before SL |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| bearish_breakdown | 28 | 6 | 12 | 10 | 21.4% | 0.038 | 1.07 | 3.54 | 3.6% |
-| bearish_rejection | 53 | 7 | 44 | 2 | 13.2% | -0.567 | 0.32 | 31.79 | 7.5% |
-| bullish_bounce | 525 | 140 | 295 | 90 | 26.7% | 0.051 | 1.09 | 25.15 | 17.3% |
-| bullish_breakout | 32 | 6 | 3 | 23 | 18.8% | 0.645 | 5.34 | 1.82 | 15.6% |
+| bearish_breakdown | 29 | 6 | 13 | 10 | 20.7% | 0.002 | 1.00 | 3.54 | 3.5% |
+| bullish_bounce | 522 | 148 | 286 | 88 | 28.3% | 0.094 | 1.17 | 22.77 | 18.6% |
+| bullish_breakout | 33 | 7 | 3 | 23 | 21.2% | 0.701 | 6.30 | 1.82 | 15.2% |
 
 ## By scenario (aligned_only)
 
 | Key | Trades | Wins | Losses | Timeouts | Win rate | Avg R | Profit factor | Max DD (R) | TP2 before SL |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| bearish_breakdown | 28 | 6 | 12 | 10 | 21.4% | 0.038 | 1.07 | 3.54 | 3.6% |
-| bearish_rejection | 13 | 1 | 12 | 0 | 7.7% | -0.769 | 0.17 | 10.00 | 0.0% |
-| bullish_bounce | 542 | 149 | 304 | 89 | 27.5% | 0.067 | 1.12 | 26.23 | 17.9% |
-| bullish_breakout | 34 | 7 | 3 | 24 | 20.6% | 0.668 | 5.77 | 1.82 | 14.7% |
+| bearish_breakdown | 29 | 6 | 13 | 10 | 20.7% | 0.002 | 1.00 | 3.54 | 3.5% |
+| bullish_bounce | 522 | 148 | 286 | 88 | 28.3% | 0.094 | 1.17 | 22.77 | 18.6% |
+| bullish_breakout | 33 | 7 | 3 | 23 | 21.2% | 0.701 | 6.30 | 1.82 | 15.2% |
 
 ## By session (current)
 
 | Key | Trades | Wins | Losses | Timeouts | Win rate | Avg R | Profit factor | Max DD (R) | TP2 before SL |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| OUTSIDE | 356 | 89 | 199 | 68 | 25.0% | 0.031 | 1.05 | 26.08 | 14.9% |
-| VN_13_23 | 282 | 70 | 155 | 57 | 24.8% | 0.026 | 1.05 | 19.76 | 17.0% |
+| OUTSIDE | 328 | 90 | 168 | 70 | 27.4% | 0.137 | 1.26 | 19.86 | 16.2% |
+| VN_13_23 | 256 | 71 | 134 | 51 | 27.7% | 0.107 | 1.20 | 15.42 | 19.5% |
 
 ## By macro bias (current)
 
 | Key | Trades | Wins | Losses | Timeouts | Win rate | Avg R | Profit factor | Max DD (R) | TP2 before SL |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| BEARISH | 41 | 7 | 24 | 10 | 17.1% | -0.218 | 0.66 | 8.95 | 2.4% |
-| BULLISH | 597 | 152 | 330 | 115 | 25.5% | 0.046 | 1.08 | 23.19 | 16.8% |
+| BEARISH | 29 | 6 | 13 | 10 | 20.7% | 0.002 | 1.00 | 3.54 | 3.5% |
+| BULLISH | 555 | 155 | 289 | 111 | 27.9% | 0.130 | 1.24 | 18.14 | 18.4% |
 
 ## By macro alignment (current)
 
 | Key | Trades | Wins | Losses | Timeouts | Win rate | Avg R | Profit factor | Max DD (R) | TP2 before SL |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| ALIGNED | 598 | 153 | 322 | 123 | 25.6% | 0.064 | 1.12 | 26.34 | 16.2% |
-| COUNTER | 40 | 6 | 32 | 2 | 15.0% | -0.501 | 0.38 | 21.79 | 10.0% |
+| ALIGNED | 584 | 161 | 302 | 121 | 27.6% | 0.124 | 1.23 | 16.81 | 17.6% |
 
 ## By RSI H1 bucket (current)
 
 | Key | Trades | Wins | Losses | Timeouts | Win rate | Avg R | Profit factor | Max DD (R) | TP2 before SL |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 30-65 | 470 | 118 | 259 | 93 | 25.1% | 0.041 | 1.07 | 20.15 | 16.4% |
-| <30 | 49 | 7 | 36 | 6 | 14.3% | -0.366 | 0.51 | 24.34 | 8.2% |
-| >65 | 119 | 34 | 59 | 26 | 28.6% | 0.144 | 1.27 | 12.53 | 16.8% |
+| 30-65 | 487 | 123 | 268 | 96 | 25.3% | 0.043 | 1.08 | 19.62 | 16.6% |
+| >65 | 97 | 38 | 34 | 25 | 39.2% | 0.527 | 2.38 | 4.88 | 22.7% |
 
 ## By trigger direction (current)
 
 | Key | Trades | Wins | Losses | Timeouts | Win rate | Avg R | Profit factor | Max DD (R) | TP2 before SL |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| ABOVE | 32 | 6 | 3 | 23 | 18.8% | 0.645 | 5.34 | 1.82 | 15.6% |
-| BELOW | 28 | 6 | 12 | 10 | 21.4% | 0.038 | 1.07 | 3.54 | 3.6% |
-| TOUCH | 578 | 147 | 339 | 92 | 25.4% | -0.006 | 0.99 | 37.28 | 16.4% |
+| ABOVE | 33 | 7 | 3 | 23 | 21.2% | 0.701 | 6.30 | 1.82 | 15.2% |
+| BELOW | 29 | 6 | 13 | 10 | 20.7% | 0.002 | 1.00 | 3.54 | 3.5% |
+| TOUCH | 522 | 148 | 286 | 88 | 28.3% | 0.094 | 1.17 | 22.77 | 18.6% |
 
 ## By early-entry confidence (current)
 
 | Key | Trades | Wins | Losses | Timeouts | Win rate | Avg R | Profit factor | Max DD (R) | TP2 before SL |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| <90 | 431 | 103 | 249 | 79 | 23.9% | -0.035 | 0.94 | 33.59 | 14.4% |
-| >=90 | 207 | 56 | 105 | 46 | 27.1% | 0.162 | 1.31 | 13.26 | 18.8% |
+| <90 | 367 | 103 | 192 | 72 | 28.1% | 0.107 | 1.20 | 14.15 | 16.9% |
+| >=90 | 217 | 58 | 110 | 49 | 26.7% | 0.152 | 1.29 | 13.81 | 18.9% |
 
 ## Caveats
 

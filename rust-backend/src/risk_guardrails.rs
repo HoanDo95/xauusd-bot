@@ -165,6 +165,42 @@ pub fn evaluate_risk_guardrails(
     RiskGuardrailDecision::allow()
 }
 
+/// Backtest 2025: COUNTER-macro PRIMARY trades averaged -0.50R. Block them
+/// deterministically unless the operator explicitly disables the filter.
+pub fn counter_macro_block_reason(config: &BotConfig, signal: &Signal) -> Option<String> {
+    if config.counter_macro_filter_enabled
+        && signal
+            .macro_flow_alignment
+            .as_deref()
+            .is_some_and(|alignment| alignment.eq_ignore_ascii_case("COUNTER"))
+    {
+        Some("COUNTER macro — backtest 2025 negative; bỏ qua entry.".to_string())
+    } else {
+        None
+    }
+}
+
+/// Backtest 2025: BUY entries with RSI H1 < 30 averaged -0.32R, mostly
+/// bullish_bounce catching a falling knife. Block BUY in deep H1 oversold.
+pub fn buy_rsi_h1_block_reason(
+    config: &BotConfig,
+    signal: &Signal,
+    rsi_h1: Option<f64>,
+) -> Option<String> {
+    if signal.signal_type != SignalType::Buy || config.min_rsi_h1_for_buy <= 0.0 {
+        return None;
+    }
+    let value = rsi_h1.filter(|value| value.is_finite())?;
+    if value < config.min_rsi_h1_for_buy {
+        Some(format!(
+            "BUY RSI H1 {:.2} < {:.2} — không mua đuổi vùng quá bán.",
+            value, config.min_rsi_h1_for_buy
+        ))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,6 +397,33 @@ mod tests {
         let decision =
             evaluate_risk_guardrails(&config(), &signals, now, Some(SignalType::Buy), Some(10.0));
         assert!(decision.allowed);
+    }
+
+    #[test]
+    fn blocks_counter_macro_when_enabled() {
+        let now = at(2026, 11, 16, 10, 0);
+        let mut candidate = signal(SignalStatus::Active, SignalType::Sell, now, 10.0, false);
+        candidate.macro_flow_alignment = Some("COUNTER".to_string());
+        assert!(counter_macro_block_reason(&config(), &candidate).is_some());
+
+        let mut disabled = config();
+        disabled.counter_macro_filter_enabled = false;
+        assert!(counter_macro_block_reason(&disabled, &candidate).is_none());
+    }
+
+    #[test]
+    fn blocks_buy_when_rsi_h1_is_deep_oversold() {
+        let now = at(2026, 11, 16, 10, 0);
+        let buy = signal(SignalStatus::Active, SignalType::Buy, now, 10.0, false);
+        assert!(buy_rsi_h1_block_reason(&config(), &buy, Some(25.0)).is_some());
+        assert!(buy_rsi_h1_block_reason(&config(), &buy, Some(35.0)).is_none());
+
+        let sell = signal(SignalStatus::Active, SignalType::Sell, now, 10.0, false);
+        assert!(buy_rsi_h1_block_reason(&config(), &sell, Some(25.0)).is_none());
+
+        let mut disabled = config();
+        disabled.min_rsi_h1_for_buy = 0.0;
+        assert!(buy_rsi_h1_block_reason(&disabled, &buy, Some(25.0)).is_none());
     }
 
     #[test]

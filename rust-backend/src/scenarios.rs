@@ -344,6 +344,7 @@ pub fn build_scenarios(
         .map(|draft| finalize_scenario(draft, &inputs))
         .collect();
     apply_anti_chase_filter(&mut scenarios, &inputs);
+    apply_strategy_filters(&mut scenarios, &inputs);
     let scenarios = rank_scenarios(scenarios);
 
     ScenarioResponse {
@@ -863,6 +864,24 @@ fn rank_scenarios(mut scenarios: Vec<Scenario>) -> Vec<Scenario> {
         return scenarios;
     }
 
+    // Backtest 2025: COUNTER-macro PRIMARY trades averaged -0.50R and were
+    // statistically negative. Prefer an aligned scenario for PRIMARY; if none
+    // exists, keep the counter scenario visible but mark it non-tradable.
+    if scenarios[0].macro_alignment.eq_ignore_ascii_case("COUNTER") {
+        if let Some(aligned_index) = scenarios
+            .iter()
+            .position(|scenario| scenario.macro_alignment.eq_ignore_ascii_case("ALIGNED"))
+        {
+            let aligned = scenarios.remove(aligned_index);
+            scenarios.insert(0, aligned);
+        } else {
+            scenarios[0].valid = false;
+            scenarios[0]
+                .notes
+                .push("COUNTER macro — không có setup aligned, không vào lệnh.".to_string());
+        }
+    }
+
     let primary_bias = scenarios[0].bias.clone();
     let alternate_index = scenarios
         .iter()
@@ -968,6 +987,22 @@ pub fn anti_chase_blocks_breakout(
             RsiDivergence::None => "None",
         }
     ))
+}
+
+fn apply_strategy_filters(scenarios: &mut [Scenario], inputs: &ScenarioInputs<'_>) {
+    if inputs.config.bearish_rejection_enabled {
+        return;
+    }
+    for scenario in scenarios.iter_mut() {
+        if scenario.id == "bearish_rejection" {
+            scenario.valid = false;
+            scenario.priority = scenario.priority.min(0);
+            scenario.notes.push(
+                "Backtest 2025: bearish_rejection -0.57R/trade — đang tắt; bật bearish_rejection_enabled để tham khảo."
+                    .to_string(),
+            );
+        }
+    }
 }
 
 fn apply_anti_chase_filter(scenarios: &mut [Scenario], inputs: &ScenarioInputs<'_>) {
@@ -1362,6 +1397,7 @@ mod tests {
         BotConfig {
             lookback_period: 30,
             min_risk_reward: 2.0,
+            bearish_rejection_enabled: true,
             ..BotConfig::default()
         }
     }
@@ -1913,6 +1949,110 @@ mod tests {
         assert_eq!(signature(&first), signature(&second));
         assert_eq!(first.scenarios[0].role, "PRIMARY");
         assert_eq!(first.scenarios[1].role, "ALTERNATE");
+    }
+
+    fn ranked_scenario(
+        id: &str,
+        bias: &str,
+        alignment: &str,
+        valid: bool,
+        priority: i32,
+    ) -> Scenario {
+        let mut scenario = trigger_scenario("ABOVE", Some(2700.0));
+        scenario.id = id.to_string();
+        scenario.name = id.to_string();
+        scenario.bias = bias.to_string();
+        scenario.macro_alignment = alignment.to_string();
+        scenario.valid = valid;
+        scenario.priority = priority;
+        scenario
+    }
+
+    #[test]
+    fn counter_primary_is_replaced_by_aligned_scenario() {
+        let ranked = rank_scenarios(vec![
+            ranked_scenario("counter_valid", "BEARISH", "COUNTER", true, 300),
+            ranked_scenario("aligned_invalid", "BULLISH", "ALIGNED", false, 100),
+        ]);
+
+        assert_eq!(ranked[0].id, "aligned_invalid");
+        assert_eq!(ranked[0].role, "PRIMARY");
+        assert!(!ranked[0].valid);
+    }
+
+    #[test]
+    fn counter_only_primary_is_marked_non_tradable() {
+        let ranked = rank_scenarios(vec![
+            ranked_scenario("counter_a", "BEARISH", "COUNTER", true, 300),
+            ranked_scenario("counter_b", "BULLISH", "COUNTER", true, 200),
+        ]);
+
+        assert_eq!(ranked[0].id, "counter_a");
+        assert_eq!(ranked[0].role, "PRIMARY");
+        assert!(!ranked[0].valid);
+        assert!(ranked[0]
+            .notes
+            .iter()
+            .any(|note| note.contains("COUNTER macro")));
+    }
+
+    #[test]
+    fn aligned_primary_stays_primary() {
+        let ranked = rank_scenarios(vec![
+            ranked_scenario("aligned_valid", "BEARISH", "ALIGNED", true, 300),
+            ranked_scenario("counter_valid", "BULLISH", "COUNTER", true, 250),
+        ]);
+
+        assert_eq!(ranked[0].id, "aligned_valid");
+        assert_eq!(ranked[0].role, "PRIMARY");
+        assert!(ranked[0].valid);
+    }
+
+    #[test]
+    fn bearish_rejection_is_disabled_by_default() {
+        let context = anti_chase_context(45.0, 50.0, 2680.0);
+        let macro_flow = macro_snapshot("BEARISH", 95);
+        let mut config = config();
+        config.bearish_rejection_enabled = false;
+
+        let response = build_scenarios(
+            &zigzag_candles(60),
+            &config,
+            None,
+            Some(&context),
+            Some(&macro_flow),
+            "TEST",
+            "TEST_VOLUME",
+            BASE_TS,
+        );
+        let rejection = response
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == "bearish_rejection")
+            .expect("bearish rejection");
+        assert!(!rejection.valid);
+        assert!(rejection
+            .notes
+            .iter()
+            .any(|note| note.contains("bearish_rejection_enabled")));
+
+        config.bearish_rejection_enabled = true;
+        let enabled = build_scenarios(
+            &zigzag_candles(60),
+            &config,
+            None,
+            Some(&context),
+            Some(&macro_flow),
+            "TEST",
+            "TEST_VOLUME",
+            BASE_TS,
+        );
+        let rejection_enabled = enabled
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == "bearish_rejection")
+            .expect("enabled bearish rejection");
+        assert!(rejection_enabled.valid);
     }
 
     #[test]

@@ -1377,6 +1377,7 @@ struct Funnel {
     setups_evaluated: usize,
     primary_valid: usize,
     primary_skipped_counter: usize,
+    buy_rsi_h1_skipped: usize,
     trigger_found: usize,
     skipped_no_forward: usize,
     entries_filled_at_level: usize,
@@ -1395,6 +1396,8 @@ struct VariantConfig {
     description: String,
     anti_chase_filter_enabled: bool,
     aligned_only: bool,
+    buy_rsi_h1_guard: bool,
+    bearish_rejection_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1769,6 +1772,12 @@ fn write_funnel_markdown(output: &mut String, funnel: &Funnel, trigger_wait_bars
     .expect("write to string");
     writeln!(
         output,
+        "| BUY skipped by RSI H1 < 30 | {} |",
+        funnel.buy_rsi_h1_skipped
+    )
+    .expect("write to string");
+    writeln!(
+        output,
         "| Trigger found within {} bars | {} |",
         trigger_wait_bars, funnel.trigger_found
     )
@@ -2081,6 +2090,8 @@ fn print_summary(report: &Report) {
 struct RunOptions {
     anti_chase_filter_enabled: bool,
     aligned_only: bool,
+    buy_rsi_h1_guard: bool,
+    bearish_rejection_enabled: bool,
 }
 
 struct RunResult {
@@ -2102,6 +2113,8 @@ fn run_variant(
     let config = BotConfig {
         min_risk_reward: 2.0,
         anti_chase_filter_enabled: options.anti_chase_filter_enabled,
+        bearish_rejection_enabled: options.bearish_rejection_enabled,
+        min_rsi_h1_for_buy: if options.buy_rsi_h1_guard { 30.0 } else { 0.0 },
         early_entry_enabled: true,
         early_entry_min_confidence: 90,
         lookback_period: 30,
@@ -2156,6 +2169,15 @@ fn run_variant(
             continue;
         };
         funnel.primary_valid += 1;
+
+        let rsi_h1 = context.rsi_h1.as_ref().and_then(|snapshot| snapshot.value);
+        if options.buy_rsi_h1_guard
+            && side == SignalType::Buy
+            && rsi_h1.is_some_and(|value| value < 30.0)
+        {
+            funnel.buy_rsi_h1_skipped += 1;
+            continue;
+        }
 
         if options.aligned_only && scenario.macro_alignment.eq_ignore_ascii_case("COUNTER") {
             funnel.primary_skipped_counter += 1;
@@ -2357,33 +2379,57 @@ async fn run() -> Result<()> {
 
     let variant_specs = [
         (
+            "legacy",
+            "Anti-chase ON; bearish_rejection ON; no BUY RSI H1 guard; all valid PRIMARY.",
+            true,
+            false,
+            false,
+            true,
+        ),
+        (
             "current",
-            "Anti-chase ON; all valid PRIMARY scenarios.",
+            "Anti-chase ON; bearish_rejection OFF; BUY RSI H1 guard ON; all valid PRIMARY.",
+            true,
+            false,
             true,
             false,
         ),
         (
             "anti_chase_off",
-            "Anti-chase OFF; all valid PRIMARY scenarios.",
+            "Anti-chase OFF; bearish_rejection OFF; BUY RSI H1 guard ON; all valid PRIMARY.",
             false,
+            false,
+            true,
             false,
         ),
         (
             "aligned_only",
-            "Anti-chase ON; skip PRIMARY scenarios with macro_alignment = COUNTER.",
+            "Anti-chase ON; bearish_rejection OFF; BUY RSI H1 guard ON; skip COUNTER PRIMARY.",
             true,
             true,
+            true,
+            false,
         ),
         (
             "aligned_only_no_anti_chase",
-            "Anti-chase OFF; skip PRIMARY scenarios with macro_alignment = COUNTER.",
+            "Anti-chase OFF; bearish_rejection OFF; BUY RSI H1 guard ON; skip COUNTER PRIMARY.",
             false,
             true,
+            true,
+            false,
         ),
     ];
 
     let mut variants: BTreeMap<String, VariantReport> = BTreeMap::new();
-    for (name, description, anti_chase, aligned_only) in variant_specs {
+    for (
+        name,
+        description,
+        anti_chase,
+        aligned_only,
+        buy_rsi_h1_guard,
+        bearish_rejection_enabled,
+    ) in variant_specs
+    {
         println!("Running variant {name}...");
         let result = run_variant(
             &m15,
@@ -2395,6 +2441,8 @@ async fn run() -> Result<()> {
             RunOptions {
                 anti_chase_filter_enabled: anti_chase,
                 aligned_only,
+                buy_rsi_h1_guard,
+                bearish_rejection_enabled,
             },
         );
         variants.insert(
@@ -2405,6 +2453,8 @@ async fn run() -> Result<()> {
                     description: description.to_string(),
                     anti_chase_filter_enabled: anti_chase,
                     aligned_only,
+                    buy_rsi_h1_guard,
+                    bearish_rejection_enabled,
                 },
                 funnel: result.funnel,
                 overall: result.overall,
@@ -2415,6 +2465,7 @@ async fn run() -> Result<()> {
     }
 
     let comparison: Vec<ComparisonRow> = [
+        "legacy",
         "current",
         "anti_chase_off",
         "aligned_only",
