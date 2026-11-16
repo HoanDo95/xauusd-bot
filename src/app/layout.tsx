@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
+import AuthShield from '@/components/AuthShield';
 import './globals.css';
 
 const title = 'Gold Signal Bot — XAU/USD Sniper Engine';
@@ -27,6 +28,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="vi" className="dark">
       <body className="min-h-screen bg-neutral-950 text-neutral-100 font-sans antialiased selection:bg-amber-500/20 selection:text-amber-300">
+        <AuthShield />
         {children}
       </body>
     </html>
