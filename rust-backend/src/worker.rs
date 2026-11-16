@@ -7,7 +7,10 @@ use crate::api::{attach_macro_flow_alignment, persist_state, AppState};
 use crate::market_context::{
     build_market_context, htf_allows_signal, shift_candles_prices, MarketContext,
 };
-use crate::market_feed::{MarketDataFeed, MarketFeedSnapshot, VOLUME_SOURCE_OANDA_TICK};
+use crate::market_feed::{
+    volume_source_has_buy_sell_delta, MarketDataFeed, MarketFeedSnapshot,
+    SOURCE_TWELVEDATA_YAHOO_VOLUME,
+};
 use crate::models::{BotConfig, Candle, Signal, Timeframe};
 use crate::news_filter::ImpactLevel;
 use crate::risk_guardrails::{
@@ -113,9 +116,14 @@ fn htf_price_source(spot_basis: Option<f64>) -> String {
     }
 }
 
-/// Nhãn nguồn giá HTF khi dùng TwelveData; volume proxy chỉ có khi Binance khớp timestamp.
-fn twelve_htf_price_source(volume_proxy_matched: bool) -> &'static str {
-    if volume_proxy_matched {
+/// Nhãn nguồn giá HTF khi dùng TwelveData; ưu tiên nhãn Yahoo nếu có.
+fn twelve_htf_price_source(sources: &[&str]) -> &'static str {
+    if sources
+        .iter()
+        .any(|source| source.contains("+YAHOO_FUTURES_VOLUME"))
+    {
+        SOURCE_TWELVEDATA_YAHOO_VOLUME
+    } else if sources.iter().any(|source| source.contains("+PAXG_VOLUME")) {
         "TWELVEDATA_XAUUSD+PAXG_VOLUME"
     } else {
         "TWELVEDATA_XAUUSD"
@@ -178,14 +186,10 @@ pub async fn fetch_market_context(
 
     let twelve_context = h4_source.starts_with("TWELVEDATA");
     let oanda_context = h4_source.starts_with("OANDA");
-    let volume_proxy_matched = twelve_context
-        && [&h4_source, &d1_source, &h1_source]
-            .iter()
-            .any(|source| source.contains("+PAXG_VOLUME"));
     let price_source = if oanda_context {
         h4_source.clone()
     } else if twelve_context {
-        twelve_htf_price_source(volume_proxy_matched).to_string()
+        twelve_htf_price_source(&[&h4_source, &d1_source, &h1_source]).to_string()
     } else {
         htf_price_source(spot_basis)
     };
@@ -303,6 +307,9 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
 
             // 6.1 Luôn refresh nến thật đã đóng cửa (kể cả khi bot tạm dừng).
             let config = state.config.read().await.clone();
+            state
+                .market_feed
+                .set_yahoo_futures_volume_enabled(config.yahoo_futures_volume_enabled);
             let mut snapshot = state
                 .market_feed
                 .fetch_market_snapshot(
@@ -511,12 +518,11 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     // Macro/flow alignment is advisory context for the AI and UI.
                     attach_macro_flow_alignment(&mut signal, macro_flow.as_ref());
 
-                    let delta_for_ai =
-                        if active_volume_source.eq_ignore_ascii_case(VOLUME_SOURCE_OANDA_TICK) {
-                            None
-                        } else {
-                            Some(&delta)
-                        };
+                    let delta_for_ai = if volume_source_has_buy_sell_delta(&active_volume_source) {
+                        Some(&delta)
+                    } else {
+                        None
+                    };
                     let decision = review_market_decision(
                         Some(&signal),
                         context.as_ref(),
@@ -547,7 +553,7 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     if decision.macro_flow_note.is_some() {
                         signal.macro_flow_note = decision.macro_flow_note.clone();
                     }
-                    if !active_volume_source.eq_ignore_ascii_case(VOLUME_SOURCE_OANDA_TICK) {
+                    if volume_source_has_buy_sell_delta(&active_volume_source) {
                         signal.delta_ratio = Some(delta.delta_ratio);
                         signal.cvd = Some(delta.cvd);
                         signal.delta = Some(delta.delta);
@@ -631,9 +637,10 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     // 6.7c Volume Delta/CVD tùy chọn (mặc định OFF).
                     // Chỉ áp dụng cho tín hiệu thật; simulation bỏ qua hoàn toàn.
                     if config.volume_delta_filter_enabled && !signal.is_simulated {
-                        if active_volume_source.eq_ignore_ascii_case(VOLUME_SOURCE_OANDA_TICK) {
+                        if !volume_source_has_buy_sell_delta(&active_volume_source) {
                             warn!(
-                                "⚠️ [Volume Delta] OANDA tick volume không có buy/sell delta — bỏ qua filter."
+                                "⚠️ [Volume Delta] Nguồn {} không có buy/sell delta — bỏ qua filter.",
+                                active_volume_source
                             );
                         } else {
                             let (allowed, reason, snapshot) =
@@ -833,6 +840,9 @@ pub fn spawn_htf_context(state: AppState) {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
             let config = state.config.read().await.clone();
+            state
+                .market_feed
+                .set_yahoo_futures_volume_enabled(config.yahoo_futures_volume_enabled);
             let spot_basis = *state.spot_basis.read().await;
             if let Some((context, h4, d1)) = fetch_market_context(
                 &state.market_feed,
@@ -1066,10 +1076,17 @@ mod tests {
         assert_eq!(htf_price_source(None), "BINANCE_PAXG");
         assert_eq!(htf_price_source(Some(5.07)), "BINANCE_PAXG+TWELVEDATA_SPOT");
         assert_eq!(
-            twelve_htf_price_source(true),
+            twelve_htf_price_source(&["TWELVEDATA_XAUUSD+YAHOO_FUTURES_VOLUME"]),
+            "TWELVEDATA_XAUUSD+YAHOO_FUTURES_VOLUME"
+        );
+        assert_eq!(
+            twelve_htf_price_source(&["TWELVEDATA_XAUUSD+PAXG_VOLUME"]),
             "TWELVEDATA_XAUUSD+PAXG_VOLUME"
         );
-        assert_eq!(twelve_htf_price_source(false), "TWELVEDATA_XAUUSD");
+        assert_eq!(
+            twelve_htf_price_source(&["TWELVEDATA_XAUUSD"]),
+            "TWELVEDATA_XAUUSD"
+        );
     }
 
     #[test]

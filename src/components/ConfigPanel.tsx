@@ -627,13 +627,33 @@ export const ConfigPanel: React.FC<Props> = ({
                 className="w-full bg-neutral-950 border border-neutral-800 focus:border-sky-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
               >
                 <option value="BINANCE_PAXG">Binance PAXG/USDT (OHLCV + proxy volume)</option>
-                <option value="TWELVEDATA">TwelveData XAU/USD + PAXG volume proxy</option>
+                <option value="TWELVEDATA">TwelveData XAU/USD + GC=F volume</option>
                 <option value="OANDA">OANDA XAU/USD + tick volume</option>
               </select>
+              <label className="flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={formData.yahoo_futures_volume_enabled ?? true}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      yahoo_futures_volume_enabled: e.target.checked,
+                    })
+                  }
+                  className="accent-sky-500 w-4 h-4 rounded cursor-pointer mt-0.5"
+                />
+                <span className="text-[11px] text-neutral-300 leading-snug">
+                  Volume Yahoo GC=F (COMEX futures)
+                  <span className="block text-[10px] text-neutral-500">
+                    Fallback PAXG → NONE · AI weight &lt;20% · env{' '}
+                    <span className="font-mono">YAHOO_FUTURES_VOLUME_ENABLED</span> là hard kill
+                  </span>
+                </span>
+              </label>
               <span className="text-[11px] text-neutral-500">
                 OANDA cần <span className="font-mono text-neutral-400">OANDA_API_TOKEN</span> (demo
                 là đủ). OANDA cho tick volume XAU/USD, không có taker buy/sell; delta/CVD sẽ tắt.
-                TwelveData vẫn dùng PAXG proxy.
+                TwelveData ưu tiên volume GC=F, fallback PAXG.
               </span>
             </div>
 

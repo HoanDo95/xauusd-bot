@@ -13,8 +13,8 @@ Telegram delivery, a trader dashboard, and **unlimited signals/day by default**
 
 - **Rust engine** (`rust-backend/`): Tokio + Axum, scans closed M15/H1 candles 24/7.
 - **Selectable data source**: Binance `PAXGUSDT` (default, native volume) or
-  TwelveData XAU/USD OHLC with a Binance PAXG volume proxy; RSI is computed
-  locally from the selected closes.
+  TwelveData XAU/USD OHLC with Yahoo GC=F volume (fallback PAXG → NONE); RSI is
+  computed locally from the selected closes.
 - **Dynamic S/R zones**: swing-high/low clustering, not fixed lines.
 - **Pinbar + volume absorption**: rejection wick + volume ≥ 1.5× MA20.
 - **EMA50/200 trend filter**: `BULLISH`, `BEARISH`, `NEUTRAL`, or `AUTO`.
@@ -71,14 +71,15 @@ Telegram delivery, a trader dashboard, and **unlimited signals/day by default**
   không phải bộ lọc cứng.
 - **Divergence** — phân kỳ RSI giữa giá và động lượng; cảnh báo độc lập, không
   phải tín hiệu vào lệnh.
-- **Volume proxy** — volume PAXG dùng thay cho volume XAU/USD thật; chỉ nên xem
-  là tương đối.
+- **Volume proxy** — volume Yahoo GC=F (COMEX futures) hoặc PAXG dùng thay cho
+  tick volume XAU/USD thật; chỉ nên xem là tương đối.
 
 ## Free data sources (no paid API keys)
 
 | Data | Source | Key |
 |---|---|---|
 | Gold OHLCV + volume (default) | Binance `PAXGUSDT` public API | none |
+| Gold OHLC + futures volume proxy | TwelveData `time_series` XAU/USD + Yahoo `GC=F` volume (fallback PAXG) | optional `TWELVEDATA_API_KEY` |
 | Gold OHLC + volume proxy | TwelveData `time_series` XAU/USD + Binance `PAXGUSDT` volume | optional `TWELVEDATA_API_KEY` |
 | Gold OHLC + tick volume | OANDA v20 `XAU_USD` candles (`volume` = tick volume) | optional `OANDA_API_TOKEN` |
 | Spot `XAU/USD` reference (basis only) | TwelveData free `/price`, fallback `gold-api.com` | optional |
@@ -111,10 +112,17 @@ TwelveData free tier of 800/day). In `BINANCE_PAXG` mode, TwelveData
 `time_series` is only a fallback for the signal-timeframe feed when Binance
 fails. In `TWELVEDATA` mode, OHLC comes from `time_series`
 (`15min` / `1h` / `4h` / `1day`, `timezone=UTC`, `order=ASC`) and volume is
-merged from Binance PAXG by matching candle timestamps; RSI is computed locally
-from the TwelveData closes. TwelveData responses are cached per timeframe
-(M15 300s, H1/H4 900s, D1 3600s), keeping usage at roughly 500 requests/day on
-the free tier. If the proxy has no matching timestamps, the feed reports
+merged from Yahoo GC=F (COMEX futures) by matching candle timestamps, with
+Binance PAXG as fallback; RSI is computed locally from the TwelveData closes.
+Yahoo uses `period1/period2` (the `range=` endpoint returns HTTP 429 from the
+production network), a 10-minute cache, retry/backoff and a 30-minute circuit
+breaker after three consecutive failures. Set
+`YAHOO_FUTURES_VOLUME_ENABLED=false` in `rust-backend/.env` for a hard startup
+kill, or toggle `yahoo_futures_volume_enabled` in the dashboard for a runtime
+kill. The feed reports `volumeSource = "YAHOO_FUTURES_PROXY"` when Yahoo
+matches, `"BINANCE_PAXG_PROXY"` when it falls back, and `"NONE"` when neither
+matches. TwelveData responses are cached per timeframe (M15 300s, H1/H4 900s,
+D1 3600s), keeping usage at roughly 500 requests/day on the free tier. If the proxy has no matching timestamps, the feed reports
 `volumeSource = "NONE"`; turn off `volume_filter_enabled` in the dashboard if
 you want signals without volume. A persisted `data_source` is preserved on
 startup; only empty/unknown values fall back to `BINANCE_PAXG`. The manual
@@ -226,8 +234,9 @@ every hard risk rule; the AI chooses the direction:
   a +10 confluence bonus and can reach `>=90` when macro/D1-H4 and RSI H1 are
   healthy. This is confirmation of an exhausted pullback, not a breakout chase.
 - **PAXG volume is a weak proxy:** it is weighted below 10% in the AI brief and
-  never used as the main reason for a signal. True XAU/USD tick volume requires
-  a paid OANDA/FXCM/CME feed.
+  never used as the main reason for a signal. Yahoo GC=F futures volume is
+  weighted below 20% and is also confirmation-only. True XAU/USD tick volume
+  requires a paid OANDA/FXCM/CME feed.
 - One AI decision call per real signal attempt. Multiple signals per day are
   possible by default; each still goes through AI Decision + hard risk +
   session/news + per-candle dedup. Simulated setups never call the AI and never
@@ -464,11 +473,13 @@ scenario and the macro/flow snapshot into one read-only verdict:
 
 - `caution` is `COUNTER_MACRO` when macro/flow opposes the signal or primary
   scenario, `FILTER_BLOCKED` when a display filter blocks the setup, and
-  `VOLUME_PROXY` for an actionable signal whose volume is a PAXG proxy.
-- `volumeQuality` maps `BINANCE_PAXG_PROXY → PAXG_PROXY`,
-  `BINANCE_PAXG → PAXG`, `NONE → NONE`, otherwise `UNKNOWN`. For PAXG/PAXG
-  proxy the API also returns: “Volume là proxy PAXG, không phải volume XAUUSD
-  thật; chỉ nên xem là tương đối.”
+  `VOLUME_PROXY` for an actionable signal whose volume is a PAXG or GC=F proxy.
+- `volumeQuality` maps `YAHOO_FUTURES_PROXY → FUTURES_PROXY`,
+  `BINANCE_PAXG_PROXY → PAXG_PROXY`, `BINANCE_PAXG → PAXG`, `NONE → NONE`,
+  otherwise `UNKNOWN`. For PAXG/PAXG proxy the API also returns: “Volume là
+  proxy PAXG, không phải volume XAUUSD thật; chỉ nên xem là tương đối.” For
+  GC=F it returns: “Volume là COMEX GC=F futures proxy, không phải tick volume
+  spot XAU/USD; chỉ nên xem là tương đối.”
 - Proximity fields: `distanceToTrigger` (USD), `distanceAtr` (H4 ATR units) and
   `proximity` (`NEAR` ≤ 0.5 ATR, `MID` ≤ 1.5 ATR, `FAR` > 1.5 ATR, `UNKNOWN`
   when price/trigger/ATR is missing). The card shows

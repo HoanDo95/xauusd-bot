@@ -9,6 +9,8 @@ use serde_json::{json, Value};
 
 const VOLUME_PROXY_WARNING: &str =
     "Volume là proxy PAXG, không phải volume XAUUSD thật; chỉ nên xem là tương đối.";
+const VOLUME_FUTURES_PROXY_WARNING: &str =
+    "Volume là COMEX GC=F futures proxy, không phải tick volume spot XAU/USD; chỉ nên xem là tương đối.";
 const NO_DATA_FALLBACK: &str = "Chưa đủ nến để phân tích.";
 const NO_TRADE_HEADLINE: &str = "Đứng ngoài";
 
@@ -40,6 +42,7 @@ pub(super) async fn get_action_view(State(state): State<AppState>) -> impl IntoR
 /// Map the active volume feed to a display quality label.
 fn volume_quality(volume_source: &str) -> &'static str {
     match volume_source.trim().to_uppercase().as_str() {
+        "YAHOO_FUTURES_PROXY" => "FUTURES_PROXY",
         "BINANCE_PAXG_PROXY" => "PAXG_PROXY",
         "BINANCE_PAXG" => "PAXG",
         "NONE" => "NONE",
@@ -48,7 +51,11 @@ fn volume_quality(volume_source: &str) -> &'static str {
 }
 
 fn volume_warning(quality: &str) -> Option<&'static str> {
-    matches!(quality, "PAXG" | "PAXG_PROXY").then_some(VOLUME_PROXY_WARNING)
+    match quality {
+        "PAXG" | "PAXG_PROXY" => Some(VOLUME_PROXY_WARNING),
+        "FUTURES_PROXY" => Some(VOLUME_FUTURES_PROXY_WARNING),
+        _ => None,
+    }
 }
 
 /// Distance-to-trigger proximity bucket used by the Action View card.
@@ -327,7 +334,7 @@ pub(super) fn build_action_view(
     // primary caution when the view is actionable and no stronger caution applies.
     if caution.is_none()
         && matches!(verdict, "BUY" | "SELL")
-        && matches!(quality, "PAXG" | "PAXG_PROXY")
+        && matches!(quality, "PAXG" | "PAXG_PROXY" | "FUTURES_PROXY")
     {
         caution = Some("VOLUME_PROXY");
     }
@@ -776,12 +783,17 @@ mod tests {
 
     #[test]
     fn volume_quality_and_warning_map_sources() {
+        assert_eq!(volume_quality("YAHOO_FUTURES_PROXY"), "FUTURES_PROXY");
         assert_eq!(volume_quality("BINANCE_PAXG_PROXY"), "PAXG_PROXY");
         assert_eq!(volume_quality("BINANCE_PAXG"), "PAXG");
         assert_eq!(volume_quality("NONE"), "NONE");
         assert_eq!(volume_quality("TWELVEDATA"), "UNKNOWN");
         assert_eq!(volume_quality("binance_paxg"), "PAXG");
         assert_eq!(volume_warning("PAXG_PROXY"), Some(VOLUME_PROXY_WARNING));
+        assert_eq!(
+            volume_warning("FUTURES_PROXY"),
+            Some(VOLUME_FUTURES_PROXY_WARNING)
+        );
         assert_eq!(volume_warning("PAXG"), Some(VOLUME_PROXY_WARNING));
         assert_eq!(volume_warning("NONE"), None);
         assert_eq!(volume_warning("UNKNOWN"), None);

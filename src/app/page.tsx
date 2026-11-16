@@ -90,6 +90,7 @@ const DEFAULT_CONFIG: BotConfig = {
   min_rsi_h1_for_buy: 30.0,
   htf_levels_enabled: true,
   structural_sl_atr_cap: 1.0,
+  yahoo_futures_volume_enabled: true,
   session_filter_enabled: true,
   session_alerts_enabled: true,
   session_alert_lead_minutes: 60,

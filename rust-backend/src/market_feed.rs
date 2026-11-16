@@ -2,7 +2,8 @@ use crate::models::{Candle, Timeframe};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use reqwest::Client;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
@@ -11,10 +12,28 @@ use tracing::{info, warn};
 pub const VOLUME_SOURCE_BINANCE_PAXG: &str = "BINANCE_PAXG";
 pub const VOLUME_SOURCE_BINANCE_PAXG_PROXY: &str = "BINANCE_PAXG_PROXY";
 pub const VOLUME_SOURCE_OANDA_TICK: &str = "OANDA_TICK";
+pub const VOLUME_SOURCE_YAHOO_FUTURES_PROXY: &str = "YAHOO_FUTURES_PROXY";
 pub const VOLUME_SOURCE_NONE: &str = "NONE";
 pub const SOURCE_OANDA_XAUUSD: &str = "OANDA_XAUUSD";
+pub const SOURCE_TWELVEDATA_YAHOO_VOLUME: &str = "TWELVEDATA_XAUUSD+YAHOO_FUTURES_VOLUME";
+
+/// Yahoo chart endpoint for COMEX gold futures. `period1/period2` is required:
+/// the `range=` variant returns HTTP 429 from the production network.
+const YAHOO_GC_CHART_URL: &str = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F";
+const YAHOO_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+     (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
+const YAHOO_MAX_RETRIES: usize = 2;
+const YAHOO_FAILURE_THRESHOLD: u32 = 3;
+const YAHOO_COOLDOWN_SECS: u64 = 30 * 60;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// Trạng thái circuit-breaker cho Yahoo để tránh spam khi bị 429.
+#[derive(Debug, Default)]
+struct YahooFailureState {
+    consecutive: u32,
+    cooldown_until: Option<Instant>,
+}
 
 /// Ảnh chụp dữ liệu thị trường tại một thời điểm: nến đã đóng + giá live + nguồn.
 #[derive(Debug, Clone)]
@@ -40,8 +59,12 @@ impl MarketFeedSnapshot {
     }
 }
 
+/// Cache of Yahoo volume-only candles keyed by timeframe label.
+type YahooVolumeCache = Arc<tokio::sync::Mutex<HashMap<String, (Instant, Vec<Candle>)>>>;
+
 /// Nguồn dữ liệu OHLCV Vàng miễn phí 24/7.
-/// - `data_source=TWELVEDATA`: OHLC từ TwelveData `XAU/USD` + volume proxy PAXG.
+/// - `data_source=TWELVEDATA`: OHLC từ TwelveData `XAU/USD` + volume Yahoo GC=F
+///   (fallback Binance PAXG, rồi NONE).
 /// - Mặc định dùng Binance Public API `PAXGUSDT` (không cần API key).
 /// - Offline: fallback về bộ sinh nến mẫu an toàn.
 #[derive(Debug, Clone)]
@@ -52,6 +75,12 @@ pub struct MarketDataFeed {
     oanda_api_token: Option<String>,
     oanda_base_url: String,
     oanda_cache: Arc<tokio::sync::Mutex<HashMap<String, (Instant, MarketFeedSnapshot)>>>,
+    /// Hard kill from `YAHOO_FUTURES_VOLUME_ENABLED=false` at startup.
+    yahoo_futures_volume_env_enabled: bool,
+    /// Runtime toggle from `BotConfig.yahoo_futures_volume_enabled`.
+    yahoo_futures_volume_config_enabled: Arc<AtomicBool>,
+    yahoo_cache: YahooVolumeCache,
+    yahoo_failures: Arc<tokio::sync::Mutex<YahooFailureState>>,
 }
 
 impl MarketDataFeed {
@@ -79,6 +108,15 @@ impl MarketDataFeed {
             _ => "https://api-fxpractice.oanda.com",
         }
         .to_string();
+        let yahoo_futures_volume_env_enabled = std::env::var("YAHOO_FUTURES_VOLUME_ENABLED")
+            .ok()
+            .map(|value| {
+                !matches!(
+                    value.trim().to_lowercase().as_str(),
+                    "false" | "0" | "no" | "off"
+                )
+            })
+            .unwrap_or(true);
 
         Self {
             client,
@@ -87,7 +125,30 @@ impl MarketDataFeed {
             oanda_api_token,
             oanda_base_url,
             oanda_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            yahoo_futures_volume_env_enabled,
+            yahoo_futures_volume_config_enabled: Arc::new(AtomicBool::new(true)),
+            yahoo_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            yahoo_failures: Arc::new(tokio::sync::Mutex::new(YahooFailureState::default())),
         }
+    }
+
+    /// Runtime toggle from `BotConfig`. The env var remains a hard kill.
+    pub fn set_yahoo_futures_volume_enabled(&self, enabled: bool) {
+        self.yahoo_futures_volume_config_enabled
+            .store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn yahoo_futures_volume_enabled(&self) -> bool {
+        self.yahoo_futures_volume_env_enabled
+            && self
+                .yahoo_futures_volume_config_enabled
+                .load(Ordering::Relaxed)
+    }
+
+    /// Test/runtime override for the env-level kill switch.
+    pub fn with_yahoo_futures_volume_enabled(mut self, enabled: bool) -> Self {
+        self.yahoo_futures_volume_env_enabled = enabled;
+        self
     }
 
     /// Cho phép test hoặc cấu hình runtime override API key.
@@ -275,14 +336,25 @@ impl MarketDataFeed {
         let use_twelve = source.trim().eq_ignore_ascii_case("TWELVEDATA")
             || (use_oanda && self.has_twelve_data_key());
         if use_twelve && self.has_twelve_data_key() {
-            let (twelve, binance) = tokio::join!(
+            let yahoo_enabled = self.yahoo_futures_volume_enabled();
+            let (twelve, binance, yahoo) = tokio::join!(
                 self.fetch_twelve_snapshot(timeframe, limit),
                 self.fetch_binance_closed_candles(binance_interval(timeframe), timeframe, limit),
+                async {
+                    if yahoo_enabled {
+                        self.fetch_yahoo_volume(timeframe, limit).await
+                    } else {
+                        None
+                    }
+                }
             );
             let binance = binance.ok();
             if let Some(mut snapshot) = twelve {
-                let price_source =
-                    Self::twelve_htf_price_source(&mut snapshot.candles, binance.as_deref());
+                let price_source = Self::twelve_htf_price_source(
+                    &mut snapshot.candles,
+                    binance.as_deref(),
+                    yahoo.as_deref(),
+                );
                 return (snapshot.candles, price_source);
             }
             warn!(
@@ -326,14 +398,25 @@ impl MarketDataFeed {
         let use_twelve = source.trim().eq_ignore_ascii_case("TWELVEDATA")
             || (use_oanda && self.has_twelve_data_key());
         if use_twelve && self.has_twelve_data_key() {
-            let (twelve, binance) = tokio::join!(
+            let yahoo_enabled = self.yahoo_futures_volume_enabled();
+            let (twelve, binance, yahoo) = tokio::join!(
                 self.fetch_twelve_daily_snapshot(limit),
                 self.fetch_binance_closed_candles("1d", Timeframe::H4, limit),
+                async {
+                    if yahoo_enabled {
+                        self.fetch_yahoo_daily_volume(limit).await
+                    } else {
+                        None
+                    }
+                }
             );
             let binance = binance.ok();
             if let Some(mut snapshot) = twelve {
-                let price_source =
-                    Self::twelve_htf_price_source(&mut snapshot.candles, binance.as_deref());
+                let price_source = Self::twelve_htf_price_source(
+                    &mut snapshot.candles,
+                    binance.as_deref(),
+                    yahoo.as_deref(),
+                );
                 return (snapshot.candles, price_source);
             }
             warn!("⚠️ TwelveData D1 không khả dụng, chuyển sang Binance PAXGUSDT.");
@@ -353,9 +436,18 @@ impl MarketDataFeed {
 
     fn twelve_htf_price_source(
         candles: &mut [Candle],
-        volume_candles: Option<&[Candle]>,
+        binance_candles: Option<&[Candle]>,
+        yahoo_candles: Option<&[Candle]>,
     ) -> String {
-        let matched = volume_candles
+        if let Some(yahoo) = yahoo_candles {
+            let matches = Self::count_volume_matches(candles, yahoo);
+            if !candles.is_empty() && matches * 2 >= candles.len() {
+                Self::merge_volume_proxy(candles, yahoo);
+                return SOURCE_TWELVEDATA_YAHOO_VOLUME.to_string();
+            }
+        }
+
+        let matched = binance_candles
             .map(|volume_candles| Self::merge_volume_proxy(candles, volume_candles))
             .unwrap_or(false);
         if matched {
@@ -363,6 +455,21 @@ impl MarketDataFeed {
         } else {
             "TWELVEDATA_XAUUSD".to_string()
         }
+    }
+
+    /// Đếm số nến khớp timestamp giữa giá và nguồn volume.
+    fn count_volume_matches(price_candles: &[Candle], volume_candles: &[Candle]) -> usize {
+        if price_candles.is_empty() || volume_candles.is_empty() {
+            return 0;
+        }
+        let timestamps: std::collections::HashSet<i64> = volume_candles
+            .iter()
+            .map(|candle| candle.timestamp)
+            .collect();
+        price_candles
+            .iter()
+            .filter(|candle| timestamps.contains(&candle.timestamp))
+            .count()
     }
 
     /// Ghép volume/taker-buy từ Binance PAXG vào nến TwelveData theo timestamp.
@@ -387,6 +494,301 @@ impl MarketDataFeed {
         }
 
         matched > 0
+    }
+
+    /// Volume-only candles from Yahoo GC=F (COMEX futures). Returns `None` when
+    /// the feed is disabled, the circuit breaker is open, or the request fails.
+    async fn fetch_yahoo_volume(&self, timeframe: Timeframe, limit: usize) -> Option<Vec<Candle>> {
+        if !self.yahoo_futures_volume_enabled() {
+            return None;
+        }
+        let label = twelve_cache_label(timeframe);
+        if let Some(cached) = self.cached_yahoo_volume(label).await {
+            return Some(cached);
+        }
+
+        let interval = yahoo_interval(timeframe);
+        let lookback_days = yahoo_lookback_days(timeframe, limit);
+        let payload = self.fetch_yahoo_chart(interval, lookback_days).await?;
+        let now_ms = Utc::now().timestamp_millis();
+        let candles = match timeframe {
+            Timeframe::H4 => {
+                let h1 = Self::parse_yahoo_chart(
+                    &payload,
+                    Timeframe::H1,
+                    timeframe_millis(Timeframe::H1),
+                    now_ms,
+                );
+                Self::aggregate_candles(&h1, Timeframe::H4, now_ms)
+            }
+            _ => Self::parse_yahoo_chart(&payload, timeframe, timeframe_millis(timeframe), now_ms),
+        };
+
+        if candles.is_empty() {
+            warn!("⚠️ Yahoo GC=F {} không có nến volume hợp lệ.", label);
+            return None;
+        }
+        self.store_yahoo_volume(label, &candles).await;
+        info!(
+            "📡 [MarketFeed] Yahoo GC=F {} volume: {} nến đã đóng.",
+            label,
+            candles.len()
+        );
+        Some(candles)
+    }
+
+    async fn fetch_yahoo_daily_volume(&self, limit: usize) -> Option<Vec<Candle>> {
+        if !self.yahoo_futures_volume_enabled() {
+            return None;
+        }
+        let label = "D1";
+        if let Some(cached) = self.cached_yahoo_volume(label).await {
+            return Some(cached);
+        }
+
+        let lookback_days = (limit.max(5) as i64) + 60;
+        let payload = self.fetch_yahoo_chart("1d", lookback_days).await?;
+        let now_ms = Utc::now().timestamp_millis();
+        let mut candles = Self::parse_yahoo_chart(&payload, Timeframe::H4, DAY_MS, now_ms);
+        for candle in &mut candles {
+            candle.timestamp = yahoo_daily_timestamp(candle.timestamp);
+            candle.timeframe = Timeframe::H4;
+        }
+        candles.sort_by_key(|candle| candle.timestamp);
+        candles.dedup_by_key(|candle| candle.timestamp);
+
+        if candles.is_empty() {
+            warn!("⚠️ Yahoo GC=F D1 không có nến volume hợp lệ.");
+            return None;
+        }
+        self.store_yahoo_volume(label, &candles).await;
+        info!(
+            "📡 [MarketFeed] Yahoo GC=F D1 volume: {} nến đã đóng.",
+            candles.len()
+        );
+        Some(candles)
+    }
+
+    async fn fetch_yahoo_chart(&self, interval: &str, lookback_days: i64) -> Option<Value> {
+        if self.yahoo_in_cooldown().await {
+            return None;
+        }
+
+        let now = Utc::now().timestamp();
+        let period1 = now.saturating_sub(lookback_days.max(1) * 24 * 60 * 60);
+        let url = format!(
+            "{}?interval={}&period1={}&period2={}",
+            YAHOO_GC_CHART_URL, interval, period1, now
+        );
+
+        for attempt in 0..=YAHOO_MAX_RETRIES {
+            let response = self
+                .client
+                .get(&url)
+                .header("User-Agent", YAHOO_USER_AGENT)
+                .header("Accept", "application/json")
+                .send()
+                .await;
+
+            match response {
+                Ok(response) if response.status().is_success() => {
+                    match response.json::<Value>().await {
+                        Ok(payload) => {
+                            self.record_yahoo_success().await;
+                            return Some(payload);
+                        }
+                        Err(err) => {
+                            warn!(
+                                "⚠️ Yahoo GC=F JSON lỗi (attempt {}): {}",
+                                attempt + 1,
+                                err.without_url()
+                            );
+                        }
+                    }
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    warn!(
+                        "⚠️ Yahoo GC=F HTTP {} (attempt {}/{}).",
+                        status,
+                        attempt + 1,
+                        YAHOO_MAX_RETRIES + 1
+                    );
+                    if status.as_u16() != 429 && !status.is_server_error() {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    warn!(
+                        "⚠️ Yahoo GC=F request lỗi (attempt {}): {}",
+                        attempt + 1,
+                        err.without_url()
+                    );
+                }
+            }
+
+            if attempt < YAHOO_MAX_RETRIES {
+                tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
+            }
+        }
+
+        self.record_yahoo_failure().await;
+        None
+    }
+
+    async fn yahoo_in_cooldown(&self) -> bool {
+        let state = self.yahoo_failures.lock().await;
+        state
+            .cooldown_until
+            .is_some_and(|until| until > Instant::now())
+    }
+
+    async fn record_yahoo_success(&self) {
+        let mut state = self.yahoo_failures.lock().await;
+        state.consecutive = 0;
+        state.cooldown_until = None;
+    }
+
+    async fn record_yahoo_failure(&self) {
+        let mut state = self.yahoo_failures.lock().await;
+        state.consecutive = state.consecutive.saturating_add(1);
+        if state.consecutive >= YAHOO_FAILURE_THRESHOLD {
+            state.cooldown_until = Some(Instant::now() + Duration::from_secs(YAHOO_COOLDOWN_SECS));
+            warn!(
+                "⚠️ Yahoo GC=F tạm nghỉ {} phút sau {} lần lỗi liên tiếp.",
+                YAHOO_COOLDOWN_SECS / 60,
+                state.consecutive
+            );
+        }
+    }
+
+    async fn cached_yahoo_volume(&self, label: &str) -> Option<Vec<Candle>> {
+        let cache = self.yahoo_cache.lock().await;
+        cache.get(label).and_then(|(fetched_at, candles)| {
+            if fetched_at.elapsed() < twelve_cache_ttl(label) && !candles.is_empty() {
+                Some(candles.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    async fn store_yahoo_volume(&self, label: &str, candles: &[Candle]) {
+        if candles.is_empty() {
+            return;
+        }
+        let mut cache = self.yahoo_cache.lock().await;
+        cache.insert(label.to_string(), (Instant::now(), candles.to_vec()));
+    }
+
+    fn parse_yahoo_chart(
+        payload: &Value,
+        timeframe: Timeframe,
+        step_ms: i64,
+        now_ms: i64,
+    ) -> Vec<Candle> {
+        let Some(result) = payload
+            .get("chart")
+            .and_then(|chart| chart.get("result"))
+            .and_then(|result| result.as_array())
+            .and_then(|result| result.first())
+        else {
+            return Vec::new();
+        };
+        let Some(timestamps) = result.get("timestamp").and_then(|value| value.as_array()) else {
+            return Vec::new();
+        };
+        let Some(quote) = result
+            .get("indicators")
+            .and_then(|indicators| indicators.get("quote"))
+            .and_then(|quote| quote.as_array())
+            .and_then(|quote| quote.first())
+        else {
+            return Vec::new();
+        };
+        let opens = quote.get("open").and_then(|value| value.as_array());
+        let highs = quote.get("high").and_then(|value| value.as_array());
+        let lows = quote.get("low").and_then(|value| value.as_array());
+        let closes = quote.get("close").and_then(|value| value.as_array());
+        let volumes = quote.get("volume").and_then(|value| value.as_array());
+
+        let mut candles = Vec::new();
+        for (index, timestamp) in timestamps.iter().enumerate() {
+            let Some(timestamp_secs) = value_to_i64(timestamp) else {
+                continue;
+            };
+            let timestamp_ms = timestamp_secs.saturating_mul(1000);
+            if timestamp_ms.saturating_add(step_ms) > now_ms {
+                continue;
+            }
+            let (Some(open), Some(high), Some(low), Some(close), Some(volume)) = (
+                opens
+                    .and_then(|values| values.get(index))
+                    .and_then(value_to_f64),
+                highs
+                    .and_then(|values| values.get(index))
+                    .and_then(value_to_f64),
+                lows.and_then(|values| values.get(index))
+                    .and_then(value_to_f64),
+                closes
+                    .and_then(|values| values.get(index))
+                    .and_then(value_to_f64),
+                volumes
+                    .and_then(|values| values.get(index))
+                    .and_then(value_to_f64),
+            ) else {
+                continue;
+            };
+            if !is_finite_ohlcv(open, high, low, close, volume) {
+                continue;
+            }
+            candles.push(Candle {
+                timestamp: timestamp_ms,
+                open,
+                high,
+                low,
+                close,
+                volume,
+                taker_buy_volume: 0.0,
+                timeframe,
+            });
+        }
+
+        candles.sort_by_key(|candle| candle.timestamp);
+        candles.dedup_by_key(|candle| candle.timestamp);
+        candles
+    }
+
+    fn aggregate_candles(candles: &[Candle], target: Timeframe, now_ms: i64) -> Vec<Candle> {
+        let step_ms = timeframe_millis(target);
+        let mut buckets: BTreeMap<i64, Candle> = BTreeMap::new();
+
+        for candle in candles {
+            let bucket = candle.timestamp - candle.timestamp.rem_euclid(step_ms);
+            if bucket.saturating_add(step_ms) > now_ms {
+                continue;
+            }
+            buckets
+                .entry(bucket)
+                .and_modify(|aggregate| {
+                    aggregate.high = aggregate.high.max(candle.high);
+                    aggregate.low = aggregate.low.min(candle.low);
+                    aggregate.close = candle.close;
+                    aggregate.volume += candle.volume;
+                })
+                .or_insert(Candle {
+                    timestamp: bucket,
+                    open: candle.open,
+                    high: candle.high,
+                    low: candle.low,
+                    close: candle.close,
+                    volume: candle.volume,
+                    taker_buy_volume: 0.0,
+                    timeframe: target,
+                });
+        }
+
+        buckets.into_values().collect()
     }
 
     async fn fetch_binance_closed_candles(
@@ -465,31 +867,72 @@ impl MarketDataFeed {
         }
 
         let mut snapshot = if prefer_twelve && has_twelve {
-            // TwelveData chỉ có OHLC; lấy Binance song song để làm volume proxy.
-            let (twelve, binance) = tokio::join!(
+            // TwelveData only has OHLC. Yahoo GC=F volume is preferred; Binance
+            // PAXG is the fallback, then NONE.
+            let yahoo_enabled = self.yahoo_futures_volume_enabled();
+            let (twelve, binance, yahoo) = tokio::join!(
                 self.fetch_twelve_snapshot(timeframe, limit),
                 self.fetch_binance_snapshot(timeframe, limit),
+                async {
+                    if yahoo_enabled {
+                        self.fetch_yahoo_volume(timeframe, limit).await
+                    } else {
+                        None
+                    }
+                }
             );
             match twelve {
                 Some(mut twelve) => {
-                    let matched = binance
-                        .as_ref()
-                        .map(|binance| {
-                            Self::merge_volume_proxy(&mut twelve.candles, &binance.candles)
+                    let yahoo_matched = yahoo
+                        .as_deref()
+                        .filter(|_| !twelve.candles.is_empty())
+                        .map(|yahoo| {
+                            let matches = Self::count_volume_matches(&twelve.candles, yahoo);
+                            if matches * 2 >= twelve.candles.len() {
+                                Self::merge_volume_proxy(&mut twelve.candles, yahoo);
+                                true
+                            } else {
+                                warn!(
+                                    "⚠️ Yahoo GC=F chỉ khớp {}/{} nến — fallback PAXG.",
+                                    matches,
+                                    twelve.candles.len()
+                                );
+                                false
+                            }
                         })
                         .unwrap_or(false);
-                    twelve.volume_source = if matched {
+
+                    let binance_matched = if yahoo_matched {
+                        false
+                    } else {
+                        binance
+                            .as_ref()
+                            .map(|binance| {
+                                Self::merge_volume_proxy(&mut twelve.candles, &binance.candles)
+                            })
+                            .unwrap_or(false)
+                    };
+
+                    twelve.volume_source = if yahoo_matched {
+                        VOLUME_SOURCE_YAHOO_FUTURES_PROXY.to_string()
+                    } else if binance_matched {
                         VOLUME_SOURCE_BINANCE_PAXG_PROXY.to_string()
                     } else {
                         VOLUME_SOURCE_NONE.to_string()
                     };
-                    if matched {
+
+                    if yahoo_matched {
+                        info!(
+                            "🔊 [MarketFeed] Đã ghép volume Yahoo GC=F vào {} nến TwelveData.",
+                            twelve.candles.len()
+                        );
+                    } else if binance_matched {
                         info!(
                             "🔊 [MarketFeed] Đã ghép volume Binance PAXG vào {} nến TwelveData.",
                             twelve.candles.len()
                         );
                     } else {
-                        warn!("⚠️ TwelveData không khớp timestamp với Binance PAXG — volume = 0.");
+                        warn!("⚠️ TwelveData không khớp timestamp với Yahoo/Binance — volume = 0.");
                     }
                     Some(twelve)
                 }
@@ -1188,6 +1631,36 @@ fn twelve_interval(timeframe: Timeframe) -> &'static str {
     }
 }
 
+fn yahoo_interval(timeframe: Timeframe) -> &'static str {
+    match timeframe {
+        Timeframe::M15 => "15m",
+        Timeframe::H1 | Timeframe::H4 => "1h",
+    }
+}
+
+fn yahoo_lookback_days(timeframe: Timeframe, limit: usize) -> i64 {
+    let bars = limit.max(5) as i64;
+    match timeframe {
+        Timeframe::M15 => (bars * 15 / (60 * 24)) + 4,
+        Timeframe::H1 => (bars * 60 / (60 * 24)) + 7,
+        Timeframe::H4 => (bars * 4 * 60 / (60 * 24)) + 14,
+    }
+}
+
+/// Yahoo's daily bar opens at 05:00/06:00 UTC (00:00 ET). Normalise it to the
+/// UTC midnight of the same calendar date so it matches TwelveData D1 candles.
+fn yahoo_daily_timestamp(timestamp_ms: i64) -> i64 {
+    timestamp_ms - timestamp_ms.rem_euclid(DAY_MS)
+}
+
+/// Yahoo GC=F and OANDA tick volume have no taker buy/sell split, so delta/CVD
+/// must not be derived from them.
+pub fn volume_source_has_buy_sell_delta(source: &str) -> bool {
+    !source.eq_ignore_ascii_case(VOLUME_SOURCE_OANDA_TICK)
+        && !source.eq_ignore_ascii_case(VOLUME_SOURCE_YAHOO_FUTURES_PROXY)
+        && !source.eq_ignore_ascii_case(VOLUME_SOURCE_NONE)
+}
+
 fn oanda_granularity(timeframe: Timeframe) -> &'static str {
     match timeframe {
         Timeframe::M15 => "M15",
@@ -1818,6 +2291,163 @@ mod tests {
             .timestamp_millis();
         assert_eq!(candles[0].timestamp, expected_timestamp);
         assert_eq!(live_price, Some(3912.0));
+    }
+
+    fn test_ohlc_candle(
+        timestamp: i64,
+        open: f64,
+        high: f64,
+        low: f64,
+        close: f64,
+        volume: f64,
+    ) -> Candle {
+        Candle {
+            timestamp,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            taker_buy_volume: 0.0,
+            timeframe: Timeframe::H1,
+        }
+    }
+
+    #[test]
+    fn test_parse_yahoo_chart_drops_unclosed_and_null_volume() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 11, 16, 9, 0, 0)
+            .single()
+            .expect("timestamp");
+        let payload = json!({
+            "chart": {
+                "result": [{
+                    "timestamp": [1794816000_i64, 1794816900_i64, 1794819600_i64],
+                    "indicators": {
+                        "quote": [{
+                            "open": [3860.0, 3861.0, 3862.0],
+                            "high": [3865.0, 3866.0, 3867.0],
+                            "low": [3855.0, 3856.0, 3857.0],
+                            "close": [3863.0, 3864.0, 3865.0],
+                            "volume": [1000.0, null, 3000.0]
+                        }]
+                    }
+                }]
+            }
+        });
+
+        let candles = MarketDataFeed::parse_yahoo_chart(
+            &payload,
+            Timeframe::M15,
+            15 * 60 * 1000,
+            now.timestamp_millis(),
+        );
+
+        assert_eq!(candles.len(), 1);
+        assert_eq!(candles[0].timestamp, 1794816000_i64 * 1000);
+        assert_eq!(candles[0].volume, 1000.0);
+        assert_eq!(candles[0].taker_buy_volume, 0.0);
+    }
+
+    #[test]
+    fn test_aggregate_h1_to_h4_sums_volume() {
+        let candles = vec![
+            test_ohlc_candle(1794787200 * 1000, 100.0, 102.0, 99.0, 101.0, 10.0),
+            test_ohlc_candle(1794790800 * 1000, 101.0, 103.0, 100.0, 102.0, 20.0),
+            test_ohlc_candle(1794794400 * 1000, 102.0, 104.0, 101.0, 103.0, 30.0),
+            test_ohlc_candle(1794798000 * 1000, 103.0, 105.0, 102.0, 104.0, 40.0),
+            test_ohlc_candle(1794801600 * 1000, 104.0, 106.0, 103.0, 105.0, 50.0),
+        ];
+        let now = Utc
+            .with_ymd_and_hms(2026, 11, 16, 8, 0, 0)
+            .single()
+            .expect("timestamp");
+
+        let h4 = MarketDataFeed::aggregate_candles(&candles, Timeframe::H4, now.timestamp_millis());
+
+        assert_eq!(h4.len(), 2);
+        assert_eq!(h4[0].timestamp, 1794787200 * 1000);
+        assert_eq!(h4[0].open, 100.0);
+        assert_eq!(h4[0].high, 105.0);
+        assert_eq!(h4[0].low, 99.0);
+        assert_eq!(h4[0].close, 104.0);
+        assert_eq!(h4[0].volume, 100.0);
+        assert_eq!(h4[1].timestamp, 1794801600 * 1000);
+        assert_eq!(h4[1].volume, 50.0);
+    }
+
+    #[test]
+    fn test_yahoo_daily_timestamp_maps_to_utc_midnight() {
+        let yahoo_open = 1794546000_i64 * 1000; // 2026-11-13 05:00 UTC
+        let midnight = 1794528000_i64 * 1000; // 2026-11-13 00:00 UTC
+        assert_eq!(yahoo_daily_timestamp(yahoo_open), midnight);
+    }
+
+    #[test]
+    fn test_merge_yahoo_volume_sets_zero_taker_buy() {
+        let mut price = vec![test_candle(1794816000 * 1000, 0.0, 999.0)];
+        let yahoo = vec![test_candle(1794816000 * 1000, 12345.0, 0.0)];
+
+        assert_eq!(MarketDataFeed::count_volume_matches(&price, &yahoo), 1);
+        assert!(MarketDataFeed::merge_volume_proxy(&mut price, &yahoo));
+        assert_eq!(price[0].volume, 12345.0);
+        assert_eq!(price[0].taker_buy_volume, 0.0);
+    }
+
+    #[test]
+    fn test_volume_source_labels_include_yahoo_futures_proxy() {
+        assert_eq!(VOLUME_SOURCE_YAHOO_FUTURES_PROXY, "YAHOO_FUTURES_PROXY");
+        assert_eq!(
+            SOURCE_TWELVEDATA_YAHOO_VOLUME,
+            "TWELVEDATA_XAUUSD+YAHOO_FUTURES_VOLUME"
+        );
+        assert!(volume_source_has_buy_sell_delta(
+            VOLUME_SOURCE_BINANCE_PAXG_PROXY
+        ));
+        assert!(!volume_source_has_buy_sell_delta(
+            VOLUME_SOURCE_YAHOO_FUTURES_PROXY
+        ));
+        assert!(!volume_source_has_buy_sell_delta(VOLUME_SOURCE_OANDA_TICK));
+        assert!(!volume_source_has_buy_sell_delta(VOLUME_SOURCE_NONE));
+    }
+
+    #[test]
+    fn test_yahoo_interval_and_lookback() {
+        assert_eq!(yahoo_interval(Timeframe::M15), "15m");
+        assert_eq!(yahoo_interval(Timeframe::H1), "1h");
+        assert_eq!(yahoo_interval(Timeframe::H4), "1h");
+        assert!(yahoo_lookback_days(Timeframe::M15, 300) >= 4);
+        assert!(yahoo_lookback_days(Timeframe::H1, 300) >= 12);
+        assert!(yahoo_lookback_days(Timeframe::H4, 300) >= 50);
+    }
+
+    #[tokio::test]
+    #[ignore = "network: hits Yahoo GC=F"]
+    async fn test_yahoo_fetch_live_returns_volume() {
+        let feed = MarketDataFeed::new().with_yahoo_futures_volume_enabled(true);
+        let m15 = feed
+            .fetch_yahoo_volume(Timeframe::M15, 300)
+            .await
+            .expect("Yahoo M15 volume");
+        assert!(!m15.is_empty());
+        assert!(m15.iter().any(|candle| candle.volume > 0.0));
+
+        let h4 = feed
+            .fetch_yahoo_volume(Timeframe::H4, 300)
+            .await
+            .expect("Yahoo H4 volume");
+        assert!(!h4.is_empty());
+        assert!(h4.iter().any(|candle| candle.volume > 0.0));
+
+        let d1 = feed
+            .fetch_yahoo_daily_volume(300)
+            .await
+            .expect("Yahoo D1 volume");
+        assert!(!d1.is_empty());
+        assert!(d1.iter().any(|candle| candle.volume > 0.0));
+        assert!(d1
+            .iter()
+            .all(|candle| candle.timestamp.rem_euclid(DAY_MS) == 0));
     }
 
     #[test]

@@ -228,10 +228,31 @@ fn format_rsi_block(rsi: Option<&RsiSnapshot>, context: Option<&MarketContext>) 
     )
 }
 
+fn format_volume_caveat(volume_source: &str) -> &'static str {
+    if volume_source.eq_ignore_ascii_case("YAHOO_FUTURES_PROXY") {
+        "Volume caveat: COMEX GC=F futures volume is a proxy, not spot XAU/USD tick volume. \
+         Weight it below 20%; use it as relative volume/surge context only; never use it as \
+         the main reason for BUY/SELL. If volume is the main reason, choose STANDBY."
+    } else if volume_source.eq_ignore_ascii_case("OANDA_TICK") {
+        "Volume caveat: OANDA tick volume has no buy/sell split. Use it as relative \
+         volume/surge context only; never as institutional order flow."
+    } else {
+        "Volume caveat: Binance PAXG volume is a weak proxy, not true XAU/USD volume. \
+         Weight it below 10%; never use it as the main reason for BUY/SELL. If volume is \
+         the main reason, choose STANDBY."
+    }
+}
+
 fn format_delta_block(delta: Option<&DeltaSnapshot>, volume_source: &str) -> String {
     if volume_source.eq_ignore_ascii_case("OANDA_TICK") {
         return "Volume: OANDA tick volume (XAU/USD). Buy/sell delta and CVD are unavailable; \
                 use only relative volume/surge context, never as institutional order flow."
+            .to_string();
+    }
+    if volume_source.eq_ignore_ascii_case("YAHOO_FUTURES_PROXY") {
+        return "Volume: COMEX GC=F futures volume proxy (not spot tick volume). Buy/sell \
+                delta and CVD are unavailable; weight it below 20%, use only relative \
+                volume/surge context, never as the main reason for BUY/SELL."
             .to_string();
     }
     let Some(delta) = delta else {
@@ -378,6 +399,7 @@ pub(crate) fn build_decision_prompt(
     let macro_block = format_macro_flow_block(candidate, macro_flow);
     let rsi_block = format_rsi_block(rsi, context);
     let delta_block = format_delta_block(delta, volume_source);
+    let volume_caveat = format_volume_caveat(volume_source);
     let scenario_block = format_scenario_block(scenarios);
     let candidate_block = format_candidate_block(candidate);
     let events_text = format_upcoming_events(events, now);
@@ -392,7 +414,7 @@ pub(crate) fn build_decision_prompt(
         decide BUY, SELL or STANDBY after reviewing the full collected brief below. \
         Deterministic code retains every hard safety rule.\n\n\
         Current price: {price} | price_source={price_source} | volume_source={volume_source}\n\
-        Volume caveat: Binance PAXG volume is a weak proxy, not true XAU/USD volume. Weight it below 10%; never use it as the main reason for BUY/SELL. If volume is the main reason, choose STANDBY.\n\n\
+        {volume_caveat}\n\n\
         D1/H4/H1 context (read-only):\n{context_block}\n\n\
         {macro_block}\n\n\
         RSI context (Wilder, closed candles):\n{rsi_block}\n\n\
@@ -901,6 +923,18 @@ mod tests {
         assert!(prompt.contains("confluence/readiness score"));
         assert!(prompt.contains("\"selected_scenario\""));
         assert!(prompt.contains("\"macro_flow_alignment\""));
+    }
+
+    #[test]
+    fn yahoo_futures_volume_caveat_uses_20_percent_weight() {
+        let caveat = format_volume_caveat("YAHOO_FUTURES_PROXY");
+        assert!(caveat.contains("COMEX GC=F futures volume"));
+        assert!(caveat.contains("below 20%"));
+
+        let block = format_delta_block(None, "YAHOO_FUTURES_PROXY");
+        assert!(block.contains("COMEX GC=F futures volume proxy"));
+        assert!(block.contains("below 20%"));
+        assert!(!block.contains("PAXG proxy caveat"));
     }
 
     #[test]

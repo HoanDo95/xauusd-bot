@@ -71,8 +71,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 3. OHLCV theo `data_source`: Binance PAXGUSDT (mặc định, có volume) hoặc
-    // TwelveData XAU/USD + volume proxy PAXG. Spot /price chỉ dùng để căn basis PAXG.
+    // TwelveData XAU/USD + Yahoo GC=F volume (fallback PAXG). Spot /price chỉ
+    // dùng để căn basis PAXG.
     let market_feed = MarketDataFeed::new();
+    market_feed.set_yahoo_futures_volume_enabled(config.yahoo_futures_volume_enabled);
     let mut cached_spot: Option<(f64, Instant)> = None;
 
     let mut initial_snapshot = market_feed

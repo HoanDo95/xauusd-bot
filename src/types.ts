@@ -298,7 +298,7 @@ export interface ActionViewResponse {
   /** NEAR <= 0.5 ATR, MID <= 1.5 ATR, FAR > 1.5 ATR, UNKNOWN when missing. */
   proximity?: 'NEAR' | 'MID' | 'FAR' | 'UNKNOWN' | string;
   macroFlow: MacroFlowAlignment | null;
-  volumeQuality: 'PAXG_PROXY' | 'PAXG' | 'NONE' | 'XAUUSD' | 'UNKNOWN';
+  volumeQuality: 'PAXG_PROXY' | 'PAXG' | 'FUTURES_PROXY' | 'NONE' | 'XAUUSD' | 'UNKNOWN';
   volumeWarning: string | null;
   /** Whether the read-only PRIMARY-scenario trigger Telegram alert is enabled. */
   triggerAlertEnabled?: boolean;
@@ -559,6 +559,8 @@ export interface BotConfig {
   htf_levels_enabled?: boolean;
   /** Cap structural SL at N × ATR from the broken level (0 = off). Default 1.0. */
   structural_sl_atr_cap?: number;
+  /** Use Yahoo GC=F COMEX futures volume proxy. Default true. */
+  yahoo_futures_volume_enabled?: boolean;
   /** Prefer the high-liquidity Vietnam session 13:00 – 23:00 (GMT+7). */
   session_filter_enabled: boolean;
   /** Send informational Telegram briefings before London/New York opens (Mon–Fri, DST-aware). */

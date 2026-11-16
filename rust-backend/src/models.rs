@@ -338,6 +338,10 @@ pub struct BotConfig {
     /// Mặc định 1.0 — tránh stop phình 5×ATR khi entry đã đi xa khỏi swing.
     #[serde(default = "default_structural_sl_atr_cap")]
     pub structural_sl_atr_cap: f64,
+    /// Bật volume proxy Yahoo GC=F (COMEX futures). Mặc định BẬT.
+    /// Env `YAHOO_FUTURES_VOLUME_ENABLED=false` là hard kill lúc startup.
+    #[serde(default = "default_true")]
+    pub yahoo_futures_volume_enabled: bool,
     /// Bật bộ lọc khung giờ thanh khoản Âu-Mỹ 13:00-23:00 GMT+7
     #[serde(default = "default_session_filter_enabled")]
     pub session_filter_enabled: bool,
@@ -647,6 +651,7 @@ impl Default for BotConfig {
             min_rsi_h1_for_buy: default_min_rsi_h1_for_buy(),
             htf_levels_enabled: true,
             structural_sl_atr_cap: default_structural_sl_atr_cap(),
+            yahoo_futures_volume_enabled: true,
             session_filter_enabled: default_session_filter_enabled(),
             data_source: default_data_source(),
             webhook_passphrase: String::new(),
@@ -924,6 +929,7 @@ mod tests {
         assert_eq!(defaults.min_rsi_h1_for_buy, 30.0);
         assert!(defaults.htf_levels_enabled);
         assert_eq!(defaults.structural_sl_atr_cap, 1.0);
+        assert!(defaults.yahoo_futures_volume_enabled);
 
         let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
         let object = value.as_object_mut().expect("config object");
@@ -933,6 +939,7 @@ mod tests {
             "min_rsi_h1_for_buy",
             "htf_levels_enabled",
             "structural_sl_atr_cap",
+            "yahoo_futures_volume_enabled",
         ] {
             object.remove(key);
         }
@@ -943,6 +950,7 @@ mod tests {
         assert_eq!(config.min_rsi_h1_for_buy, 30.0);
         assert!(config.htf_levels_enabled);
         assert_eq!(config.structural_sl_atr_cap, 1.0);
+        assert!(config.yahoo_futures_volume_enabled);
 
         let clamped = BotConfig {
             min_rsi_h1_for_buy: 99.0,

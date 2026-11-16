@@ -469,15 +469,16 @@ Two modes are supported (dashboard config, persisted in `data/bot_state.json`):
 | Mode | Price | Volume |
 |---|---|---|
 | `BINANCE_PAXG` (default) | Binance `PAXGUSDT` + spot basis | Binance PAXG |
-| `TWELVEDATA` | TwelveData `XAU/USD` OHLC | Binance PAXG volume proxy (timestamp-matched) |
+| `TWELVEDATA` | TwelveData `XAU/USD` OHLC | Yahoo GC=F volume (fallback PAXG → NONE) |
 
 `TWELVEDATA` mode:
 
 - OHLC from `time_series` (`15min` / `1h` / `4h` / `1day`, `timezone=UTC`,
   `order=ASC`); RSI is computed locally from those closes.
-- Volume is merged from Binance PAXG by matching candle timestamps. If no
-  timestamps match, `volumeSource = "NONE"`; turn off `volume_filter_enabled`
-  in the dashboard to keep generating price-action signals without volume.
+- Volume is merged from Yahoo GC=F (COMEX futures) by matching candle
+  timestamps; Binance PAXG is the fallback, then `NONE`. If no timestamps
+  match, `volumeSource = "NONE"`; turn off `volume_filter_enabled` in the
+  dashboard to keep generating price-action signals without volume.
 - Cached per timeframe: M15 300s, H1/H4 900s, D1 3600s (~500 requests/day,
   inside the free 800/day tier).
 - Health shows `dataSource`, `priceSource`, `volumeSource`, `spotBasis: null`.
@@ -497,6 +498,55 @@ TWELVEDATA_API_KEY="your_twelvedata_api_key_here"
 docker compose restart api
 docker compose logs -f api   # look for: TwelveData XAU/USD ... / Đã ghép volume ...
 ```
+
+### Yahoo GC=F futures volume (default for `TWELVEDATA`)
+
+TwelveData has no volume. The feed merges COMEX gold futures volume from
+Yahoo's public chart endpoint:
+
+```text
+TwelveData XAU/USD OHLC
+        + Yahoo GC=F volume (15m/1h/1d; H1→H4 aggregate)
+        ↓
+volumeSource = YAHOO_FUTURES_PROXY
+        ↓ fallback
+BINANCE_PAXG_PROXY → NONE
+```
+
+Important implementation details:
+
+- Use `period1` / `period2`; the `range=` variant returns HTTP 429 from the
+  production network.
+- A 10-minute cache, two retries with backoff, and a 30-minute circuit breaker
+  after three consecutive failures prevent Yahoo rate-limit spam.
+- Only closed bars are merged. Yahoo D1 bars open at 05:00/06:00 UTC (00:00 ET)
+  and are normalised to UTC midnight before matching TwelveData D1 candles.
+- Yahoo GC=F has no taker buy/sell split; `taker_buy_volume=0` and delta/CVD is
+  disabled for `YAHOO_FUTURES_PROXY`.
+- The AI prompt weights GC=F volume below 20% and never as the main reason for
+  a signal. PAXG remains the fallback and is weighted below 10%.
+
+Runtime kill switch:
+
+```bash
+# /home/jason/xauusd-bot/rust-backend/.env
+YAHOO_FUTURES_VOLUME_ENABLED=true
+```
+
+`false` is a hard startup kill (requires `docker compose up -d api`). The
+dashboard also exposes `yahoo_futures_volume_enabled` for a runtime toggle; it
+is ANDed with the env flag, so the env var can always force-disable Yahoo.
+
+Verify after deploy:
+
+```bash
+curl -s http://127.0.0.1:8090/api/health | jq '{volumeSource, yahooFuturesVolumeEnabled}'
+curl -s http://127.0.0.1:8090/api/context | jq '.price_source'
+```
+
+Expected: `volumeSource="YAHOO_FUTURES_PROXY"` and
+`price_source="TWELVEDATA_XAUUSD+YAHOO_FUTURES_VOLUME"`. If Yahoo fails, the
+same fields show `BINANCE_PAXG_PROXY` / `TWELVEDATA_XAUUSD+PAXG_VOLUME`.
 
 ### OANDA tick volume (optional, free demo)
 

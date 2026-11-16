@@ -20,6 +20,7 @@ interface Props {
 
 function feedLabel(dataSource?: string, volumeSource?: string): string {
   if (dataSource === 'TWELVEDATA') {
+    if (volumeSource === 'YAHOO_FUTURES_PROXY') return 'TwelveData XAU/USD + GC=F volume';
     if (volumeSource === 'BINANCE_PAXG_PROXY') return 'TwelveData XAU/USD + PAXG volume';
     if (volumeSource === 'NONE') return 'TwelveData XAU/USD (no volume)';
     return 'TwelveData XAU/USD (Free)';
