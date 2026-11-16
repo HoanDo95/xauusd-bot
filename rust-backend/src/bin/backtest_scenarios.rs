@@ -128,6 +128,7 @@ struct Args {
     end: NaiveDate,
     limit_days: Option<usize>,
     cache_path: PathBuf,
+    csv_path: Option<PathBuf>,
     out_json: PathBuf,
     out_md: PathBuf,
 }
@@ -141,6 +142,7 @@ impl Default for Args {
             end: NaiveDate::from_ymd_opt(2025, 12, 31).expect("valid default end date"),
             limit_days: None,
             cache_path: manifest_dir.join("data/backtest/PAXGUSDT_M15.jsonl"),
+            csv_path: None,
             out_json: manifest_dir.join("report_scenarios.json"),
             out_md: manifest_dir.join("report_scenarios.md"),
         }
@@ -157,6 +159,7 @@ fn print_usage() {
            --limit-days <N>        Cap the run at N days from --start\n\
            --symbol <SYMBOL>       Binance symbol (default: PAXGUSDT)\n\
            --cache <PATH>          JSONL candle cache path\n\
+           --csv <PATH>            Read M15 CSV (timestamp,open,high,low,close,volume) instead of Binance\n\
            --out-json <PATH>       JSON report path (default: rust-backend/report_scenarios.json)\n\
            --out-md <PATH>         Markdown report path (default: rust-backend/report_scenarios.md)\n\
            --help                  Show this help\n\
@@ -209,6 +212,9 @@ fn parse_args() -> Result<Args> {
             }
             "--cache" => {
                 args.cache_path = PathBuf::from(require_value(&mut iter, &flag)?);
+            }
+            "--csv" => {
+                args.csv_path = Some(PathBuf::from(require_value(&mut iter, &flag)?));
             }
             "--out-json" => {
                 args.out_json = PathBuf::from(require_value(&mut iter, &flag)?);
@@ -483,6 +489,65 @@ fn load_cache(path: &Path, timeframe: Timeframe) -> Result<Vec<Candle>> {
                     line_number + 1
                 );
             }
+        }
+    }
+
+    candles.sort_by_key(|candle| candle.timestamp);
+    candles.dedup_by_key(|candle| candle.timestamp);
+    Ok(candles)
+}
+
+fn load_csv(path: &Path, timeframe: Timeframe) -> Result<Vec<Candle>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut candles = Vec::new();
+
+    for (line_number, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line_number == 0 || line.trim().is_empty() {
+            continue;
+        }
+        let mut columns = line.split(',');
+        let timestamp = columns
+            .next()
+            .and_then(|value| value.trim().parse::<i64>().ok());
+        let open = columns
+            .next()
+            .and_then(|value| value.trim().parse::<f64>().ok());
+        let high = columns
+            .next()
+            .and_then(|value| value.trim().parse::<f64>().ok());
+        let low = columns
+            .next()
+            .and_then(|value| value.trim().parse::<f64>().ok());
+        let close = columns
+            .next()
+            .and_then(|value| value.trim().parse::<f64>().ok());
+        let volume = columns
+            .next()
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        let (Some(timestamp), Some(open), Some(high), Some(low), Some(close)) =
+            (timestamp, open, high, low, close)
+        else {
+            eprintln!("  warning: skipping malformed CSV line {}", line_number + 1);
+            continue;
+        };
+        let candle = Candle {
+            timestamp,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            taker_buy_volume: 0.0,
+            timeframe,
+        };
+        if is_valid_candle(&candle) {
+            candles.push(candle);
+        } else {
+            eprintln!("  warning: skipping invalid CSV line {}", line_number + 1);
         }
     }
 
@@ -1545,7 +1610,8 @@ fn render_markdown(report: &Report) -> String {
     .expect("write to string");
     writeln!(
         output,
-        "Data: Binance public klines cached at `{}` ({} candles loaded, {} in period, {} missing M15 bars).",
+        "Data: {} cached at `{}` ({} candles loaded, {} in period, {} missing M15 bars).",
+        report.data.source,
         report.data.cache_path,
         report.data.candles_loaded,
         report.data.candles_in_period,
@@ -2334,7 +2400,11 @@ async fn run() -> Result<()> {
         args.start, args.end, args.symbol
     );
 
-    let (candles, fetch_requests) = load_or_fetch(&args, start_ms, end_ms).await?;
+    let (candles, fetch_requests) = if let Some(csv_path) = &args.csv_path {
+        (load_csv(csv_path, Timeframe::M15)?, 0)
+    } else {
+        load_or_fetch(&args, start_ms, end_ms).await?
+    };
     let m15: Vec<Candle> = candles
         .into_iter()
         .filter(|candle| candle.timeframe == Timeframe::M15)
@@ -2479,6 +2549,18 @@ async fn run() -> Result<()> {
     })
     .collect();
 
+    let data_source = if args.csv_path.is_some() {
+        "Dukascopy XAUUSD M15 bid (tick volume)"
+    } else {
+        "Binance public klines (PAXGUSDT XAU/USD proxy)"
+    };
+    let data_cache_path = args
+        .csv_path
+        .as_ref()
+        .unwrap_or(&args.cache_path)
+        .display()
+        .to_string();
+
     let report = Report {
         generated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
         command: std::env::args().collect::<Vec<_>>().join(" "),
@@ -2492,8 +2574,8 @@ async fn run() -> Result<()> {
         data: DataInfo {
             symbol: args.symbol.clone(),
             interval: "15m".to_string(),
-            source: "Binance public klines (PAXGUSDT XAU/USD proxy)".to_string(),
-            cache_path: args.cache_path.display().to_string(),
+            source: data_source.to_string(),
+            cache_path: data_cache_path.clone(),
             candles_loaded: m15.len(),
             candles_in_period: period_candles.len(),
             missing_m15_bars_in_period: count_missing_bars(period_candles, M15_MS),
