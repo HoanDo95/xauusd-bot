@@ -272,6 +272,13 @@ curl -I -u operator:<password> http://127.0.0.1:3000/   # 200
 curl -I http://127.0.0.1:3000/healthz          # 200 (exempt)
 ```
 
+The web image also includes an opaque `AuthShield`: it covers the viewport
+until `/api/health` succeeds, so the dashboard is not visible behind the
+browser's native Basic auth dialog. Dashboard/API responses send
+`Cache-Control: no-store`; SPA and API 401 responses send
+`Clear-Site-Data: "cache"` to purge stale cached HTML. If a browser still shows
+an old cached dashboard after an upgrade, hard-refresh once.
+
 Webhook paths (`/api/webhook`, `/api/webhook/tradingview`,
 `/api/candles/webhook`) and health endpoints are exempt so TradingView can keep
 posting; they rely on the webhook passphrase instead. The deploy smoke test uses

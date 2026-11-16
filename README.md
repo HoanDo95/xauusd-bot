@@ -713,7 +713,11 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
   `DASHBOARD_USER` and `DASHBOARD_PASSWORD` in the compose `.env` and restart
   `web`. Funnel is public, so use a long password and a non-empty
   `WEBHOOK_PASSPHRASE`. Health and TradingView webhook paths stay exempt
-  (webhooks use the passphrase).
+  (webhooks use the passphrase). The web UI ships an opaque `AuthShield` that
+  covers the dashboard until `/api/health` succeeds; dashboard/API responses
+  use `Cache-Control: no-store`, and 401 responses send
+  `Clear-Site-Data: "cache"` so stale cached HTML cannot remain visible behind
+  the browser login dialog.
 - CI runs only on `push`/manual dispatch. Do not run fork/PR code on the
   self-hosted runner: it has Docker access and can read the deploy directory.
 - The persistent state file is written with `0600` permissions on Unix, and
