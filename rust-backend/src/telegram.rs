@@ -279,6 +279,53 @@ impl TelegramNotifier {
     }
 
     /// Gửi thông báo tín hiệu tới Telegram Channel / Group / DM
+    /// Send one Telegram message with bounded retries for transient failures.
+    /// Critical alerts (signal/outcome) use this instead of a single attempt.
+    async fn send_message_with_retry(
+        &self,
+        payload: &serde_json::Value,
+        label: &str,
+    ) -> Result<i64, String> {
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
+        let mut last_error = String::new();
+        for attempt in 0..3u32 {
+            match self.client.post(&url).json(payload).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    let body: serde_json::Value =
+                        resp.json().await.map_err(|e| e.without_url().to_string())?;
+                    return Ok(body["result"]["message_id"].as_i64().unwrap_or(0));
+                }
+                Ok(resp) => {
+                    let err_text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Lỗi không xác định".into());
+                    last_error = format!("Telegram API Error: {err_text}");
+                    error!(
+                        "❌ Telegram {} attempt {}/3 failed: {}",
+                        label,
+                        attempt + 1,
+                        last_error
+                    );
+                }
+                Err(err) => {
+                    last_error = format!("Network Error: {}", err.without_url());
+                    error!(
+                        "❌ Telegram {} attempt {}/3 failed: {}",
+                        label,
+                        attempt + 1,
+                        last_error
+                    );
+                }
+            }
+            if attempt < 2 {
+                tokio::time::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)))
+                    .await;
+            }
+        }
+        Err(last_error)
+    }
+
     pub async fn send_signal_alert(&self, signal: &Signal) -> Result<i64, String> {
         if self.bot_token.is_empty() || self.chat_id.is_empty() {
             let msg = "Telegram Bot Token hoặc Chat ID chưa được cấu hình!".to_string();
@@ -287,8 +334,6 @@ impl TelegramNotifier {
         }
 
         let message_text = Self::format_signal_message(signal);
-        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
-
         let payload = json!({
             "chat_id": self.chat_id,
             "text": message_text,
@@ -296,32 +341,12 @@ impl TelegramNotifier {
             "disable_web_page_preview": true
         });
 
-        match self.client.post(&url).json(&payload).send().await {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    let body: serde_json::Value =
-                        resp.json().await.map_err(|e| e.without_url().to_string())?;
-                    let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
-                    info!(
-                        "✅ Đã gửi tín hiệu thành công tới Telegram! Message ID: {}",
-                        msg_id
-                    );
-                    Ok(msg_id)
-                } else {
-                    let err_text = resp
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "Lỗi không xác định".into());
-                    error!("❌ Telegram API phản hồi lỗi: {}", err_text);
-                    Err(format!("Telegram API Error: {}", err_text))
-                }
-            }
-            Err(err) => {
-                let err = err.without_url();
-                error!("❌ Không thể kết nối tới Telegram API: {}", err);
-                Err(format!("Network Error: {}", err))
-            }
-        }
+        let msg_id = self.send_message_with_retry(&payload, "signal").await?;
+        info!(
+            "✅ Đã gửi tín hiệu thành công tới Telegram! Message ID: {}",
+            msg_id
+        );
+        Ok(msg_id)
     }
 
     /// Định dạng cảnh báo phân kỳ RSI — advisory, không chứa entry/SL/TP.
@@ -1570,7 +1595,6 @@ impl TelegramNotifier {
         }
 
         let text = Self::format_outcome_message(signal);
-        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
         let payload = json!({
             "chat_id": self.chat_id,
             "text": text,
@@ -1578,29 +1602,9 @@ impl TelegramNotifier {
             "disable_web_page_preview": true
         });
 
-        match self.client.post(&url).json(&payload).send().await {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    let body: serde_json::Value =
-                        resp.json().await.map_err(|e| e.without_url().to_string())?;
-                    let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
-                    info!("✅ Đã gửi outcome Telegram! Message ID: {}", msg_id);
-                    Ok(msg_id)
-                } else {
-                    let err_text = resp
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "Lỗi không xác định".into());
-                    error!("❌ Telegram outcome API lỗi: {}", err_text);
-                    Err(format!("Telegram API Error: {}", err_text))
-                }
-            }
-            Err(err) => {
-                let err = err.without_url();
-                error!("❌ Không thể gửi outcome tới Telegram: {}", err);
-                Err(format!("Network Error: {}", err))
-            }
-        }
+        let msg_id = self.send_message_with_retry(&payload, "outcome").await?;
+        info!("✅ Đã gửi outcome Telegram! Message ID: {}", msg_id);
+        Ok(msg_id)
     }
 
     /// Gửi tin nhắn kiểm tra kết nối (Test Connection)
