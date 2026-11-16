@@ -564,6 +564,40 @@ taker buy/sell split, so `volumeSource=OANDA_TICK`, delta/CVD is disabled, and
 the AI treats volume as relative context only. If OANDA fails, the feed falls
 back to TwelveData when `TWELVEDATA_API_KEY` is set, then Binance PAXG.
 
+### Pending-order staleness guard
+
+- A pending `LIMIT`/`BREAKOUT` signal is cancelled when price moves more than
+  `1.5R` away from the entry before a fill, or after 8 closed M15 bars without
+  a fill. The `cancel_reason` explains which rule fired.
+- Early entry is only allowed when the live price is within
+  `early_entry_max_distance_r` (default `1.0R`) of the scenario trigger.
+  Otherwise the bot waits for a fresh scenario instead of creating a stale
+  pending order.
+- Telegram shows `PENDING` plus `KHÔNG market sell/chase` with the pending
+  entry. The alert is a pending order, not a market fill.
+
+### Signal journal cleanup (operator)
+
+The signal journal is separate from the manual AI entry check. To close all
+currently open (`Active`) signals after a test run:
+
+```bash
+curl -X POST http://127.0.0.1:8090/api/signals/close-all
+# {"status":"ok","closed":5,"purged":0,"remaining":23}
+```
+
+To remove the whole test journal and start a clean forward-test baseline:
+
+```bash
+curl -X POST "http://127.0.0.1:8090/api/signals/close-all?purge=true"
+```
+
+Both endpoints only update the local journal; they never send Telegram, create
+a signal or touch the scanner/quota. `POST /api/ai/entry-check` (and Telegram
+`/start-entry`) is a view-only AI check: it does not insert a signal, does not
+update the scanner's `last_ai_decision`, and returns `is_signal=false` /
+`source=MANUAL_ENTRY_CHECK`.
+
 ## 16b. Divergence alerts and Live Setup preview
 
 - `divergence_alert_enabled` (default true) sends standalone RSI divergence
