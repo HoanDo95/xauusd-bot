@@ -596,6 +596,12 @@ on from the dashboard or `POST /api/config` only for an explicit A/B run.
 - **GOLD SIGNAL ALERT** — sent only after a closed M15 candle triggers a valid
   scenario, the confirmation gate passes, and AI + hard risk approve. Only this
   alert contains Entry/SL/TP/Lot.
+- **Fresh-candle rule** — the confirming M15 candle must be within
+  `max_candle_age_secs` (180s in production) of its close. The setup scenario is
+  built from the candles *before* the confirming candle; the same setup is
+  passed to AI review. One live signal is allowed per candle timestamp.
+- **Feed cadence** — the TwelveData M15 cache is 45s so the 60s feed tick
+  fetches the just-closed bar instead of serving a 5-minute-old cache entry.
 - `early_entry_enabled` defaults **false**; the scanner no longer sends a full
   early-entry signal before the M15 close. The field is kept only for the
   `/start-entry` scenario fallback.
