@@ -2,7 +2,7 @@ use crate::analyzer::GoldMarketAnalyzer;
 use crate::macro_flow::{align_signal_with_macro_flow, MacroFlowSnapshot};
 use crate::market_context::MarketContext;
 use crate::models::{BotConfig, Candle, EntryType, SignalType, SupportResistanceZone};
-use crate::rsi::{rsi_snapshot, RsiDivergence};
+use crate::rsi::{rsi_cross_sma, rsi_snapshot, RsiCross, RsiDivergence};
 use crate::signal_validation::validate_signal_levels;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -193,6 +193,7 @@ struct ScenarioInputs<'a> {
     rsi_value: Option<f64>,
     rsi_h1: Option<f64>,
     rsi_h4: Option<f64>,
+    rsi_m15_cross: RsiCross,
     m15_divergence: RsiDivergence,
     daily_change_pct: Option<f64>,
     macro_flow: Option<&'a MacroFlowSnapshot>,
@@ -347,6 +348,7 @@ pub fn build_scenarios(
         rsi_h4: context
             .and_then(|context| context.rsi_h4.as_ref())
             .and_then(|snapshot| snapshot.value),
+        rsi_m15_cross: rsi_cross_sma(candles, config.rsi_period, 14),
         m15_divergence: rsi.divergence,
         daily_change_pct,
         macro_flow,
@@ -1225,24 +1227,30 @@ fn scenario_confidence_v2(
     score += level.min(25);
 
     // 3) Volume confirmation: 20 points.
-    score += if inputs.volume_surge_ratio >= 1.5 {
+    let volume_high = inputs.config.quantum_volume_confirm_ratio.max(1.0);
+    score += if inputs.volume_surge_ratio >= volume_high {
         20
-    } else if inputs.volume_surge_ratio >= 1.2 {
-        15
     } else if inputs.volume_surge_ratio >= 1.0 {
-        8
+        12
+    } else if inputs.volume_surge_ratio >= 0.8 {
+        6
     } else {
         3
     };
 
-    // 4) RSI momentum: 15 points.
-    score += match (signal_type, inputs.rsi_h1) {
-        (SignalType::Sell, Some(value)) if (35.0..=55.0).contains(&value) => 15,
-        (SignalType::Buy, Some(value)) if (45.0..=65.0).contains(&value) => 15,
-        (_, Some(value)) if (30.0..=65.0).contains(&value) => 10,
-        (_, Some(_)) => 3,
-        (_, None) => 8,
+    // 4) RSI momentum: 15 points (H1 range + M15 RSI/SMA14 cross).
+    let rsi_points = match (signal_type, inputs.rsi_h1) {
+        (SignalType::Sell, Some(value)) if (35.0..=55.0).contains(&value) => 10,
+        (SignalType::Buy, Some(value)) if (45.0..=65.0).contains(&value) => 10,
+        (_, Some(value)) if (30.0..=65.0).contains(&value) => 7,
+        (_, Some(_)) => 2,
+        (_, None) => 5,
     };
+    let cross_points = match (signal_type, inputs.rsi_m15_cross) {
+        (SignalType::Sell, RsiCross::Bearish) | (SignalType::Buy, RsiCross::Bullish) => 5,
+        _ => 0,
+    };
+    score += (rsi_points + cross_points).min(15);
 
     // 5) Macro / order flow: 10 points.
     score += match macro_alignment {
@@ -1973,6 +1981,7 @@ mod tests {
             rsi_value: Some(40.0),
             rsi_h1: Some(rsi_h1),
             rsi_h4: Some(rsi_h4),
+            rsi_m15_cross: RsiCross::None,
             m15_divergence: divergence,
             daily_change_pct: Some(daily_change_pct),
             macro_flow: None,

@@ -52,6 +52,50 @@ pub fn rsi_series(candles: &[Candle], period: usize) -> Vec<Option<f64>> {
     series
 }
 
+/// Direction of the latest RSI vs its own SMA.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RsiCross {
+    None,
+    Bullish,
+    Bearish,
+}
+
+/// Detect whether the latest RSI crossed its own SMA on the last closed candle.
+pub fn rsi_cross_sma(candles: &[Candle], rsi_period: usize, sma_period: usize) -> RsiCross {
+    let series = rsi_series(candles, rsi_period);
+    if series.len() < sma_period + 1 {
+        return RsiCross::None;
+    }
+
+    let sma = |index: usize| -> Option<f64> {
+        if index + 1 < sma_period {
+            return None;
+        }
+        let window = &series[index + 1 - sma_period..=index];
+        let mut sum = 0.0;
+        for value in window {
+            sum += (*value)?;
+        }
+        Some(sum / sma_period as f64)
+    };
+
+    let last = series.len() - 1;
+    let previous = last - 1;
+    let (Some(rsi_now), Some(rsi_previous), Some(sma_now), Some(sma_previous)) =
+        (series[last], series[previous], sma(last), sma(previous))
+    else {
+        return RsiCross::None;
+    };
+
+    if rsi_previous >= sma_previous && rsi_now < sma_now {
+        RsiCross::Bearish
+    } else if rsi_previous <= sma_previous && rsi_now > sma_now {
+        RsiCross::Bullish
+    } else {
+        RsiCross::None
+    }
+}
+
 fn rsi_from_averages(avg_gain: f64, avg_loss: f64) -> f64 {
     if avg_loss <= f64::EPSILON {
         if avg_gain <= f64::EPSILON {

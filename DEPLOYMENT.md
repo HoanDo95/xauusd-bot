@@ -587,6 +587,18 @@ M15. A/B at 0.05R cost:
 The result is mixed, so the flag stays off until forward-test/approval. Turn it
 on from the dashboard or `POST /api/config` only for an explicit A/B run.
 
+### Quantum trigger confirmation (P3, A/B)
+
+`quantum_trigger_confirmation_enabled` defaults **false**; when enabled, the
+candidate analyzer accepts bullish/bearish engulfing in addition to pinbar, and
+the v2 score uses the M15 RSI/SMA14 cross plus
+`quantum_volume_confirm_ratio` (default `1.2`).
+
+The scenario backtest does **not** exercise the analyzer engulfing path:
+`quantum_v3` is identical to `quantum_v2` on PAXG 2025, Dukascopy 2025 and
+2022–2023. Keep both flags off until a dedicated trigger-confirmation backtest
+is implemented; do not treat v3 as validated.
+
 ### Pending-order staleness guard
 
 - A pending `LIMIT`/`BREAKOUT` signal is cancelled when price moves more than

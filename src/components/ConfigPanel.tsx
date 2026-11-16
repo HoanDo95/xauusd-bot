@@ -625,6 +625,48 @@ export const ConfigPanel: React.FC<Props> = ({
                     </span>
                   </span>
                 </label>
+                <label className="flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={formData.quantum_trigger_confirmation_enabled ?? false}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        quantum_trigger_confirmation_enabled: e.target.checked,
+                      })
+                    }
+                    className="accent-amber-500 w-4 h-4 rounded cursor-pointer mt-0.5"
+                  />
+                  <span className="text-[11px] text-neutral-300 leading-snug">
+                    Engulfing confirmation (A/B)
+                    <span className="block text-[10px] text-neutral-500">
+                      Pinbar OR engulfing · mặc định tắt
+                    </span>
+                  </span>
+                </label>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-semibold text-neutral-400">
+                    Quantum volume ratio
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="2"
+                    step="0.05"
+                    value={formData.quantum_volume_confirm_ratio ?? 1.2}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        quantum_volume_confirm_ratio: Math.max(
+                          1,
+                          Math.min(2, parseFloat(e.target.value) || 1.2)
+                        ),
+                      })
+                    }
+                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-amber-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
+                  />
+                  <span className="text-[10px] text-neutral-500">1.0–2.0 · mặc định 1.2</span>
+                </div>
               </div>
               <p className="text-[11px] text-neutral-500">
                 COUNTER/RSI filter dựa trên backtest 2025. Merge HTF + SL cap dùng để kéo trigger

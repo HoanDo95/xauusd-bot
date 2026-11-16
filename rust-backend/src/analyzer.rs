@@ -213,6 +213,20 @@ impl GoldMarketAnalyzer {
         (is_bullish_pinbar, is_bearish_pinbar)
     }
 
+    /// Nhận diện engulfing: nến hiện tại nhấn chìm thân nến trước.
+    /// Trả về (bullish_engulfing, bearish_engulfing).
+    pub fn check_engulfing(previous: &Candle, current: &Candle) -> (bool, bool) {
+        let bullish = current.close > current.open
+            && previous.close < previous.open
+            && current.close >= previous.open
+            && current.open <= previous.close;
+        let bearish = current.close < current.open
+            && previous.close > previous.open
+            && current.close <= previous.open
+            && current.open >= previous.close;
+        (bullish, bearish)
+    }
+
     /// 6. Điểm hội tụ kỹ thuật (Confluence Score) trong khoảng 80..=98.
     fn calculate_confluence_score(
         volume_surge_ratio: f64,
@@ -304,12 +318,20 @@ impl GoldMarketAnalyzer {
         // Bước C: Kiểm tra mô hình Nến rút chân
         let (is_bullish_pinbar, is_bearish_pinbar) =
             Self::check_pinbar_rejection(current_candle, config.rejection_wick_ratio);
+        let (is_bullish_engulfing, is_bearish_engulfing) = previous_candles
+            .last()
+            .map(|previous| Self::check_engulfing(previous, current_candle))
+            .unwrap_or((false, false));
+        let bullish_trigger = is_bullish_pinbar
+            || (config.quantum_trigger_confirmation_enabled && is_bullish_engulfing);
+        let bearish_trigger = is_bearish_pinbar
+            || (config.quantum_trigger_confirmation_enabled && is_bearish_engulfing);
 
         // Biên độ chấp nhận kiểm tra lại vùng cản (Zone Retest Tolerance)
         let zone_touch_tolerance = 2.5; // Trong phạm vi 2.5$
 
         // ================= KỊCH BẢN 1: MUA (BUY SIGNAL) =================
-        if allow_buy && is_bullish_pinbar && is_volume_valid {
+        if allow_buy && bullish_trigger && is_volume_valid {
             // Tìm vùng hỗ trợ gần nhất mà nến rút chân chạm vào hoặc đâm râu xuyên qua
             let nearest_support = supports.iter().find(|zone| {
                 let diff_from_low = (current_candle.low - zone.price).abs();
@@ -478,7 +500,7 @@ impl GoldMarketAnalyzer {
         }
 
         // ================= KỊCH BẢN 2: BÁN (SELL SIGNAL) =================
-        if allow_sell && is_bearish_pinbar && is_volume_valid {
+        if allow_sell && bearish_trigger && is_volume_valid {
             // Tìm vùng kháng cự gần nhất mà nến rút chân chạm vào hoặc đâm râu xuyên qua
             let nearest_resistance = resistances.iter().find(|zone| {
                 let diff_from_high = (current_candle.high - zone.price).abs();
@@ -800,6 +822,30 @@ mod tests {
             taker_buy_volume: 0.0,
             timeframe: Timeframe::M15,
         }
+    }
+
+    #[test]
+    fn engulfing_detection_handles_bullish_and_bearish() {
+        let previous_bear = candle(1, 100.0, 101.0, 98.0, 99.0, 1000.0);
+        let bullish = candle(2, 98.5, 102.0, 98.0, 101.5, 1200.0);
+        assert_eq!(
+            GoldMarketAnalyzer::check_engulfing(&previous_bear, &bullish),
+            (true, false)
+        );
+
+        let previous_bull = candle(3, 99.0, 102.0, 98.0, 101.0, 1000.0);
+        let bearish = candle(4, 101.5, 102.0, 97.0, 98.5, 1200.0);
+        assert_eq!(
+            GoldMarketAnalyzer::check_engulfing(&previous_bull, &bearish),
+            (false, true)
+        );
+
+        let inside = candle(5, 100.0, 101.0, 99.0, 100.5, 1000.0);
+        let small = candle(6, 100.2, 100.8, 99.8, 100.6, 1000.0);
+        assert_eq!(
+            GoldMarketAnalyzer::check_engulfing(&inside, &small),
+            (false, false)
+        );
     }
 
     /// Chuỗi nến zigzag tạo swing high 2690.5 và swing low 2669.5 ổn định.

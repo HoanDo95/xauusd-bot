@@ -1481,6 +1481,8 @@ struct VariantConfig {
     htf_levels_enabled: bool,
     structural_sl_atr_cap: f64,
     quantum_weighted_score_enabled: bool,
+    quantum_trigger_confirmation_enabled: bool,
+    quantum_volume_confirm_ratio: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2186,6 +2188,8 @@ struct RunOptions {
     htf_levels_enabled: bool,
     structural_sl_atr_cap: f64,
     quantum_weighted_score_enabled: bool,
+    quantum_trigger_confirmation_enabled: bool,
+    quantum_volume_confirm_ratio: f64,
     cost_r: f64,
 }
 
@@ -2212,6 +2216,8 @@ fn run_variant(
         htf_levels_enabled: options.htf_levels_enabled,
         structural_sl_atr_cap: options.structural_sl_atr_cap,
         quantum_weighted_score_enabled: options.quantum_weighted_score_enabled,
+        quantum_trigger_confirmation_enabled: options.quantum_trigger_confirmation_enabled,
+        quantum_volume_confirm_ratio: options.quantum_volume_confirm_ratio,
         min_rsi_h1_for_buy: if options.buy_rsi_h1_guard { 30.0 } else { 0.0 },
         early_entry_enabled: true,
         early_entry_min_confidence: 90,
@@ -2580,6 +2586,8 @@ async fn run() -> Result<()> {
                 htf_levels_enabled,
                 structural_sl_atr_cap,
                 quantum_weighted_score_enabled: false,
+                quantum_trigger_confirmation_enabled: false,
+                quantum_volume_confirm_ratio: 1.2,
                 cost_r: args.cost_r,
             },
         );
@@ -2596,6 +2604,8 @@ async fn run() -> Result<()> {
                     htf_levels_enabled,
                     structural_sl_atr_cap,
                     quantum_weighted_score_enabled: false,
+                    quantum_trigger_confirmation_enabled: false,
+                    quantum_volume_confirm_ratio: 1.2,
                 },
                 funnel: result.funnel,
                 overall: result.overall,
@@ -2621,6 +2631,8 @@ async fn run() -> Result<()> {
             htf_levels_enabled: true,
             structural_sl_atr_cap: 1.0,
             quantum_weighted_score_enabled: true,
+            quantum_trigger_confirmation_enabled: false,
+            quantum_volume_confirm_ratio: 1.2,
             cost_r: args.cost_r,
         },
     );
@@ -2639,11 +2651,59 @@ async fn run() -> Result<()> {
                 htf_levels_enabled: true,
                 structural_sl_atr_cap: 1.0,
                 quantum_weighted_score_enabled: true,
+                quantum_trigger_confirmation_enabled: false,
+                quantum_volume_confirm_ratio: 1.2,
             },
             funnel: quantum.funnel,
             overall: quantum.overall,
             breakdowns: quantum.breakdowns,
             trades: quantum.trades,
+        },
+    );
+
+    println!("Running variant quantum_v3...");
+    let quantum_v3 = run_variant(
+        &m15,
+        &h1_all,
+        &h4_all,
+        &d1_all,
+        start_idx,
+        end_idx,
+        RunOptions {
+            anti_chase_filter_enabled: true,
+            aligned_only: false,
+            buy_rsi_h1_guard: true,
+            bearish_rejection_enabled: false,
+            htf_levels_enabled: true,
+            structural_sl_atr_cap: 1.0,
+            quantum_weighted_score_enabled: true,
+            quantum_trigger_confirmation_enabled: true,
+            quantum_volume_confirm_ratio: 1.2,
+            cost_r: args.cost_r,
+        },
+    );
+    variants.insert(
+        "quantum_v3".to_string(),
+        VariantReport {
+            config: VariantConfig {
+                name: "quantum_v3".to_string(),
+                description:
+                    "HTF levels; SL cap; weighted v2 + engulfing confirmation + volume 1.2x."
+                        .to_string(),
+                anti_chase_filter_enabled: true,
+                aligned_only: false,
+                buy_rsi_h1_guard: true,
+                bearish_rejection_enabled: false,
+                htf_levels_enabled: true,
+                structural_sl_atr_cap: 1.0,
+                quantum_weighted_score_enabled: true,
+                quantum_trigger_confirmation_enabled: true,
+                quantum_volume_confirm_ratio: 1.2,
+            },
+            funnel: quantum_v3.funnel,
+            overall: quantum_v3.overall,
+            breakdowns: quantum_v3.breakdowns,
+            trades: quantum_v3.trades,
         },
     );
 
@@ -2653,6 +2713,7 @@ async fn run() -> Result<()> {
         "sl_cap_only",
         "current",
         "quantum_v2",
+        "quantum_v3",
         "anti_chase_off",
         "aligned_only",
         "aligned_only_no_anti_chase",

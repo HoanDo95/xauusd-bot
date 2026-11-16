@@ -346,6 +346,12 @@ pub struct BotConfig {
     /// Mặc định TẮT — chỉ bật sau A/B backtest.
     #[serde(default)]
     pub quantum_weighted_score_enabled: bool,
+    /// Bật trigger confirmation bằng engulfing (quantum). Mặc định TẮT.
+    #[serde(default)]
+    pub quantum_trigger_confirmation_enabled: bool,
+    /// Volume ratio cho quantum confirmation. Mặc định 1.2.
+    #[serde(default = "default_quantum_volume_confirm_ratio")]
+    pub quantum_volume_confirm_ratio: f64,
     /// Bật bộ lọc khung giờ thanh khoản Âu-Mỹ 13:00-23:00 GMT+7
     #[serde(default = "default_session_filter_enabled")]
     pub session_filter_enabled: bool,
@@ -564,6 +570,10 @@ fn default_ai_review_mode() -> String {
     "DECISION".to_string()
 }
 
+fn default_quantum_volume_confirm_ratio() -> f64 {
+    1.2
+}
+
 fn default_early_entry_min_confidence() -> u8 {
     90
 }
@@ -665,6 +675,8 @@ impl Default for BotConfig {
             structural_sl_atr_cap: default_structural_sl_atr_cap(),
             yahoo_futures_volume_enabled: true,
             quantum_weighted_score_enabled: false,
+            quantum_trigger_confirmation_enabled: false,
+            quantum_volume_confirm_ratio: default_quantum_volume_confirm_ratio(),
             session_filter_enabled: default_session_filter_enabled(),
             data_source: default_data_source(),
             webhook_passphrase: String::new(),
@@ -786,6 +798,8 @@ impl BotConfig {
         self.early_entry_min_confidence = self.early_entry_min_confidence.clamp(50, 100);
         self.early_entry_max_distance_r =
             finite_or(self.early_entry_max_distance_r, 1.0).clamp(0.0, 3.0);
+        self.quantum_volume_confirm_ratio =
+            finite_or(self.quantum_volume_confirm_ratio, 1.2).clamp(1.0, 2.0);
         self.anti_chase_daily_change_pct =
             finite_or(self.anti_chase_daily_change_pct, -2.0).clamp(-10.0, -0.5);
         self.anti_chase_rsi_h1 = finite_or(self.anti_chase_rsi_h1, 25.0).clamp(10.0, 40.0);
@@ -947,6 +961,8 @@ mod tests {
         assert_eq!(defaults.structural_sl_atr_cap, 1.0);
         assert!(defaults.yahoo_futures_volume_enabled);
         assert!(!defaults.quantum_weighted_score_enabled);
+        assert!(!defaults.quantum_trigger_confirmation_enabled);
+        assert_eq!(defaults.quantum_volume_confirm_ratio, 1.2);
 
         let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
         let object = value.as_object_mut().expect("config object");
@@ -958,6 +974,8 @@ mod tests {
             "structural_sl_atr_cap",
             "yahoo_futures_volume_enabled",
             "quantum_weighted_score_enabled",
+            "quantum_trigger_confirmation_enabled",
+            "quantum_volume_confirm_ratio",
         ] {
             object.remove(key);
         }
@@ -970,15 +988,19 @@ mod tests {
         assert_eq!(config.structural_sl_atr_cap, 1.0);
         assert!(config.yahoo_futures_volume_enabled);
         assert!(!config.quantum_weighted_score_enabled);
+        assert!(!config.quantum_trigger_confirmation_enabled);
+        assert_eq!(config.quantum_volume_confirm_ratio, 1.2);
 
         let clamped = BotConfig {
             min_rsi_h1_for_buy: 99.0,
             structural_sl_atr_cap: 9.0,
+            quantum_volume_confirm_ratio: 9.0,
             ..BotConfig::default()
         }
         .sanitized();
         assert_eq!(clamped.min_rsi_h1_for_buy, 50.0);
         assert_eq!(clamped.structural_sl_atr_cap, 3.0);
+        assert_eq!(clamped.quantum_volume_confirm_ratio, 2.0);
     }
 
     #[test]
