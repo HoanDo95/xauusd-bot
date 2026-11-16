@@ -33,6 +33,13 @@ pub struct TimeframeContext {
     pub prev_close: f64,
     pub ema50: f64,
     pub ema200: f64,
+    /// EMA50 change over the last 3 closed candles (price points).
+    #[serde(default)]
+    pub ema50_slope_3: f64,
+    /// Swing structure from the last two pivot highs/lows:
+    /// "HH_HL" | "LH_LL" | "MIXED" | "UNKNOWN".
+    #[serde(default)]
+    pub structure: String,
     /// Vị trí trong kênh Donchian(20), 0..=1 (0 = sát đáy kênh, 1 = sát đỉnh kênh).
     pub channel_position: f64,
     pub atr14: f64,
@@ -112,6 +119,51 @@ pub fn build_market_context(
     }
 }
 
+/// Phân loại cấu trúc swing từ 2 đỉnh/đáy pivot gần nhất (k=2).
+/// Trả "HH_HL" (uptrend), "LH_LL" (downtrend), "MIXED" hoặc "UNKNOWN".
+fn swing_structure(candles: &[Candle]) -> String {
+    if candles.len() < 5 {
+        return "UNKNOWN".to_string();
+    }
+
+    let mut highs = Vec::new();
+    let mut lows = Vec::new();
+    for index in 2..candles.len().saturating_sub(2) {
+        let candle = &candles[index];
+        if candle.high >= candles[index - 1].high
+            && candle.high >= candles[index - 2].high
+            && candle.high >= candles[index + 1].high
+            && candle.high >= candles[index + 2].high
+        {
+            highs.push(candle.high);
+        }
+        if candle.low <= candles[index - 1].low
+            && candle.low <= candles[index - 2].low
+            && candle.low <= candles[index + 1].low
+            && candle.low <= candles[index + 2].low
+        {
+            lows.push(candle.low);
+        }
+    }
+
+    if highs.len() < 2 || lows.len() < 2 {
+        return "UNKNOWN".to_string();
+    }
+
+    let higher_high = highs[highs.len() - 1] > highs[highs.len() - 2];
+    let higher_low = lows[lows.len() - 1] > lows[lows.len() - 2];
+    let lower_high = highs[highs.len() - 1] < highs[highs.len() - 2];
+    let lower_low = lows[lows.len() - 1] < lows[lows.len() - 2];
+
+    if higher_high && higher_low {
+        "HH_HL".to_string()
+    } else if lower_high && lower_low {
+        "LH_LL".to_string()
+    } else {
+        "MIXED".to_string()
+    }
+}
+
 /// Dựng bối cảnh cho một khung thời gian. Chuỗi rỗng trả về context an toàn.
 pub fn build_timeframe_context(timeframe: &str, candles: &[Candle]) -> TimeframeContext {
     let timeframe = timeframe.trim().to_uppercase();
@@ -124,6 +176,8 @@ pub fn build_timeframe_context(timeframe: &str, candles: &[Candle]) -> Timeframe
             prev_close: 0.0,
             ema50: 0.0,
             ema200: 0.0,
+            ema50_slope_3: 0.0,
+            structure: "UNKNOWN".to_string(),
             channel_position: 0.5,
             atr14: 0.0,
             nearest_support: None,
@@ -143,6 +197,13 @@ pub fn build_timeframe_context(timeframe: &str, candles: &[Candle]) -> Timeframe
     let last_candle_timestamp = candles.last().map(|candle| candle.timestamp).unwrap_or(0);
     let ema50 = GoldMarketAnalyzer::calculate_ema(candles, 50);
     let ema200 = GoldMarketAnalyzer::calculate_ema(candles, 200);
+    let ema50_slope_3 = if candles.len() > 3 {
+        let previous = GoldMarketAnalyzer::calculate_ema(&candles[..candles.len() - 3], 50);
+        ema50 - previous
+    } else {
+        0.0
+    };
+    let structure = swing_structure(candles);
     let bias = if close > ema50 && ema50 > ema200 {
         "BULLISH"
     } else if close < ema50 && ema50 < ema200 {
@@ -160,6 +221,8 @@ pub fn build_timeframe_context(timeframe: &str, candles: &[Candle]) -> Timeframe
         prev_close: round2(prev_close),
         ema50: round2(ema50),
         ema200: round2(ema200),
+        ema50_slope_3: round2(ema50_slope_3),
+        structure,
         channel_position: channel_position(candles, close),
         atr14: round2(atr14(candles)),
         nearest_support,
@@ -433,6 +496,45 @@ mod tests {
             .collect()
     }
 
+    fn structure_candles(up: bool) -> Vec<Candle> {
+        let highs: [f64; 16] = if up {
+            [
+                10.0, 11.0, 12.0, 11.0, 10.0, 13.0, 14.0, 13.0, 12.0, 15.0, 16.0, 15.0, 14.0, 17.0,
+                18.0, 17.0,
+            ]
+        } else {
+            [
+                18.0, 17.0, 16.0, 17.0, 18.0, 15.0, 14.0, 15.0, 16.0, 13.0, 12.0, 13.0, 14.0, 11.0,
+                10.0, 11.0,
+            ]
+        };
+        let lows: [f64; 16] = if up {
+            [
+                5.0, 6.0, 7.0, 6.0, 5.0, 8.0, 9.0, 8.0, 7.0, 10.0, 11.0, 10.0, 9.0, 12.0, 13.0,
+                12.0,
+            ]
+        } else {
+            [
+                13.0, 12.0, 11.0, 12.0, 13.0, 10.0, 9.0, 10.0, 11.0, 8.0, 7.0, 8.0, 9.0, 6.0, 5.0,
+                6.0,
+            ]
+        };
+        highs
+            .iter()
+            .zip(lows.iter())
+            .enumerate()
+            .map(|(index, (&high, &low))| {
+                candle(
+                    BASE_TS + index as i64 * STEP_MS,
+                    (high + low) / 2.0,
+                    high,
+                    low,
+                    (high + low) / 2.0,
+                )
+            })
+            .collect()
+    }
+
     fn timeframe_context(bias: &str) -> TimeframeContext {
         TimeframeContext {
             timeframe: "H4".to_string(),
@@ -441,6 +543,8 @@ mod tests {
             prev_close: 2395.0,
             ema50: 2380.0,
             ema200: 2360.0,
+            ema50_slope_3: 0.0,
+            structure: "UNKNOWN".to_string(),
             channel_position: 0.5,
             atr14: 10.0,
             nearest_support: Some(2380.0),
@@ -514,6 +618,16 @@ mod tests {
         assert!((context.prev_close - expected_prev).abs() < 1e-9);
         assert!(context.prev_close > 0.0);
         assert_ne!(context.prev_close, context.close);
+    }
+
+    #[test]
+    fn swing_structure_and_ema_slope_are_exposed() {
+        assert_eq!(swing_structure(&structure_candles(true)), "HH_HL");
+        assert_eq!(swing_structure(&structure_candles(false)), "LH_LL");
+
+        let trend = trend_candles(120, 2000.0, 1.0);
+        let context = build_timeframe_context("H1", &trend);
+        assert!(context.ema50_slope_3 > 0.0);
     }
 
     #[test]
@@ -704,6 +818,8 @@ mod tests {
             "close",
             "ema50",
             "ema200",
+            "ema50_slope_3",
+            "structure",
             "channel_position",
             "atr14",
             "nearest_support",

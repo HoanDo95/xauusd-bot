@@ -564,6 +564,29 @@ taker buy/sell split, so `volumeSource=OANDA_TICK`, delta/CVD is disabled, and
 the AI treats volume as relative context only. If OANDA fails, the feed falls
 back to TwelveData when `TWELVEDATA_API_KEY` is set, then Binance PAXG.
 
+### Quantum weighted score v2 (A/B)
+
+`quantum_weighted_score_enabled` defaults **false**. When enabled, scenario
+confidence uses a 30/25/20/15/10 confluence model:
+
+- trend alignment (D1/H4/H1 + EMA50 slope)
+- key-level proximity + swing structure (HH/HL/LH/LL)
+- volume surge
+- RSI H1 range
+- macro alignment
+
+Anti-chase caps the score at 75 when price is more than `1.5× ATR` from EMA50
+M15. A/B at 0.05R cost:
+
+| Dataset | current | quantum_v2 |
+|---|---:|---:|
+| PAXG 2025 | +0.110R | **+0.123R** |
+| Dukascopy 2025 | **+0.141R** | +0.137R |
+| Dukascopy 2022–2023 | +0.031R | **+0.062R** |
+
+The result is mixed, so the flag stays off until forward-test/approval. Turn it
+on from the dashboard or `POST /api/config` only for an explicit A/B run.
+
 ### Pending-order staleness guard
 
 - A pending `LIMIT`/`BREAKOUT` signal is cancelled when price moves more than

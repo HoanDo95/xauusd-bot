@@ -115,6 +115,7 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "earlyEntryEnabled": config.early_entry_enabled,
         "earlyEntryMinConfidence": config.early_entry_min_confidence,
         "earlyEntryMaxDistanceR": config.early_entry_max_distance_r,
+        "quantumWeightedScoreEnabled": config.quantum_weighted_score_enabled,
         "sessionFilterEnabled": config.session_filter_enabled,
         "h4FilterEnabled": config.htf_h4_filter_enabled,
         "d1FilterEnabled": config.htf_d1_filter_enabled,

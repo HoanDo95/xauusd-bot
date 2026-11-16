@@ -126,12 +126,14 @@ pub(crate) fn format_timeframe_context(label: &str, context: &TimeframeContext) 
         .unwrap_or_else(|| "n/a".to_string());
 
     format!(
-        "{}: bias={} close={:.2} EMA50={:.2} EMA200={:.2} channel_pos={:.2} ATR14={:.2} support={} resistance={} candles={}",
+        "{}: bias={} close={:.2} EMA50={:.2} EMA200={:.2} EMA50_slope3={:.2} structure={} channel_pos={:.2} ATR14={:.2} support={} resistance={} candles={}",
         label,
         context.bias,
         context.close,
         context.ema50,
         context.ema200,
+        context.ema50_slope_3,
+        context.structure,
         context.channel_position,
         context.atr14,
         support,

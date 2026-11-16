@@ -606,6 +606,25 @@ export const ConfigPanel: React.FC<Props> = ({
                   />
                   <span className="text-[10px] text-neutral-500">0 = tắt · mặc định 1.0</span>
                 </div>
+                <label className="flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={formData.quantum_weighted_score_enabled ?? false}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        quantum_weighted_score_enabled: e.target.checked,
+                      })
+                    }
+                    className="accent-amber-500 w-4 h-4 rounded cursor-pointer mt-0.5"
+                  />
+                  <span className="text-[11px] text-neutral-300 leading-snug">
+                    Quantum score v2 (A/B)
+                    <span className="block text-[10px] text-neutral-500">
+                      30/25/20/15/10 · mặc định tắt
+                    </span>
+                  </span>
+                </label>
               </div>
               <p className="text-[11px] text-neutral-500">
                 COUNTER/RSI filter dựa trên backtest 2025. Merge HTF + SL cap dùng để kéo trigger

@@ -181,7 +181,15 @@ struct ScenarioInputs<'a> {
     atr: f64,
     d1_bias: &'a str,
     h4_bias: &'a str,
+    h1_bias: &'a str,
     macro_bias: &'a str,
+    d1_structure: &'a str,
+    h4_structure: &'a str,
+    h1_structure: &'a str,
+    h1_ema50_slope_3: f64,
+    h4_ema50_slope_3: f64,
+    volume_surge_ratio: f64,
+    ema50_m15: f64,
     rsi_value: Option<f64>,
     rsi_h1: Option<f64>,
     rsi_h4: Option<f64>,
@@ -286,7 +294,7 @@ pub fn build_scenarios(
 
     let market = ScenarioMarket {
         h4_bias: h4_bias.clone(),
-        h1_bias,
+        h1_bias: h1_bias.clone(),
         d1_bias: d1_bias.clone(),
         h4_atr: round2(atr),
         nearest_support: nearest_support.map(round2),
@@ -313,7 +321,25 @@ pub fn build_scenarios(
         atr,
         d1_bias: &d1_bias,
         h4_bias: &h4_bias,
+        h1_bias: &h1_bias,
         macro_bias: &macro_bias,
+        d1_structure: context
+            .map(|context| context.d1.structure.as_str())
+            .unwrap_or("UNKNOWN"),
+        h4_structure: context
+            .map(|context| context.h4.structure.as_str())
+            .unwrap_or("UNKNOWN"),
+        h1_structure: context
+            .map(|context| context.h1.structure.as_str())
+            .unwrap_or("UNKNOWN"),
+        h1_ema50_slope_3: context
+            .map(|context| context.h1.ema50_slope_3)
+            .unwrap_or(0.0),
+        h4_ema50_slope_3: context
+            .map(|context| context.h4.ema50_slope_3)
+            .unwrap_or(0.0),
+        volume_surge_ratio: volume_surge_ratio(candles, config.volume_ma_period),
+        ema50_m15: GoldMarketAnalyzer::calculate_ema(candles, 50),
         rsi_value: rsi.value,
         rsi_h1: context
             .and_then(|context| context.rsi_h1.as_ref())
@@ -1122,6 +1148,154 @@ fn pullback_confirmation(
     }
 }
 
+/// Weighted confluence v2 (quantum 30/25/20/15/10).
+///
+/// Feature-flagged: only used when `quantum_weighted_score_enabled=true`.
+/// Keeps the same 90+ confidence caps as v1 so early-entry semantics do not
+/// silently loosen.
+fn scenario_confidence_v2(
+    bias: &str,
+    signal_type: SignalType,
+    entry: Option<f64>,
+    risk_reward: Option<f64>,
+    inputs: &ScenarioInputs<'_>,
+    macro_alignment: &str,
+) -> u8 {
+    let mut score: i32 = 0;
+
+    // 1) Trend alignment: 30 points.
+    let mut trend = 0;
+    if bias == inputs.d1_bias {
+        trend += 7;
+    }
+    if bias == inputs.h4_bias {
+        trend += 8;
+    }
+    if bias == inputs.h1_bias {
+        trend += 7;
+    }
+    if bias == inputs.macro_bias {
+        trend += 8;
+    }
+    let slope_ok = match signal_type {
+        SignalType::Buy => inputs.h4_ema50_slope_3 > 0.0 && inputs.h1_ema50_slope_3 > 0.0,
+        SignalType::Sell => inputs.h4_ema50_slope_3 < 0.0 && inputs.h1_ema50_slope_3 < 0.0,
+    };
+    if slope_ok {
+        trend += 5;
+    }
+    score += trend.min(30);
+
+    // 2) Key level reaction + swing structure: 25 points.
+    let mut level = 0;
+    if let Some(entry) = entry {
+        let distance_atr = (inputs.price - entry).abs() / inputs.atr.max(1e-9);
+        level += match distance_atr {
+            value if value <= 0.5 => 15,
+            value if value <= 1.0 => 12,
+            value if value <= 1.5 => 8,
+            _ => 3,
+        };
+    }
+    let structure_points = match signal_type {
+        SignalType::Buy => {
+            [
+                inputs.d1_structure,
+                inputs.h4_structure,
+                inputs.h1_structure,
+            ]
+            .iter()
+            .filter(|structure| **structure == "HH_HL")
+            .count() as i32
+                * 3
+        }
+        SignalType::Sell => {
+            [
+                inputs.d1_structure,
+                inputs.h4_structure,
+                inputs.h1_structure,
+            ]
+            .iter()
+            .filter(|structure| **structure == "LH_LL")
+            .count() as i32
+                * 3
+        }
+    };
+    level += structure_points.min(10);
+    score += level.min(25);
+
+    // 3) Volume confirmation: 20 points.
+    score += if inputs.volume_surge_ratio >= 1.5 {
+        20
+    } else if inputs.volume_surge_ratio >= 1.2 {
+        15
+    } else if inputs.volume_surge_ratio >= 1.0 {
+        8
+    } else {
+        3
+    };
+
+    // 4) RSI momentum: 15 points.
+    score += match (signal_type, inputs.rsi_h1) {
+        (SignalType::Sell, Some(value)) if (35.0..=55.0).contains(&value) => 15,
+        (SignalType::Buy, Some(value)) if (45.0..=65.0).contains(&value) => 15,
+        (_, Some(value)) if (30.0..=65.0).contains(&value) => 10,
+        (_, Some(_)) => 3,
+        (_, None) => 8,
+    };
+
+    // 5) Macro / order flow: 10 points.
+    score += match macro_alignment {
+        "ALIGNED" => 10,
+        "MIXED" => 5,
+        _ => 0,
+    };
+
+    if risk_reward.is_some_and(|value| value + 1e-9 < inputs.config.min_risk_reward) {
+        score = score.min(60);
+    }
+
+    // Anti-chase: price far from EMA50 M15 is a late entry.
+    if inputs.ema50_m15 > 0.0 {
+        let distance_atr = (inputs.price - inputs.ema50_m15).abs() / inputs.atr.max(1e-9);
+        if distance_atr > 1.5 {
+            score = score.min(75);
+        }
+    }
+
+    let macro_aligned =
+        bias == inputs.macro_bias && bias == inputs.d1_bias && bias == inputs.h4_bias;
+    let rsi_h1_healthy = inputs
+        .rsi_h1
+        .is_some_and(|value| (30.0..=65.0).contains(&value));
+    let rsi_h4_extreme = inputs
+        .rsi_h4
+        .is_some_and(|value| !(30.0..=70.0).contains(&value));
+    let opposite_divergence = match signal_type {
+        SignalType::Buy => inputs.m15_divergence == RsiDivergence::Bearish,
+        SignalType::Sell => inputs.m15_divergence == RsiDivergence::Bullish,
+    };
+    let mut cap = MAX_CONFIDENCE;
+    if !macro_aligned {
+        cap = cap.min(85);
+    }
+    if !rsi_h1_healthy {
+        cap = cap.min(85);
+    }
+    if rsi_h4_extreme {
+        cap = cap.min(85);
+    }
+    if opposite_divergence {
+        cap = cap.min(75);
+    }
+    if (!rsi_h1_healthy || rsi_h4_extreme) && opposite_divergence {
+        cap = cap.min(65);
+    }
+    score = score.min(cap);
+
+    score.clamp(0, MAX_CONFIDENCE) as u8
+}
+
 fn scenario_confidence(
     scenario_id: &str,
     bias: &str,
@@ -1131,6 +1305,17 @@ fn scenario_confidence(
     inputs: &ScenarioInputs<'_>,
     macro_alignment: &str,
 ) -> u8 {
+    if inputs.config.quantum_weighted_score_enabled {
+        return scenario_confidence_v2(
+            bias,
+            signal_type,
+            entry,
+            risk_reward,
+            inputs,
+            macro_alignment,
+        );
+    }
+
     let mut score: i32 = 50;
 
     if bias == inputs.h4_bias {
@@ -1505,6 +1690,26 @@ fn build_level_set(levels: &[LevelPick], price: f64, atr: f64) -> LevelSet {
     }
 }
 
+/// Latest volume vs the average of the previous `period` candles.
+fn volume_surge_ratio(candles: &[Candle], period: usize) -> f64 {
+    let period = period.max(1);
+    if candles.len() <= period {
+        return 0.0;
+    }
+    let latest = candles.last().map(|candle| candle.volume).unwrap_or(0.0);
+    let start = candles.len() - 1 - period;
+    let average = candles[start..candles.len() - 1]
+        .iter()
+        .map(|candle| candle.volume)
+        .sum::<f64>()
+        / period as f64;
+    if average > 0.0 && latest.is_finite() && latest >= 0.0 {
+        latest / average
+    } else {
+        0.0
+    }
+}
+
 fn effective_atr(candles: &[Candle], context: Option<&MarketContext>) -> f64 {
     let context_atr = context
         .map(|context| {
@@ -1756,7 +1961,15 @@ mod tests {
             atr: 10.0,
             d1_bias: "BEARISH",
             h4_bias: "BEARISH",
+            h1_bias: "BEARISH",
             macro_bias: "BEARISH",
+            d1_structure: "LH_LL",
+            h4_structure: "LH_LL",
+            h1_structure: "LH_LL",
+            h1_ema50_slope_3: -1.0,
+            h4_ema50_slope_3: -1.0,
+            volume_surge_ratio: 1.6,
+            ema50_m15: 2685.0,
             rsi_value: Some(40.0),
             rsi_h1: Some(rsi_h1),
             rsi_h4: Some(rsi_h4),
@@ -2093,6 +2306,59 @@ mod tests {
             "ALIGNED",
         );
         assert!(confidence <= 75);
+    }
+
+    #[test]
+    fn quantum_v2_full_confluence_reaches_90() {
+        let mut config = config();
+        config.quantum_weighted_score_enabled = true;
+        let inputs = confidence_inputs(&config, 45.0, 50.0, RsiDivergence::None, 0.0);
+        let confidence = scenario_confidence(
+            "bearish_breakdown",
+            "BEARISH",
+            SignalType::Sell,
+            Some(2680.0),
+            Some(2.0),
+            &inputs,
+            "ALIGNED",
+        );
+        assert!(confidence >= 90, "confidence={confidence}");
+    }
+
+    #[test]
+    fn quantum_v2_counter_macro_is_capped_below_90() {
+        let mut config = config();
+        config.quantum_weighted_score_enabled = true;
+        let mut inputs = confidence_inputs(&config, 45.0, 50.0, RsiDivergence::None, 0.0);
+        inputs.macro_bias = "BULLISH";
+        let confidence = scenario_confidence(
+            "bearish_breakdown",
+            "BEARISH",
+            SignalType::Sell,
+            Some(2680.0),
+            Some(2.0),
+            &inputs,
+            "COUNTER",
+        );
+        assert!(confidence < 90, "confidence={confidence}");
+    }
+
+    #[test]
+    fn quantum_v2_far_from_ema50_is_capped_at_75() {
+        let mut config = config();
+        config.quantum_weighted_score_enabled = true;
+        let mut inputs = confidence_inputs(&config, 45.0, 50.0, RsiDivergence::None, 0.0);
+        inputs.ema50_m15 = 2600.0;
+        let confidence = scenario_confidence(
+            "bearish_breakdown",
+            "BEARISH",
+            SignalType::Sell,
+            Some(2680.0),
+            Some(2.0),
+            &inputs,
+            "ALIGNED",
+        );
+        assert!(confidence <= 75, "confidence={confidence}");
     }
 
     #[test]

@@ -1091,6 +1091,8 @@ mod tests {
             prev_close: 2690.0,
             ema50: 2680.0,
             ema200: 2650.0,
+            ema50_slope_3: 0.0,
+            structure: "UNKNOWN".to_string(),
             channel_position: 0.8,
             atr14: 18.0,
             nearest_support: Some(2670.0),

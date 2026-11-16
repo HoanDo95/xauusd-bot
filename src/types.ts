@@ -32,6 +32,10 @@ export interface TimeframeContext {
   close: number;
   ema50: number;
   ema200: number;
+  /** EMA50 change over the last 3 closed candles. */
+  ema50_slope_3?: number;
+  /** "HH_HL" | "LH_LL" | "MIXED" | "UNKNOWN". */
+  structure?: string;
   /** Donchian(20) position 0..1 (0 = lower band, 1 = upper band). */
   channel_position: number;
   atr14: number;
@@ -596,6 +600,8 @@ export interface BotConfig {
   early_entry_min_confidence?: number;
   /** Max distance from live price to trigger for early entry, in R (0 = off). Default 1.0. */
   early_entry_max_distance_r?: number;
+  /** Enable weighted confluence v2 (quantum 30/25/20/15/10). Default false until A/B. */
+  quantum_weighted_score_enabled?: boolean;
   /** Block breakout/breakdown entries after an exhausted daily move. Default true. */
   anti_chase_filter_enabled?: boolean;
   /** Daily change percent that activates anti-chase. Default -2.0. */

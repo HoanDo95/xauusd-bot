@@ -1480,6 +1480,7 @@ struct VariantConfig {
     bearish_rejection_enabled: bool,
     htf_levels_enabled: bool,
     structural_sl_atr_cap: f64,
+    quantum_weighted_score_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2184,6 +2185,7 @@ struct RunOptions {
     bearish_rejection_enabled: bool,
     htf_levels_enabled: bool,
     structural_sl_atr_cap: f64,
+    quantum_weighted_score_enabled: bool,
     cost_r: f64,
 }
 
@@ -2209,6 +2211,7 @@ fn run_variant(
         bearish_rejection_enabled: options.bearish_rejection_enabled,
         htf_levels_enabled: options.htf_levels_enabled,
         structural_sl_atr_cap: options.structural_sl_atr_cap,
+        quantum_weighted_score_enabled: options.quantum_weighted_score_enabled,
         min_rsi_h1_for_buy: if options.buy_rsi_h1_guard { 30.0 } else { 0.0 },
         early_entry_enabled: true,
         early_entry_min_confidence: 90,
@@ -2576,6 +2579,7 @@ async fn run() -> Result<()> {
                 bearish_rejection_enabled,
                 htf_levels_enabled,
                 structural_sl_atr_cap,
+                quantum_weighted_score_enabled: false,
                 cost_r: args.cost_r,
             },
         );
@@ -2591,6 +2595,7 @@ async fn run() -> Result<()> {
                     bearish_rejection_enabled,
                     htf_levels_enabled,
                     structural_sl_atr_cap,
+                    quantum_weighted_score_enabled: false,
                 },
                 funnel: result.funnel,
                 overall: result.overall,
@@ -2600,11 +2605,54 @@ async fn run() -> Result<()> {
         );
     }
 
+    println!("Running variant quantum_v2...");
+    let quantum = run_variant(
+        &m15,
+        &h1_all,
+        &h4_all,
+        &d1_all,
+        start_idx,
+        end_idx,
+        RunOptions {
+            anti_chase_filter_enabled: true,
+            aligned_only: false,
+            buy_rsi_h1_guard: true,
+            bearish_rejection_enabled: false,
+            htf_levels_enabled: true,
+            structural_sl_atr_cap: 1.0,
+            quantum_weighted_score_enabled: true,
+            cost_r: args.cost_r,
+        },
+    );
+    variants.insert(
+        "quantum_v2".to_string(),
+        VariantReport {
+            config: VariantConfig {
+                name: "quantum_v2".to_string(),
+                description:
+                    "HTF-merged levels; SL cap 1xATR; weighted confluence v2 (30/25/20/15/10)."
+                        .to_string(),
+                anti_chase_filter_enabled: true,
+                aligned_only: false,
+                buy_rsi_h1_guard: true,
+                bearish_rejection_enabled: false,
+                htf_levels_enabled: true,
+                structural_sl_atr_cap: 1.0,
+                quantum_weighted_score_enabled: true,
+            },
+            funnel: quantum.funnel,
+            overall: quantum.overall,
+            breakdowns: quantum.breakdowns,
+            trades: quantum.trades,
+        },
+    );
+
     let comparison: Vec<ComparisonRow> = [
         "legacy",
         "htf_only",
         "sl_cap_only",
         "current",
+        "quantum_v2",
         "anti_chase_off",
         "aligned_only",
         "aligned_only_no_anti_chase",
