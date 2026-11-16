@@ -9,6 +9,7 @@ use crate::models::{
     TradingViewWebhookPayload,
 };
 use crate::news_filter::MacroBias;
+use crate::risk_guardrails::evaluate_risk_guardrails;
 use crate::risk_manager::PositionSizer;
 use crate::rsi::rsi_snapshot;
 use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
@@ -293,6 +294,24 @@ pub(super) async fn receive_candle_webhook(
             return (
                 StatusCode::OK,
                 Json(json!({ "status": "blocked_by_quota" })),
+            );
+        }
+        let guardrail = evaluate_risk_guardrails(
+            &config,
+            &signals_now,
+            Utc::now(),
+            Some(signal.signal_type),
+            Some(signal.risk_amount_usd),
+        );
+        if !guardrail.allowed {
+            warn!(
+                "🛑 [Candle Webhook] Risk guardrail — bỏ qua {}: {}",
+                signal.dedup_key,
+                guardrail.reason.unwrap_or_else(|| "blocked".to_string())
+            );
+            return (
+                StatusCode::OK,
+                Json(json!({ "status": "blocked_by_risk_guardrail" })),
             );
         }
 
@@ -688,6 +707,7 @@ pub(super) async fn receive_tradingview_webhook(
         macro_flow_alignment: None,
         macro_flow_note: None,
         cancel_reason: None,
+        management_note: None,
     };
 
     // Bước 6a: Chặn tín hiệu sai cấu trúc hoặc vượt ngân sách rủi ro trước khi
@@ -818,6 +838,24 @@ pub(super) async fn receive_tradingview_webhook(
         return (
             StatusCode::OK,
             Json(json!({ "status": "blocked_by_quota" })),
+        );
+    }
+    let guardrail = evaluate_risk_guardrails(
+        &config,
+        &signals_now,
+        Utc::now(),
+        Some(signal.signal_type),
+        Some(signal.risk_amount_usd),
+    );
+    if !guardrail.allowed {
+        warn!(
+            "🛑 [TradingView Webhook] Risk guardrail — bỏ qua {}: {}",
+            signal.dedup_key,
+            guardrail.reason.unwrap_or_else(|| "blocked".to_string())
+        );
+        return (
+            StatusCode::OK,
+            Json(json!({ "status": "blocked_by_risk_guardrail" })),
         );
     }
 

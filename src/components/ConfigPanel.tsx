@@ -391,6 +391,114 @@ export const ConfigPanel: React.FC<Props> = ({
               </span>
             </div>
 
+            {/* Portfolio risk guardrails */}
+            <div className="flex flex-col gap-2 md:col-span-2 xl:col-span-4 rounded-xl border border-rose-500/30 bg-rose-500/5 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-bold uppercase tracking-wider text-rose-300">
+                    🛡 Risk guardrails tổng danh mục
+                  </div>
+                  <p className="mt-1 text-[11px] text-neutral-400">
+                    Chặn stack lệnh khi đã mở quá nhiều, vượt risk ngày, lỗ quá R hoặc cùng hướng
+                    quá sát nhau.
+                  </p>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+                  <input
+                    type="checkbox"
+                    checked={formData.risk_guardrails_enabled ?? true}
+                    onChange={(e) =>
+                      setFormData({ ...formData, risk_guardrails_enabled: e.target.checked })
+                    }
+                    className="accent-rose-500 w-4 h-4 rounded cursor-pointer"
+                  />
+                  <span className="font-semibold text-white">Bật</span>
+                </label>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-semibold text-neutral-400">Max lệnh mở</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="20"
+                    step="1"
+                    disabled={!(formData.risk_guardrails_enabled ?? true)}
+                    value={formData.max_concurrent_signals ?? 2}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        max_concurrent_signals: Math.max(0, Math.min(20, parseInt(e.target.value) || 0)),
+                      })
+                    }
+                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-rose-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                  />
+                  <span className="text-[10px] text-neutral-500">0 = không giới hạn</span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-semibold text-neutral-400">Risk ngày (%)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="20"
+                    step="0.5"
+                    disabled={!(formData.risk_guardrails_enabled ?? true)}
+                    value={formData.max_daily_risk_percent ?? 3}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        max_daily_risk_percent: Math.max(0, Math.min(20, parseFloat(e.target.value) || 0)),
+                      })
+                    }
+                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-rose-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                  />
+                  <span className="text-[10px] text-neutral-500">0 = không giới hạn</span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-semibold text-neutral-400">Max lỗ ngày (R)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="20"
+                    step="0.5"
+                    disabled={!(formData.risk_guardrails_enabled ?? true)}
+                    value={formData.max_daily_loss_r ?? 2}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        max_daily_loss_r: Math.max(0, Math.min(20, parseFloat(e.target.value) || 0)),
+                      })
+                    }
+                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-rose-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                  />
+                  <span className="text-[10px] text-neutral-500">0 = không giới hạn</span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-semibold text-neutral-400">Cooldown cùng hướng</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1440"
+                    step="5"
+                    disabled={!(formData.risk_guardrails_enabled ?? true)}
+                    value={formData.same_direction_cooldown_minutes ?? 60}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        same_direction_cooldown_minutes: Math.max(
+                          0,
+                          Math.min(1440, parseInt(e.target.value) || 0)
+                        ),
+                      })
+                    }
+                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-rose-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                  />
+                  <span className="text-[10px] text-neutral-500">phút · 0 = tắt</span>
+                </div>
+              </div>
+            </div>
+
             {/* Free live feed (read only) */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-neutral-300">

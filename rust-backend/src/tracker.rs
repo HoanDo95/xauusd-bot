@@ -195,6 +195,12 @@ pub fn evaluate_active_signals(signals: &mut [Signal], candles: &[Candle]) -> Ve
         }
 
         if changed {
+            if status == SignalStatus::Target1Hit && signal.management_note.is_none() {
+                signal.management_note = Some(format!(
+                    "Dời SL về entry {:.2} (break-even) cho phần còn lại; cân nhắc chốt 50% tại TP1. Trail theo cấu trúc M15.",
+                    signal.entry_price
+                ));
+            }
             signal.status = status;
             if status != SignalStatus::Active {
                 signal.outcome_at = Some(Utc::now());
@@ -357,6 +363,7 @@ mod tests {
             macro_flow_alignment: None,
             macro_flow_note: None,
             cancel_reason: None,
+            management_note: None,
         }
     }
 

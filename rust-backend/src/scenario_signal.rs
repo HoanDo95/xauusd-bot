@@ -186,6 +186,7 @@ pub fn signal_from_scenario(
             role, scenario.confidence
         )),
         cancel_reason: None,
+        management_note: None,
     })
 }
 

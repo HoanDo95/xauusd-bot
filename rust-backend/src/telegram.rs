@@ -1517,6 +1517,17 @@ impl TelegramNotifier {
                 )
             })
             .unwrap_or_default();
+        let management_line = signal
+            .management_note
+            .as_deref()
+            .filter(|note| !note.trim().is_empty())
+            .map(|note| {
+                format!(
+                    "🛡 Quản lý: {}\n",
+                    Self::escape_html(&truncate_chars(note, 260))
+                )
+            })
+            .unwrap_or_default();
 
         format!(
             "{} <b>{} | {} {}</b>\n\
@@ -1526,6 +1537,7 @@ impl TelegramNotifier {
              🎯 TP1: <code>${:.2}</code> | 🚀 TP2: <code>${:.2}</code> | 🛑 SL: <code>${:.2}</code>\n\
              📊 Kết quả: <b>{:+.2}R</b>\n\
              {cancel_line}\
+             {management_line}\
              ⏱ Thời điểm: {}\n\
              ━━━━━━━━━━━━━━━━━━━━━━\n\
              ⚠️ <i>Quản lý rủi ro kỷ luật. Đây không phải lời khuyên đầu tư.</i>",
@@ -1823,6 +1835,7 @@ mod tests {
             macro_flow_alignment: None,
             macro_flow_note: None,
             cancel_reason: None,
+            management_note: None,
         }
     }
 

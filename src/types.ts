@@ -536,6 +536,16 @@ export interface BotConfig {
   max_signals_per_day: number;
   /** Optional daily cap. Default false — the bot sends every setup that passes all gates. */
   daily_quota_enabled: boolean;
+  /** Portfolio-level risk guardrails: max concurrent, daily risk, daily loss R, same-direction cooldown. */
+  risk_guardrails_enabled?: boolean;
+  /** Max live open signals (0 = unlimited). Default 2. */
+  max_concurrent_signals?: number;
+  /** Max total risk USD per day as % of account (0 = unlimited). Default 3.0. */
+  max_daily_risk_percent?: number;
+  /** Max realized loss per day in R (0 = unlimited). Default 2.0. */
+  max_daily_loss_r?: number;
+  /** Cooldown between same-direction signals in minutes (0 = off). Default 60. */
+  same_direction_cooldown_minutes?: number;
   /** Prefer the high-liquidity Vietnam session 13:00 – 23:00 (GMT+7). */
   session_filter_enabled: boolean;
   /** Send informational Telegram briefings before London/New York opens (Mon–Fri, DST-aware). */

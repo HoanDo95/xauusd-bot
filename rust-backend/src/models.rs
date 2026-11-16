@@ -246,6 +246,9 @@ pub struct Signal {
     /// Lý do huỷ tín hiệu (max overshoot, hết nến chờ khớp, ...).
     #[serde(default)]
     pub cancel_reason: Option<String>,
+    /// Gợi ý quản lý lệnh sau TP1 (break-even, partial, trailing).
+    #[serde(default)]
+    pub management_note: Option<String>,
 }
 
 fn default_entry_filled() -> bool {
@@ -302,6 +305,22 @@ pub struct BotConfig {
     /// đủ điều kiện; dedup theo nến, hard risk, AI Decision và session/news vẫn giữ.
     #[serde(default)]
     pub daily_quota_enabled: bool,
+    /// Bật risk guardrails tổng danh mục (concurrent, daily risk, daily loss R,
+    /// same-direction cooldown). Mặc định BẬT.
+    #[serde(default = "default_true")]
+    pub risk_guardrails_enabled: bool,
+    /// Số tín hiệu live đang mở tối đa (0 = không giới hạn). Mặc định 2.
+    #[serde(default = "default_max_concurrent_signals")]
+    pub max_concurrent_signals: usize,
+    /// Tổng risk USD/ngày tối đa theo % tài khoản (0 = không giới hạn). Mặc định 3.0%.
+    #[serde(default = "default_max_daily_risk_percent")]
+    pub max_daily_risk_percent: f64,
+    /// Lỗ realised tối đa trong ngày theo R (0 = không giới hạn). Mặc định 2.0R.
+    #[serde(default = "default_max_daily_loss_r")]
+    pub max_daily_loss_r: f64,
+    /// Cooldown giữa hai tín hiệu cùng hướng (phút, 0 = tắt). Mặc định 60.
+    #[serde(default = "default_same_direction_cooldown_minutes")]
+    pub same_direction_cooldown_minutes: i64,
     /// Bật bộ lọc khung giờ thanh khoản Âu-Mỹ 13:00-23:00 GMT+7
     #[serde(default = "default_session_filter_enabled")]
     pub session_filter_enabled: bool,
@@ -452,6 +471,22 @@ fn default_max_signals_per_day() -> usize {
     1
 }
 
+fn default_max_concurrent_signals() -> usize {
+    2
+}
+
+fn default_max_daily_risk_percent() -> f64 {
+    3.0
+}
+
+fn default_max_daily_loss_r() -> f64 {
+    2.0
+}
+
+fn default_same_direction_cooldown_minutes() -> i64 {
+    60
+}
+
 fn default_entry_mode() -> String {
     "MARKET".to_string()
 }
@@ -577,6 +612,11 @@ impl Default for BotConfig {
             order_block_filter: true,
             max_signals_per_day: default_max_signals_per_day(),
             daily_quota_enabled: false,
+            risk_guardrails_enabled: true,
+            max_concurrent_signals: default_max_concurrent_signals(),
+            max_daily_risk_percent: default_max_daily_risk_percent(),
+            max_daily_loss_r: default_max_daily_loss_r(),
+            same_direction_cooldown_minutes: default_same_direction_cooldown_minutes(),
             session_filter_enabled: default_session_filter_enabled(),
             data_source: default_data_source(),
             webhook_passphrase: String::new(),
@@ -652,6 +692,10 @@ impl BotConfig {
         self.risk_percentage = finite_or(self.risk_percentage, 1.0).clamp(0.1, 5.0);
         self.account_leverage = finite_or(self.account_leverage, 100.0).clamp(1.0, 1000.0);
         self.max_signals_per_day = self.max_signals_per_day.clamp(1, 5);
+        self.max_concurrent_signals = self.max_concurrent_signals.min(20);
+        self.max_daily_risk_percent = finite_or(self.max_daily_risk_percent, 3.0).clamp(0.0, 20.0);
+        self.max_daily_loss_r = finite_or(self.max_daily_loss_r, 2.0).clamp(0.0, 20.0);
+        self.same_direction_cooldown_minutes = self.same_direction_cooldown_minutes.clamp(0, 1440);
         self.pre_news_buffer_minutes = self.pre_news_buffer_minutes.clamp(0, 120);
         self.post_news_buffer_minutes = self.post_news_buffer_minutes.clamp(0, 120);
 
@@ -796,6 +840,48 @@ mod tests {
         .sanitized();
         assert!(enabled.daily_quota_enabled);
         assert_eq!(enabled.max_signals_per_day, 1);
+    }
+
+    #[test]
+    fn risk_guardrails_defaults_and_are_backward_compatible() {
+        let defaults = BotConfig::default();
+        assert!(defaults.risk_guardrails_enabled);
+        assert_eq!(defaults.max_concurrent_signals, 2);
+        assert_eq!(defaults.max_daily_risk_percent, 3.0);
+        assert_eq!(defaults.max_daily_loss_r, 2.0);
+        assert_eq!(defaults.same_direction_cooldown_minutes, 60);
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        for key in [
+            "risk_guardrails_enabled",
+            "max_concurrent_signals",
+            "max_daily_risk_percent",
+            "max_daily_loss_r",
+            "same_direction_cooldown_minutes",
+        ] {
+            object.remove(key);
+        }
+
+        let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(config.risk_guardrails_enabled);
+        assert_eq!(config.max_concurrent_signals, 2);
+        assert_eq!(config.max_daily_risk_percent, 3.0);
+        assert_eq!(config.max_daily_loss_r, 2.0);
+        assert_eq!(config.same_direction_cooldown_minutes, 60);
+
+        let clamped = BotConfig {
+            max_concurrent_signals: 99,
+            max_daily_risk_percent: 99.0,
+            max_daily_loss_r: 99.0,
+            same_direction_cooldown_minutes: 9999,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(clamped.max_concurrent_signals, 20);
+        assert_eq!(clamped.max_daily_risk_percent, 20.0);
+        assert_eq!(clamped.max_daily_loss_r, 20.0);
+        assert_eq!(clamped.same_direction_cooldown_minutes, 1440);
     }
 
     #[test]

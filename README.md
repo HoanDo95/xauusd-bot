@@ -267,6 +267,29 @@ The endpoint returns `{"status":"ok","result":{...}}` or HTTP 503
 `{"status":"unavailable","message":"..."}`. The Telegram command is admin-only
 and rate-limited to once per 30 seconds per chat.
 
+### Portfolio risk guardrails
+
+Per-trade risk is not enough when the bot can send multiple signals per day, so
+the final signal gate also checks portfolio exposure:
+
+| Config | Default | Meaning |
+|---|---|---|
+| `risk_guardrails_enabled` | `true` | Enable the portfolio checks |
+| `max_concurrent_signals` | `2` | Max live `Active`/`Target1Hit` signals (`0` = unlimited) |
+| `max_daily_risk_percent` | `3.0` | Max total risk USD sent per VN day, as % of account (`0` = unlimited) |
+| `max_daily_loss_r` | `2.0` | Stop new signals after realized loss reaches `-2R` (`0` = unlimited) |
+| `same_direction_cooldown_minutes` | `60` | Cooldown between same-direction signals (`0` = off) |
+
+The checks run atomically at the final signal gate for the scanner and both
+webhook paths. A blocked signal is logged and never sent to Telegram. Simulated
+signals are ignored. `/api/health` exposes `riskGuardrailsEnabled`,
+`maxConcurrentSignals`, `maxDailyRiskPercent`, `maxDailyLossR` and
+`sameDirectionCooldownMinutes`.
+
+After TP1, the tracker attaches a `management_note` to the outcome alert:
+move SL to break-even for the remaining position, consider taking 50% at TP1,
+and trail by M15 structure. The bot still never places or modifies orders.
+
 ### RSI context (Phase R1/R2)
 
 RSI is **advisory/context first**. The Rust engine computes Wilder RSI on

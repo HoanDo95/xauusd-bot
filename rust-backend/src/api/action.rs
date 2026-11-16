@@ -447,6 +447,7 @@ mod tests {
             macro_flow_alignment: None,
             macro_flow_note: None,
             cancel_reason: None,
+            management_note: None,
         }
     }
 

@@ -10,6 +10,7 @@ use crate::market_context::{
 use crate::market_feed::{MarketDataFeed, MarketFeedSnapshot, VOLUME_SOURCE_OANDA_TICK};
 use crate::models::{BotConfig, Candle, Signal, Timeframe};
 use crate::news_filter::ImpactLevel;
+use crate::risk_guardrails::evaluate_risk_guardrails;
 use crate::risk_manager::PositionSizer;
 use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot};
 use crate::scenario_signal::{best_early_entry_scenario, signal_from_scenario};
@@ -755,6 +756,23 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     warn!(
                         "🛑 [Scanner] Quota ngày đã đạt sau phân tích — bỏ qua {} {}",
                         signal.signal_type, signal.symbol
+                    );
+                    continue;
+                }
+
+                let guardrail = evaluate_risk_guardrails(
+                    &config,
+                    &signals_now,
+                    Utc::now(),
+                    Some(signal.signal_type),
+                    Some(signal.risk_amount_usd),
+                );
+                if !guardrail.allowed {
+                    warn!(
+                        "🛑 [Risk Guardrail] Bỏ qua {} {}: {}",
+                        signal.signal_type,
+                        signal.symbol,
+                        guardrail.reason.unwrap_or_else(|| "blocked".to_string())
                     );
                     continue;
                 }

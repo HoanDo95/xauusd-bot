@@ -10,6 +10,7 @@ pub mod market_context;
 pub mod market_feed;
 pub mod models;
 pub mod news_filter;
+pub mod risk_guardrails;
 pub mod risk_manager;
 pub mod rsi;
 pub mod scenario_signal;

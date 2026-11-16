@@ -370,6 +370,12 @@ in **Sniper & Risk Config**, not in env.
   +10 confluence bonus and can reach `>=90` when macro/D1-H4 and RSI H1 agree.
 - **PAXG volume:** weak proxy, weighted below 10%, never the main reason for a
   signal. True tick volume requires a paid OANDA/FXCM/CME feed.
+- **Portfolio risk guardrails:** `risk_guardrails_enabled` defaults `true`;
+  `max_concurrent_signals=2`, `max_daily_risk_percent=3.0`,
+  `max_daily_loss_r=2.0`, `same_direction_cooldown_minutes=60`. They run at the
+  final signal gate for the scanner and both webhook paths; simulated signals
+  are ignored. After TP1 the outcome alert suggests break-even, partial profit
+  and M15-structure trailing.
 - **VETO_ONLY:** AI may only approve, contradict or return `STANDBY`.
   `ai_signal_review_fail_open` (default `true`) applies only here; `false`
   makes it fail-closed.
