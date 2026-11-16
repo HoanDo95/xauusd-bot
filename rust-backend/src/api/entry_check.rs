@@ -295,9 +295,9 @@ pub(crate) fn select_entry_plan(
 
 /// Build the full AI brief, ask for one decision, and derive a reference plan.
 ///
-/// Read-only by design: the only state written is `last_ai_decision` (RAM), so
-/// `/api/action-view` can display the latest verdict. No signal is inserted, no
-/// Telegram message is sent and the daily quota is untouched.
+/// Read-only by design: no signal is inserted or persisted, the scanner's
+/// `last_ai_decision` is NOT updated, no Telegram message is sent and the daily
+/// quota is untouched. The decision is returned only in the API/Telegram reply.
 pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult, String> {
     if PersistentStore::is_market_closed_weekend(Utc::now()) {
         return Err(MARKET_CLOSED_MESSAGE.to_string());
@@ -357,7 +357,9 @@ pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult
         AI_DECISION_UNAVAILABLE_MESSAGE.to_string()
     })?;
 
-    *state.last_ai_decision.write().await = Some(decision.clone());
+    // Deliberately do NOT write `state.last_ai_decision`: this is a manual
+    // market view, not a scanner signal. Writing it would make Action View
+    // display the entry-check verdict as if it were the latest signal decision.
     // A scenario-built candidate should be displayed under its scenario role
     // (PRIMARY/ALTERNATE), not as an opaque CANDIDATE plan.
     let plan_candidate = candidate
@@ -397,6 +399,8 @@ pub(super) async fn entry_check(State(state): State<AppState>) -> impl IntoRespo
             StatusCode::OK,
             Json(json!({
                 "status": "ok",
+                "is_signal": false,
+                "source": "MANUAL_ENTRY_CHECK",
                 "result": result
             })),
         ),

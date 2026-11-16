@@ -52,7 +52,7 @@ use news::{
 };
 use scanner::{send_scenario_telegram, start_scanner, stop_scanner};
 use scenarios::get_scenarios;
-use signals::{get_all_signals, get_stats};
+use signals::{close_all_signals, get_all_signals, get_stats};
 use simulation::simulate_setup;
 use telegram::{send_signal_telegram, trigger_test_telegram};
 use webhooks::{receive_candle_webhook, receive_tradingview_webhook};
@@ -148,6 +148,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/health", get(health_check))
         .route("/api/health", get(health_check))
         .route("/api/signals", get(get_all_signals))
+        .route("/api/signals/close-all", post(close_all_signals))
         .route("/api/stats", get(get_stats))
         .route("/api/candles", get(get_recent_candles))
         .route("/api/candles/webhook", post(receive_candle_webhook))

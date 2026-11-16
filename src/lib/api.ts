@@ -128,6 +128,10 @@ export interface AiReviewResponse {
  */
 export interface AiEntryCheckResponse {
   status: 'ok' | 'unavailable';
+  /** Always false: the manual entry check is a market view, not a trade signal. */
+  is_signal?: boolean;
+  /** "MANUAL_ENTRY_CHECK" when returned by the backend. */
+  source?: string;
   result?: EntryCheckResult;
   message?: string;
 }

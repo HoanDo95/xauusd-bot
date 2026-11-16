@@ -1215,9 +1215,26 @@ impl TelegramNotifier {
             .unwrap_or(&result.scenarios.volume_source);
         let volume_line = if volume_source.trim().is_empty() {
             "Volume: PAXG proxy".to_string()
-        } else {
+        } else if volume_source.eq_ignore_ascii_case("YAHOO_FUTURES_PROXY") {
+            format!(
+                "Volume: COMEX GC=F proxy · {}",
+                Self::escape_html(&truncate_chars(volume_source, 80))
+            )
+        } else if volume_source.eq_ignore_ascii_case("OANDA_TICK") {
+            format!(
+                "Volume: OANDA tick · {}",
+                Self::escape_html(&truncate_chars(volume_source, 80))
+            )
+        } else if volume_source.eq_ignore_ascii_case("BINANCE_PAXG_PROXY")
+            || volume_source.eq_ignore_ascii_case("BINANCE_PAXG")
+        {
             format!(
                 "Volume: PAXG proxy · {}",
+                Self::escape_html(&truncate_chars(volume_source, 80))
+            )
+        } else {
+            format!(
+                "Volume: {}",
                 Self::escape_html(&truncate_chars(volume_source, 80))
             )
         };
