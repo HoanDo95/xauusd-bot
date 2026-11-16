@@ -650,6 +650,8 @@ export interface BotConfig {
   action_trigger_alert_enabled?: boolean;
   /** Minimum minutes between alerts for the same scenario + direction + trigger (5–1440, default 30). */
   action_trigger_cooldown_minutes?: number;
+  /** Max distance from price to trigger for SETUP WATCHING, in H4 ATR. Default 1.5. */
+  action_watch_distance_atr?: number;
   /** Read-only Macro & Flow dashboard (FRED/Yahoo/CFTC). Default true; never affects signals. */
   macro_flow_enabled?: boolean;
   /** Send the read-only 07:00 daily plan to Telegram. Default true; no quota impact. */

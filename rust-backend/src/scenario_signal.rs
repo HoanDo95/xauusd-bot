@@ -8,7 +8,7 @@
 
 use crate::models::{BotConfig, Candle, EntryType, Signal, SignalStatus, SignalType};
 use crate::risk_manager::PositionSizer;
-use crate::scenarios::{Scenario, ScenarioResponse};
+use crate::scenarios::{scenario_triggered, Scenario, ScenarioResponse};
 use crate::signal_validation::validate_signal_levels;
 use chrono::{DateTime, Utc};
 
@@ -30,6 +30,29 @@ fn entry_type_for_trigger(direction: &str) -> Option<EntryType> {
         "TOUCH" => Some(EntryType::Limit),
         _ => None,
     }
+}
+
+/// Pick the first valid PRIMARY/ALTERNATE scenario whose M15 trigger is already
+/// confirmed by the supplied closed candle. Unlike the early-entry selector,
+/// this does not require the 90% threshold: confirmation is the gate, and the
+/// AI/hard-risk layers still review the resulting signal.
+pub fn best_confirmed_scenario<'a>(
+    scenarios: &'a ScenarioResponse,
+    candle: &Candle,
+) -> Option<&'a Scenario> {
+    scenarios.scenarios.iter().find(|scenario| {
+        scenario.valid
+            && !scenario.macro_alignment.eq_ignore_ascii_case("COUNTER")
+            && matches!(
+                scenario.role.trim().to_uppercase().as_str(),
+                "PRIMARY" | "ALTERNATE"
+            )
+            && scenario.entry.is_some()
+            && scenario.stop_loss.is_some()
+            && scenario.take_profit_1.is_some()
+            && scenario.take_profit_2.is_some()
+            && scenario_triggered(scenario, candle)
+    })
 }
 
 /// Pick the strongest valid PRIMARY/ALTERNATE scenario that clears the
@@ -293,6 +316,30 @@ mod tests {
             scenarios,
             warnings: vec![],
         }
+    }
+
+    #[test]
+    fn confirmed_selector_requires_a_closed_trigger() {
+        let response = response(vec![scenario(
+            "bearish_breakdown",
+            "PRIMARY",
+            "BEARISH",
+            69,
+            3880.0,
+            3895.0,
+            3850.0,
+            3835.0,
+            "BELOW",
+        )]);
+
+        let not_triggered = candle(1, 3890.0);
+        assert!(best_confirmed_scenario(&response, &not_triggered).is_none());
+
+        let triggered = candle(2, 3879.0);
+        assert_eq!(
+            best_confirmed_scenario(&response, &triggered).map(|scenario| scenario.id.as_str()),
+            Some("bearish_breakdown")
+        );
     }
 
     #[test]

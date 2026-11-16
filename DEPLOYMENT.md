@@ -587,6 +587,21 @@ M15. A/B at 0.05R cost:
 The result is mixed, so the flag stays off until forward-test/approval. Turn it
 on from the dashboard or `POST /api/config` only for an explicit A/B run.
 
+### Two-level notification pipeline
+
+- **SETUP WATCHING** — sent when price approaches a valid PRIMARY trigger
+  (`action_watch_distance_atr`, default `1.5× H4 ATR`). It contains the zone,
+  trigger, current price and distance only. It must not contain Entry/SL/TP/Lot
+  and explicitly says `CHƯA phải entry`.
+- **GOLD SIGNAL ALERT** — sent only after a closed M15 candle triggers a valid
+  scenario, the confirmation gate passes, and AI + hard risk approve. Only this
+  alert contains Entry/SL/TP/Lot.
+- `early_entry_enabled` defaults **false**; the scanner no longer sends a full
+  early-entry signal before the M15 close. The field is kept only for the
+  `/start-entry` scenario fallback.
+- The old action-trigger alert with Entry/SL/TP is retired; the action worker
+  now sends SETUP WATCHING alerts instead.
+
 ### Quantum trigger confirmation (P3, A/B)
 
 `quantum_trigger_confirmation_enabled` defaults **false**; when enabled, the

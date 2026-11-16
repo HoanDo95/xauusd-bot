@@ -52,7 +52,7 @@ impl Default for PendingConfirmation {
 const MAX_PENDING_DISTANCE_R: f64 = 1.5;
 
 /// Xác nhận nến trigger: volume mở rộng + close đúng hướng.
-fn pending_confirmation_ok(
+pub(crate) fn pending_confirmation_ok(
     signal: &Signal,
     candles: &[Candle],
     index: usize,

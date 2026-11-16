@@ -469,6 +469,74 @@ impl TelegramNotifier {
 
     /// Gửi cảnh báo trigger kịch bản. Token/Chat trống = simulator thành công (Ok(1001)).
     /// Hàm này không đụng tới quota, danh sách tín hiệu hay trạng thái giao dịch.
+    /// Setup-watching alert: price is approaching a valid trigger, but the M15
+    /// candle has NOT confirmed it. Deliberately contains no Entry/SL/TP/Lot.
+    pub fn format_setup_watching_message(scenario: &Scenario, price: f64, distance: f64) -> String {
+        let name = Self::escape_html(&truncate_chars(&scenario.name, 80));
+        let trigger = Self::escape_html(&truncate_chars(&scenario.trigger, 180));
+        let alignment = Self::escape_html(&truncate_chars(&scenario.macro_alignment, 40));
+
+        format!(
+            "👀 <b>SETUP WATCHING</b> — {name}\n\
+             XAU/USD · giá <code>{price:.2}</code> · cách trigger <code>{distance:.2}</code> điểm\n\
+             {trigger}\n\
+             ⏳ Chờ nến M15 đóng cửa xác nhận. <b>CHƯA phải entry</b> — chỉ là vùng theo dõi.\n\
+             Macro/Flow: {alignment}"
+        )
+    }
+
+    /// Gửi cảnh báo SETUP WATCHING. Không đụng quota/signal/AI.
+    pub async fn send_setup_watching_alert(
+        &self,
+        scenario: &Scenario,
+        price: f64,
+        distance: f64,
+    ) -> Result<i64, String> {
+        if self.bot_token.is_empty() || self.chat_id.is_empty() {
+            info!(
+                "⚠️ [Telegram Simulator] Setup watching {} (chưa cấu hình token)",
+                scenario.id
+            );
+            return Ok(1001);
+        }
+
+        let message_text = Self::format_setup_watching_message(scenario, price, distance);
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
+        let payload = json!({
+            "chat_id": self.chat_id,
+            "text": message_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true
+        });
+
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let body: serde_json::Value =
+                        resp.json().await.map_err(|e| e.without_url().to_string())?;
+                    let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
+                    info!(
+                        "✅ Đã gửi setup watching {} tới Telegram! Message ID: {}",
+                        scenario.id, msg_id
+                    );
+                    Ok(msg_id)
+                } else {
+                    let err_text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Lỗi không xác định".into());
+                    error!("❌ Telegram setup watching API lỗi: {}", err_text);
+                    Err(format!("Telegram API Error: {err_text}"))
+                }
+            }
+            Err(err) => {
+                let err = err.without_url();
+                error!("❌ Không thể gửi setup watching tới Telegram: {}", err);
+                Err(format!("Network Error: {err}"))
+            }
+        }
+    }
+
     pub async fn send_action_trigger_alert(
         &self,
         scenario: &Scenario,
@@ -2251,6 +2319,24 @@ mod tests {
         assert!(message.contains("NONE —"));
         assert!(message.contains("Entry — · SL — · TP1 — · TP2 — · R:R 1:—"));
         assert!(message.contains("KHÔNG phải trade signal"));
+    }
+
+    #[test]
+    fn format_setup_watching_message_has_no_entry_levels_or_lot() {
+        let mut scenario = base_scenario("test", "Bearish breakdown", "BEARISH");
+        scenario.trigger = "Đóng M15 dưới 3851.15 (phá hỗ trợ 3853.27)".to_string();
+        scenario.trigger_price = Some(3851.15);
+
+        let message = TelegramNotifier::format_setup_watching_message(&scenario, 3855.20, 4.05);
+
+        assert!(message.contains("SETUP WATCHING"));
+        assert!(message.contains("3853.27"));
+        assert!(message.contains("CHƯA phải entry"));
+        assert!(!message.contains("Entry "));
+        assert!(!message.contains("SL "));
+        assert!(!message.contains("TP1"));
+        assert!(!message.contains("TP2"));
+        assert!(!message.contains("Lot "));
     }
 
     fn base_scenario(id: &str, name: &str, bias: &str) -> Scenario {

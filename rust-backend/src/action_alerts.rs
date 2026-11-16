@@ -181,19 +181,30 @@ pub fn spawn_action_trigger_worker(state: AppState) {
                 continue;
             }
 
-            if !scenario_triggered(primary, &candle) {
+            // The confirmed full signal is owned by the scanner. This worker
+            // only warns that price is approaching the trigger.
+            if scenario_triggered(primary, &candle) {
+                continue;
+            }
+
+            let Some(market) = scenarios.market.as_ref() else {
+                continue;
+            };
+            let distance = (candle.close - trigger_price).abs();
+            let watch_distance = market.h4_atr.max(1.0) * config.action_watch_distance_atr;
+            if distance > watch_distance {
                 continue;
             }
 
             let telegram = state.telegram.read().await.clone();
             match telegram
-                .send_action_trigger_alert(primary, candle.close)
+                .send_setup_watching_alert(primary, candle.close, distance)
                 .await
             {
                 Ok(msg_id) => {
                     info!(
-                        "🚨 [Action Trigger] {} {} · M15 close {:.2} · trigger {:.2} · msg_id={}",
-                        primary.id, primary.trigger_direction, candle.close, trigger_price, msg_id
+                        "👀 [Setup Watching] {} {} · M15 close {:.2} · trigger {:.2} · distance {:.2} · msg_id={}",
+                        primary.id, primary.trigger_direction, candle.close, trigger_price, distance, msg_id
                     );
                     let mut last_sent = state.action_trigger_last_sent.write().await;
                     last_sent.insert(key, now);
@@ -201,7 +212,7 @@ pub fn spawn_action_trigger_worker(state: AppState) {
                 }
                 Err(err) => {
                     warn!(
-                        "⚠️ [Action Trigger] Không gửi được cảnh báo {}: {}",
+                        "⚠️ [Setup Watching] Không gửi được cảnh báo {}: {}",
                         primary.id, err
                     );
                 }

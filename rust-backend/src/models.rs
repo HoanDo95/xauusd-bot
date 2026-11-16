@@ -406,9 +406,9 @@ pub struct BotConfig {
     /// false = chặn. Ở chế độ DECISION, AI lỗi luôn fail-closed (không tín hiệu).
     #[serde(default = "default_true")]
     pub ai_signal_review_fail_open: bool,
-    /// Cho phép AI duyệt sớm một scenario đủ mạnh dù trigger M15 chưa in.
-    /// Mặc định BẬT: 90% confluence là đủ, không chờ xác nhận 100%.
-    #[serde(default = "default_true")]
+    /// Cho phép dùng scenario fallback trong /start-entry (manual AI check).
+    /// Scanner không còn gửi full signal trước khi M15 xác nhận. Mặc định TẮT.
+    #[serde(default)]
     pub early_entry_enabled: bool,
     /// Ngưỡng confidence của scenario (50..=100, mặc định 90) để được duyệt sớm.
     /// Entry vẫn là mức trigger của scenario (lệnh chờ), không phải market entry.
@@ -481,14 +481,19 @@ pub struct BotConfig {
     /// Số phút tối thiểu giữa hai cảnh báo cùng khung + cùng hướng (5..=1440, mặc định 60).
     #[serde(default = "default_divergence_alert_cooldown")]
     pub divergence_alert_cooldown_minutes: i64,
-    /// Bật cảnh báo Telegram khi PRIMARY scenario chạm trigger trên nến M15 đã đóng.
-    /// Read-only: không phải trade signal, không tiêu hao quota. Mặc định true.
+    /// Bật cảnh báo Telegram SETUP WATCHING khi giá tiến gần trigger của
+    /// PRIMARY scenario. Read-only: không phải trade signal, không quota,
+    /// không Entry/SL/TP/Lot. Mặc định true.
     #[serde(default = "default_true")]
     pub action_trigger_alert_enabled: bool,
     /// Số phút tối thiểu giữa hai cảnh báo cùng scenario + hướng + mức trigger
     /// (5..=1440, mặc định 30).
     #[serde(default = "default_action_trigger_cooldown")]
     pub action_trigger_cooldown_minutes: i64,
+    /// Khoảng cách tối đa từ giá tới trigger để gửi SETUP WATCHING,
+    /// tính theo ATR H4 (0.5..=3.0, mặc định 1.5).
+    #[serde(default = "default_action_watch_distance_atr")]
+    pub action_watch_distance_atr: f64,
     /// Bật dashboard Macro & Flow read-only (FRED/Yahoo/CFTC). Mặc định true.
     #[serde(default = "default_true")]
     pub macro_flow_enabled: bool,
@@ -638,6 +643,10 @@ fn default_action_trigger_cooldown() -> i64 {
     30
 }
 
+fn default_action_watch_distance_atr() -> f64 {
+    1.5
+}
+
 impl Default for BotConfig {
     fn default() -> Self {
         Self {
@@ -693,7 +702,7 @@ impl Default for BotConfig {
             ai_review_mode: default_ai_review_mode(),
             ai_signal_review_min_confidence: default_ai_signal_review_min_confidence(),
             ai_signal_review_fail_open: true,
-            early_entry_enabled: true,
+            early_entry_enabled: false,
             early_entry_min_confidence: default_early_entry_min_confidence(),
             early_entry_max_distance_r: default_early_entry_max_distance_r(),
             anti_chase_filter_enabled: true,
@@ -718,6 +727,7 @@ impl Default for BotConfig {
             divergence_alert_cooldown_minutes: default_divergence_alert_cooldown(),
             action_trigger_alert_enabled: true,
             action_trigger_cooldown_minutes: default_action_trigger_cooldown(),
+            action_watch_distance_atr: default_action_watch_distance_atr(),
             macro_flow_enabled: true,
             daily_plan_enabled: true,
             weekend_brief_enabled: true,
@@ -832,6 +842,8 @@ impl BotConfig {
         self.divergence_alert_cooldown_minutes =
             self.divergence_alert_cooldown_minutes.clamp(5, 1440);
         self.action_trigger_cooldown_minutes = self.action_trigger_cooldown_minutes.clamp(5, 1440);
+        self.action_watch_distance_atr =
+            finite_or(self.action_watch_distance_atr, 1.5).clamp(0.5, 3.0);
 
         self.telegram_bot_token = self.telegram_bot_token.trim().to_string();
         self.telegram_chat_id = self.telegram_chat_id.trim().to_string();
@@ -1214,9 +1226,9 @@ mod tests {
     }
 
     #[test]
-    fn early_entry_defaults_to_90_and_is_backward_compatible() {
+    fn early_entry_defaults_to_off_and_is_backward_compatible() {
         let defaults = BotConfig::default();
-        assert!(defaults.early_entry_enabled);
+        assert!(!defaults.early_entry_enabled);
         assert_eq!(defaults.early_entry_min_confidence, 90);
 
         let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
@@ -1225,7 +1237,7 @@ mod tests {
         object.remove("early_entry_min_confidence");
 
         let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
-        assert!(config.early_entry_enabled);
+        assert!(!config.early_entry_enabled);
         assert_eq!(config.early_entry_min_confidence, 90);
 
         let clamped_low = BotConfig {
@@ -1603,11 +1615,13 @@ mod tests {
         let defaults = BotConfig::default();
         assert!(defaults.action_trigger_alert_enabled);
         assert_eq!(defaults.action_trigger_cooldown_minutes, 30);
+        assert_eq!(defaults.action_watch_distance_atr, 1.5);
 
         let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
         let object = value.as_object_mut().expect("config object");
         object.remove("action_trigger_alert_enabled");
         object.remove("action_trigger_cooldown_minutes");
+        object.remove("action_watch_distance_atr");
 
         let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
         assert!(
@@ -1615,6 +1629,7 @@ mod tests {
             "alerts must default ON"
         );
         assert_eq!(config.action_trigger_cooldown_minutes, 30);
+        assert_eq!(config.action_watch_distance_atr, 1.5);
 
         let disabled = BotConfig {
             action_trigger_alert_enabled: false,

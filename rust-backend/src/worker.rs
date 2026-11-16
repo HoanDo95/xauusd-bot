@@ -11,21 +11,21 @@ use crate::market_feed::{
     volume_source_has_buy_sell_delta, MarketDataFeed, MarketFeedSnapshot,
     SOURCE_TWELVEDATA_YAHOO_VOLUME,
 };
-use crate::models::{BotConfig, Candle, Signal, Timeframe};
+use crate::models::{BotConfig, Candle, EntryType, Signal, Timeframe};
 use crate::news_filter::ImpactLevel;
 use crate::risk_guardrails::{
     buy_rsi_h1_block_reason, counter_macro_block_reason, evaluate_risk_guardrails,
 };
 use crate::risk_manager::PositionSizer;
 use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot};
-use crate::scenario_signal::{best_early_entry_scenario, signal_from_scenario};
-use crate::scenarios::{anti_chase_blocks_breakout, build_scenarios, scenario_triggered};
+use crate::scenario_signal::{best_confirmed_scenario, signal_from_scenario};
+use crate::scenarios::{anti_chase_blocks_breakout, build_scenarios};
 use crate::scheduler::DailyScheduler;
 use crate::session_alerts::evaluate_and_dispatch;
 use crate::signal_review::{review_blocks_signal, review_signal};
 use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
 use crate::storage::PersistentStore;
-use crate::tracker::{evaluate_active_signals, PendingConfirmation};
+use crate::tracker::{evaluate_active_signals, pending_confirmation_ok, PendingConfirmation};
 use crate::volume_delta::{compute_delta, delta_allows_signal};
 use chrono::Utc;
 use std::time::Instant;
@@ -230,20 +230,16 @@ fn validate_ai_hard_risk(signal: &Signal, config: &BotConfig) -> Result<(), Stri
     validate_risk_budget(config, &sizing)
 }
 
-/// Build a pending signal from the strongest valid scenario when the pinbar
-/// analyzer found nothing. This is the deterministic "90% is enough" path:
-/// the scenario must be valid, PRIMARY/ALTERNATE and clear the configured
-/// confidence threshold. Entry stays at the scenario trigger; AI approval and
-/// every hard risk rule still apply afterwards.
-async fn build_early_scenario_signal(
+/// Build a **confirmed** signal from a valid scenario when the last closed M15
+/// candle has already triggered it. This is the only path that may send a full
+/// Entry/SL/TP/Lot alert; the pre-trigger early-entry full signal is removed.
+async fn build_confirmed_scenario_signal(
     state: &AppState,
     candles: &[Candle],
     config: &BotConfig,
     live_price: Option<f64>,
 ) -> Option<Signal> {
-    if !config.early_entry_enabled {
-        return None;
-    }
+    let last_candle = candles.last()?;
 
     let rsi = rsi_snapshot(
         candles,
@@ -270,23 +266,35 @@ async fn build_early_scenario_signal(
         &active_volume_source,
         Utc::now().timestamp_millis(),
     );
-    let scenario = best_early_entry_scenario(&scenarios, config.early_entry_min_confidence)?;
-    // Only pre-trigger entries: if the last closed candle already confirmed the
-    // scenario, the action-trigger alert owns that event.
-    if candles
-        .last()
-        .is_some_and(|candle| scenario_triggered(scenario, candle))
+    let scenario = best_confirmed_scenario(&scenarios, last_candle)?;
+    let mut signal = signal_from_scenario(scenario, config, candles, live_price, Utc::now())?;
+
+    if config.quantum_trigger_confirmation_enabled
+        && !pending_confirmation_ok(
+            &signal,
+            candles,
+            candles.len() - 1,
+            config.quantum_volume_confirm_ratio,
+        )
     {
+        info!(
+            "⏳ [Confirmed Signal] {} trigger chưa xác nhận volume/pattern — chờ nến sau.",
+            scenario.id
+        );
         return None;
     }
-    let signal = signal_from_scenario(scenario, config, candles, live_price, Utc::now())?;
+
+    // The M15 close already confirmed the scenario; present the signal as a
+    // filled MARKET alert, not as a pending order.
+    signal.entry_type = EntryType::Market;
+    signal.is_entry_filled = true;
     info!(
-        "⚡ [Early Entry] Dùng scenario {} ({}) confidence {}% — entry {:.2} ({}) chờ xác nhận.",
+        "🚨 [Confirmed Signal] Scenario {} ({}) confidence {}% — entry {:.2} MARKET sau M15 close {:.2}.",
         scenario.role,
         scenario.id,
         scenario.confidence,
         signal.entry_price,
-        signal.entry_type.as_str()
+        last_candle.close
     );
     Some(signal)
 }
@@ -479,7 +487,7 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
             );
             if candidate.is_none() && decision_mode {
                 candidate =
-                    build_early_scenario_signal(&state, &candles, &config, live_price).await;
+                    build_confirmed_scenario_signal(&state, &candles, &config, live_price).await;
             }
 
             if let Some(mut signal) = candidate {

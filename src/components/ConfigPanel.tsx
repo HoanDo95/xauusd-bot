@@ -1403,12 +1403,12 @@ export const ConfigPanel: React.FC<Props> = ({
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="flex flex-col gap-1">
                 <div className="text-xs font-bold text-sky-300 uppercase tracking-wider">
-                  🚨 Cảnh báo trigger kịch bản chính — không phải trade signal
+                  👀 SETUP WATCHING — cảnh báo vùng theo dõi, không phải entry
                 </div>
                 <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
-                  Gửi Telegram khi kịch bản PRIMARY valid đạt trigger trên nến M15 đã đóng
-                  (ABOVE/BELOW/TOUCH). Chỉ cảnh báo: không chèn tín hiệu, không tiêu hao quota,
-                  không lưu trade state và không tự vào lệnh.
+                  Gửi Telegram khi giá tiến gần trigger của kịch bản PRIMARY. Chỉ báo vùng theo
+                  dõi + trigger, tuyệt đối không có Entry/SL/TP/Lot. Tín hiệu chính thức chỉ được
+                  gửi khi nến M15 đã đóng cửa xác nhận.
                 </p>
               </div>
               <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
@@ -1421,7 +1421,7 @@ export const ConfigPanel: React.FC<Props> = ({
                   className="accent-sky-500 w-4 h-4 rounded cursor-pointer"
                 />
                 <span className="font-semibold text-white">
-                  Bật cảnh báo Telegram khi trigger kịch bản
+                  Bật SETUP WATCHING alerts
                 </span>
               </label>
             </div>
@@ -1429,7 +1429,7 @@ export const ConfigPanel: React.FC<Props> = ({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-neutral-300">
-                  Cooldown cảnh báo trigger
+                  Cooldown SETUP WATCHING
                 </label>
                 <div className="relative">
                   <input
@@ -1456,6 +1456,32 @@ export const ConfigPanel: React.FC<Props> = ({
                 </div>
                 <span className="text-[11px] text-neutral-500">
                   5–1440 phút, mặc định 30. Dedup theo scenario + hướng + mức trigger.
+                </span>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">
+                  Watch distance (× ATR H4)
+                </label>
+                <input
+                  type="number"
+                  min="0.5"
+                  max="3"
+                  step="0.25"
+                  disabled={!(formData.action_trigger_alert_enabled ?? true)}
+                  value={formData.action_watch_distance_atr ?? 1.5}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      action_watch_distance_atr: Math.max(
+                        0.5,
+                        Math.min(3, parseFloat(e.target.value) || 1.5)
+                      ),
+                    })
+                  }
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-sky-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                />
+                <span className="text-[11px] text-neutral-500">
+                  0.5–3.0, mặc định 1.5. Chỉ cảnh báo khi giá cách trigger trong khoảng này.
                 </span>
               </div>
             </div>
@@ -1545,20 +1571,20 @@ export const ConfigPanel: React.FC<Props> = ({
 
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-neutral-300">
-                  Duyệt scenario sớm (90% là đủ)
+                  Early entry (deprecated — chỉ cho /start-entry)
                 </label>
                 <label className="flex items-center gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
                     disabled={!formData.ai_signal_review_enabled}
-                    checked={formData.early_entry_enabled ?? true}
+                    checked={formData.early_entry_enabled ?? false}
                     onChange={(e) =>
                       setFormData({ ...formData, early_entry_enabled: e.target.checked })
                     }
                     className="accent-indigo-500 w-4 h-4 rounded cursor-pointer"
                   />
                   <span className="text-[11px] text-neutral-300">
-                    Cho phép entry trước khi trigger xác nhận
+                    Cho phép scenario fallback trong /start-entry
                   </span>
                 </label>
                 <div className="relative">
@@ -1615,8 +1641,8 @@ export const ConfigPanel: React.FC<Props> = ({
                   </span>
                 </div>
                 <span className="text-[11px] text-neutral-500">
-                  AI được duyệt PRIMARY/ALTERNATE khi confidence ≥ ngưỡng, dù trigger M15 chưa in.
-                  Entry vẫn là mức trigger (lệnh chờ), không chase giá.
+                  Scanner chỉ gửi full signal sau khi M15 đóng cửa xác nhận. Field này chỉ ảnh
+                  hưởng candidate fallback của /start-entry, không tạo tín hiệu sớm.
                 </span>
               </div>
 
