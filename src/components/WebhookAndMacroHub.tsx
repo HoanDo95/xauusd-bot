@@ -226,7 +226,7 @@ if (sellCondition)
                 <div>
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">
-                      Định Hướng Vĩ Mô Trong Ngày
+                      Định Hướng Vĩ Mô (D1 + Macro/Flow)
                     </span>
                     <span className="text-xs font-mono text-zinc-500">
                       Cập nhật: {new Date(dailyReport.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -261,9 +261,8 @@ if (sellCondition)
                         </span>
                       </div>
                       <p className="text-xs text-zinc-400 mt-0.5">
-                        {dailyReport.macro_bias === 'BULLISH'
-                          ? 'Chỉ cho phép lệnh BUY, tự động loại bỏ mọi tín hiệu SELL ngược dòng.'
-                          : 'Chỉ cho phép lệnh SELL, tự động loại bỏ mọi tín hiệu BUY ngược dòng.'}
+                        Tham khảo — không tự động lọc tín hiệu. Entry engine dùng D1/H4 + Macro/Flow;
+                        nếu hai lớp lệch nhau, Action View sẽ hiển thị rõ alignment.
                       </p>
                     </div>
                   </div>

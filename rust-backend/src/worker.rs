@@ -833,9 +833,20 @@ pub fn spawn_daily_scheduler(state: AppState, scheduler: DailyScheduler) {
                 nf.update_events(events.clone());
             }
 
-            let candles = state.candles.read().await.clone();
+            let d1_candles = state.htf_d1_candles.read().await.clone();
+            let report_candles = if d1_candles.len() >= 200 {
+                d1_candles
+            } else {
+                state.candles.read().await.clone()
+            };
+            let live_price = *state.live_price.read().await;
+            let macro_flow = state.macro_flow.read().await.clone();
             let mut report = scheduler
-                .fetch_daily_macro_bias_from_candles(&candles)
+                .fetch_daily_macro_bias_from_context(
+                    &report_candles,
+                    live_price,
+                    macro_flow.as_ref(),
+                )
                 .await;
             report.high_impact_events_today = events
                 .iter()

@@ -1,4 +1,5 @@
 use crate::analyzer::GoldMarketAnalyzer;
+use crate::macro_flow::MacroFlowSnapshot;
 use crate::models::{Candle, DailyMacroReport};
 use crate::news_filter::{EconomicEvent, ImpactLevel, MacroBias};
 use chrono::{DateTime, Local, Utc};
@@ -515,6 +516,78 @@ impl DailyScheduler {
         }
     }
 
+    /// Daily report from D1 candles + Macro/Flow scorecard. The daily bias must
+    /// describe the same macro layer that the entry engine uses, not the M15
+    /// short-term EMA. Macro/Flow wins when its confidence is >= 60%.
+    pub fn build_quant_macro_report_with_context(
+        candles: &[Candle],
+        current_price: Option<f64>,
+        macro_flow: Option<&MacroFlowSnapshot>,
+    ) -> DailyMacroReport {
+        let now = Utc::now();
+        let ema_bias = GoldMarketAnalyzer::detect_ema_trend_bias(candles);
+        let current_price = current_price
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or_else(|| candles.last().map(|c| c.close).unwrap_or(2684.50));
+        let ema50 = GoldMarketAnalyzer::calculate_ema(candles, 50);
+        let ema200 = GoldMarketAnalyzer::calculate_ema(candles, 200);
+
+        let macro_flow = macro_flow.filter(|snapshot| snapshot.scorecard.confidence >= 60);
+        let macro_bias = macro_flow
+            .map(|snapshot| MacroBias::from_str_ci(&snapshot.scorecard.macro_bias))
+            .unwrap_or(ema_bias);
+        let confidence = macro_flow
+            .map(|snapshot| snapshot.scorecard.confidence)
+            .unwrap_or(86);
+        let (score, driver) = macro_flow
+            .map(|snapshot| (snapshot.scorecard.score, snapshot.scorecard.driver.clone()))
+            .unwrap_or((0, "EMA D1".to_string()));
+
+        let rationale = format!(
+            "Macro/Flow {} {}% (score {}, driver {}). D1 EMA {} · giá {:.2} so với EMA50 D1 {:.2} / EMA200 D1 {:.2}.",
+            macro_bias.as_str(),
+            confidence,
+            score,
+            driver,
+            ema_bias.as_str(),
+            current_price,
+            ema50,
+            ema200
+        );
+        let action = match macro_bias {
+            MacroBias::Bullish => {
+                "Ưu tiên canh mua tại hỗ trợ khi có xác nhận cấu trúc; không mua đuổi."
+            }
+            MacroBias::Bearish => {
+                "Ưu tiên canh bán tại kháng cự khi có xác nhận cấu trúc; không bán đuổi."
+            }
+            MacroBias::Neutral => "NEUTRAL: chờ breakout khỏi vùng S/R, giảm size.",
+        };
+
+        let recent_count = candles.len().clamp(1, 14);
+        let average_range = candles
+            .iter()
+            .rev()
+            .take(recent_count)
+            .map(|candle| candle.range())
+            .sum::<f64>()
+            / (recent_count as f64);
+        let forecast_range = average_range.max(2.0);
+        let low = current_price - forecast_range;
+        let high = current_price + forecast_range;
+
+        DailyMacroReport {
+            date: now.format("%Y-%m-%d").to_string(),
+            macro_bias,
+            confidence_score: confidence,
+            gold_range_forecast: format!("${:.2} - ${:.2}", low, high),
+            daily_rationale: rationale,
+            high_impact_events_today: Vec::new(),
+            recommended_action: action.to_string(),
+            updated_at: now,
+        }
+    }
+
     /// 3. Báo cáo vĩ mô dự phòng khi chỉ có giá hiện tại (không có chuỗi nến).
     pub fn heuristic_price_report(current_price: f64) -> DailyMacroReport {
         let now = Utc::now();
@@ -554,6 +627,26 @@ impl DailyScheduler {
             candles.last().map(|c| c.close).unwrap_or(2684.50),
             &fallback,
         );
+        self.request_ai_report(&prompt, fallback).await
+    }
+
+    /// D1 + Macro/Flow daily report. Used by the 07:00 scheduler and the manual
+    /// daily cron so the daily bias matches the entry engine's macro layer.
+    pub async fn fetch_daily_macro_bias_from_context(
+        &self,
+        d1_candles: &[Candle],
+        current_price: Option<f64>,
+        macro_flow: Option<&MacroFlowSnapshot>,
+    ) -> DailyMacroReport {
+        let fallback =
+            Self::build_quant_macro_report_with_context(d1_candles, current_price, macro_flow);
+        if d1_candles.is_empty() {
+            return fallback;
+        }
+        let price = current_price
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or_else(|| d1_candles.last().map(|c| c.close).unwrap_or(2684.50));
+        let prompt = Self::build_macro_prompt(price, &fallback);
         self.request_ai_report(&prompt, fallback).await
     }
 
@@ -784,6 +877,59 @@ mod tests {
         assert!(!events.is_empty());
         assert!(events.iter().all(|event| event.currency == "USD"));
         assert!(events.iter().any(|event| event.impact == ImpactLevel::High));
+    }
+
+    #[test]
+    fn test_daily_macro_report_prefers_macro_flow_over_d1_ema() {
+        let candles: Vec<Candle> = (0..80)
+            .map(|i| {
+                let close = 2700.0 - i as f64;
+                Candle {
+                    timestamp: 1_700_000_000_000 + i * 900_000,
+                    open: close,
+                    high: close + 1.0,
+                    low: close - 1.0,
+                    close,
+                    volume: 1000.0,
+                    taker_buy_volume: 0.0,
+                    timeframe: Timeframe::M15,
+                }
+            })
+            .collect();
+        let macro_flow = MacroFlowSnapshot {
+            updated_at: "2026-11-16T00:00:00Z".to_string(),
+            fred_ok: true,
+            yahoo_ok: true,
+            cot_ok: true,
+            metrics: Vec::new(),
+            cot: None,
+            scorecard: crate::macro_flow::MacroFlowScorecard {
+                macro_bias: "BULLISH".to_string(),
+                confidence: 95,
+                score: 4,
+                direction: "BULLISH".to_string(),
+                driver: "DXY/real yields".to_string(),
+                flow_quality: "CONFIRMING".to_string(),
+                risk_regime: "NEUTRAL".to_string(),
+                rate_regime: "NEUTRAL".to_string(),
+                usd_regime: "NEUTRAL".to_string(),
+                vol_regime: "NORMAL".to_string(),
+                notes: Vec::new(),
+            },
+            warnings: Vec::new(),
+            sources: Vec::new(),
+        };
+
+        let report = DailyScheduler::build_quant_macro_report_with_context(
+            &candles,
+            Some(2700.0),
+            Some(&macro_flow),
+        );
+
+        assert_eq!(report.macro_bias, MacroBias::Bullish);
+        assert_eq!(report.confidence_score, 95);
+        assert!(report.daily_rationale.contains("Macro/Flow"));
+        assert!(report.daily_rationale.contains("D1 EMA"));
     }
 
     #[tokio::test]

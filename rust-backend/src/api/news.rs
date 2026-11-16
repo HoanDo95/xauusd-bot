@@ -62,15 +62,19 @@ pub(super) async fn trigger_daily_macro_cron(State(state): State<AppState>) -> i
         nf.update_events(events.clone());
     }
 
-    // 2. Báo cáo vĩ mô định lượng EMA (miễn phí) hoặc AI nếu có key
-    let candles = state.candles.read().await.clone();
-    let mut report = if candles.is_empty() {
-        scheduler.fetch_daily_macro_bias(2684.50).await
+    // 2. Báo cáo vĩ mô D1 + Macro/Flow (hoặc AI nếu có key). Không dùng M15
+    // để tránh daily bias lệch với entry engine.
+    let d1_candles = state.htf_d1_candles.read().await.clone();
+    let report_candles = if d1_candles.len() >= 200 {
+        d1_candles
     } else {
-        scheduler
-            .fetch_daily_macro_bias_from_candles(&candles)
-            .await
+        state.candles.read().await.clone()
     };
+    let live_price = *state.live_price.read().await;
+    let macro_flow = state.macro_flow.read().await.clone();
+    let mut report = scheduler
+        .fetch_daily_macro_bias_from_context(&report_candles, live_price, macro_flow.as_ref())
+        .await;
     report.high_impact_events_today = events
         .iter()
         .filter(|event| event.impact == ImpactLevel::High)
