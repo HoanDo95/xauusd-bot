@@ -19,7 +19,9 @@ use crate::risk_guardrails::{
 };
 use crate::risk_manager::PositionSizer;
 use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot};
-use crate::scenario_signal::{best_confirmed_scenario, confirmed_signal_from_scenario};
+use crate::scenario_signal::{
+    best_confirmed_scenario, confirmed_signal_from_scenario, rsi_extreme_blocks_confirmed,
+};
 use crate::scenarios::{anti_chase_blocks_breakout, build_scenarios, ScenarioResponse};
 use crate::scheduler::DailyScheduler;
 use crate::session_alerts::evaluate_and_dispatch;
@@ -263,6 +265,7 @@ async fn build_confirmed_scenario_signal(
         config.rsi_divergence_lookback,
         config.rsi_pivot_k,
     );
+    let rsi_value = rsi.value;
     let mut context = state.market_context.read().await.clone();
     if let Some(context) = context.as_mut() {
         context.rsi_m15 = Some(rsi);
@@ -287,6 +290,19 @@ async fn build_confirmed_scenario_signal(
         now.timestamp_millis(),
     );
     let scenario = best_confirmed_scenario(&scenarios, last_candle)?;
+    if rsi_extreme_blocks_confirmed(
+        &scenario.bias,
+        rsi_value,
+        config.rsi_oversold,
+        config.rsi_overbought,
+    ) {
+        info!(
+            "⏳ [Confirmed Signal] {} bị chặn: RSI M15 {:.1} đã quá bán/quá mua — chờ hồi, không đuổi.",
+            scenario.id,
+            rsi_value.unwrap_or_default()
+        );
+        return None;
+    }
     let signal = confirmed_signal_from_scenario(scenario, config, candles, live_price, now)?;
 
     if config.quantum_trigger_confirmation_enabled

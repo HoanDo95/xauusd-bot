@@ -258,6 +258,26 @@ pub fn confirmed_signal_from_scenario(
     Some(signal)
 }
 
+/// A confirmed breakout must not be sent into an exhausted M15 move.
+/// SELL is blocked at/below oversold; BUY is blocked at/above overbought.
+/// `None` or a non-finite RSI does not block (the AI/hard-risk layers still
+/// review the signal).
+pub fn rsi_extreme_blocks_confirmed(
+    bias: &str,
+    rsi_value: Option<f64>,
+    oversold: f64,
+    overbought: f64,
+) -> bool {
+    let Some(value) = rsi_value.filter(|value| value.is_finite()) else {
+        return false;
+    };
+    match bias.trim().to_uppercase().as_str() {
+        "BEARISH" => value <= oversold,
+        "BULLISH" => value >= overbought,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,6 +393,35 @@ mod tests {
             best_confirmed_scenario(&response, &triggered).map(|scenario| scenario.id.as_str()),
             Some("bearish_breakdown")
         );
+    }
+
+    #[test]
+    fn rsi_extreme_blocks_confirmed_breakouts() {
+        assert!(rsi_extreme_blocks_confirmed(
+            "BEARISH",
+            Some(28.0),
+            30.0,
+            70.0
+        ));
+        assert!(rsi_extreme_blocks_confirmed(
+            "BULLISH",
+            Some(72.0),
+            30.0,
+            70.0
+        ));
+        assert!(!rsi_extreme_blocks_confirmed(
+            "BEARISH",
+            Some(45.0),
+            30.0,
+            70.0
+        ));
+        assert!(!rsi_extreme_blocks_confirmed(
+            "BULLISH",
+            Some(45.0),
+            30.0,
+            70.0
+        ));
+        assert!(!rsi_extreme_blocks_confirmed("BEARISH", None, 30.0, 70.0));
     }
 
     #[test]
