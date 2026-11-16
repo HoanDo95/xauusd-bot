@@ -1170,7 +1170,7 @@ mod tests {
     fn validate_webhook_candle_rejects_stale_candle() {
         let now_ms = 1_700_000_000_000;
         let mut candle = candle_for(now_ms, Timeframe::M15);
-        // Đóng cửa cách đây 5 phút > max_candle_age_secs mặc định 120s.
+        // Đóng cửa cách đây 5 phút > max_candle_age_secs mặc định 180s.
         candle.timestamp = now_ms - timeframe_millis(Timeframe::M15) - 5 * 60 * 1000;
 
         let error = validate_webhook_candle(&candle, &BotConfig::default(), now_ms)

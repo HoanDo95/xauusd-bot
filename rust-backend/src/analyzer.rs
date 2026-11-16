@@ -1128,7 +1128,7 @@ mod tests {
 
     #[test]
     fn stale_candle_is_rejected_when_live_price_provided() {
-        let stale_now = BASE_TS + 60 * STEP_MS + STEP_MS + 120_000 + 1;
+        let stale_now = BASE_TS + 60 * STEP_MS + STEP_MS + 180_000 + 1;
         let signal = analyze_buy_with_live(2675.0, stale_now, buy_config(10.0));
         assert!(signal.is_none());
     }

@@ -544,7 +544,10 @@ fn default_max_entry_drift_points() -> f64 {
 }
 
 fn default_max_candle_age_secs() -> i64 {
-    120
+    // 3 minutes tolerates one missed 60s feed tick while still rejecting a
+    // genuinely stale M15 candle. The free TwelveData feed can deliver the
+    // just-closed bar up to ~1 minute after the boundary.
+    180
 }
 
 fn default_session_filter_enabled() -> bool {
