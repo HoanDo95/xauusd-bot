@@ -48,7 +48,7 @@ pub(crate) struct StartResult {
 }
 
 const AI_DECISION_UNAVAILABLE_MESSAGE: &str =
-    "AI Decision không khả dụng (thiếu OPENCODE_GO_API_KEY, lỗi provider hoặc phản hồi không hợp lệ). Không có tín hiệu AI mới; scenario view vẫn được gửi.";
+    "AI Decision tạm thời không khả dụng (provider lỗi/giới hạn tần suất hoặc phản hồi không hợp lệ). Không có tín hiệu AI mới; scenario view vẫn được gửi.";
 
 /// Run one AI decision for the Start brief. Read-only: never inserts a signal
 /// and never consumes the Sniper quota.

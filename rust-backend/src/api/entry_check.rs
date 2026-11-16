@@ -28,7 +28,7 @@ use tracing::warn;
 
 pub(crate) const AI_DECISION_DISABLED_MESSAGE: &str = "AI Decision Mode đang tắt.";
 pub(crate) const AI_DECISION_UNAVAILABLE_MESSAGE: &str =
-    "AI không phản hồi hoặc phản hồi không hợp lệ.";
+    "AI tạm thời không phản hồi (có thể bị giới hạn tần suất). Thử lại sau 1–2 phút.";
 pub(crate) const STANDBY_PLAN_NOTE: &str = "AI STANDBY — kế hoạch tham khảo, chưa phải entry";
 pub(crate) const MARKET_CLOSED_MESSAGE: &str =
     "Thị trường vàng đóng cửa cuối tuần — không có entry check. Weekend brief 07:00.";

@@ -14,6 +14,10 @@ const OPENCODE_GO_API_BASE: &str = "https://opencode.ai/inference/go/openai/v1";
 const DEFAULT_REVIEW_MODEL: &str = "gemini-4-argon";
 const OPENCODE_GO_USER_AGENT: &str = "xauusd-bot/1.0";
 const REVIEW_TIMEOUT_SECS: u64 = 20;
+/// Extra attempts when OpenCode Go returns HTTP 429 (rate limit).
+const AI_MAX_RATE_LIMIT_RETRIES: usize = 2;
+/// Fallback backoff per retry when the provider does not send Retry-After.
+const AI_RETRY_BACKOFF_SECS: [u64; 2] = [1, 3];
 
 /// Kết quả review của AI Chief Risk Officer.
 ///
@@ -609,6 +613,18 @@ pub fn review_blocks_signal(
     )
 }
 
+/// Delay before retrying a 429. Uses Retry-After when it is a plain number of
+/// seconds, otherwise a short exponential fallback. Clamped to 1..=60s so a bad
+/// header cannot stall the scanner for minutes.
+fn retry_after_delay(retry_after: Option<&str>, attempt: usize) -> StdDuration {
+    let fallback = AI_RETRY_BACKOFF_SECS.get(attempt).copied().unwrap_or(3);
+    let secs = retry_after
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(fallback)
+        .clamp(1, 60);
+    StdDuration::from_secs(secs)
+}
+
 /// Shared OpenCode Go chat-completion call used by both the veto-only review and
 /// the AI decision engine. Returns the raw assistant content, never the key.
 pub(crate) async fn post_ai_chat_completion(
@@ -638,51 +654,78 @@ pub(crate) async fn post_ai_chat_completion(
         .build()
         .unwrap_or_else(|_| Client::new());
 
-    let request = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", settings.api_key))
-        .header("Content-Type", "application/json")
-        .header("User-Agent", OPENCODE_GO_USER_AGENT)
-        .header("x-opencode-session", session_id);
+    for attempt in 0..=AI_MAX_RATE_LIMIT_RETRIES {
+        let request = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", settings.api_key))
+            .header("Content-Type", "application/json")
+            .header("User-Agent", OPENCODE_GO_USER_AGENT)
+            .header("x-opencode-session", session_id);
 
-    let response = match request.json(&payload).send().await {
-        Ok(response) => response,
-        Err(err) => {
-            warn!(
-                "⚠️ [{}] Không kết nối được OpenCode Go ({}).",
-                log_label,
-                err.without_url()
-            );
-            return None;
+        let response = match request.json(&payload).send().await {
+            Ok(response) => response,
+            Err(err) => {
+                warn!(
+                    "⚠️ [{}] Không kết nối được OpenCode Go ({}).",
+                    log_label,
+                    err.without_url()
+                );
+                return None;
+            }
+        };
+
+        let status = response.status();
+        if status.is_success() {
+            let body = match response.json::<Value>().await {
+                Ok(body) => body,
+                Err(err) => {
+                    warn!("⚠️ [{}] Response JSON lỗi: {}", log_label, err);
+                    return None;
+                }
+            };
+
+            let Some(content) = body["choices"][0]["message"]["content"].as_str() else {
+                warn!(
+                    "⚠️ [{}] Response thiếu choices[0].message.content.",
+                    log_label
+                );
+                return None;
+            };
+
+            return Some(content.to_string());
         }
-    };
 
-    if !response.status().is_success() {
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = response.text().await.unwrap_or_default();
+        let body_snippet: String = body.chars().take(300).collect();
         warn!(
-            "⚠️ [{}] OpenCode Go trả HTTP {}.",
+            "⚠️ [{}] OpenCode Go trả HTTP {} (attempt {}/{}): {}",
             log_label,
-            response.status()
+            status,
+            attempt + 1,
+            AI_MAX_RATE_LIMIT_RETRIES + 1,
+            body_snippet
         );
+
+        if status.as_u16() == 429 && attempt < AI_MAX_RATE_LIMIT_RETRIES {
+            let delay = retry_after_delay(retry_after.as_deref(), attempt);
+            warn!(
+                "⏳ [{}] AI bị giới hạn tần suất — thử lại sau {}s.",
+                log_label,
+                delay.as_secs()
+            );
+            tokio::time::sleep(delay).await;
+            continue;
+        }
+
         return None;
     }
 
-    let body = match response.json::<Value>().await {
-        Ok(body) => body,
-        Err(err) => {
-            warn!("⚠️ [{}] Response JSON lỗi: {}", log_label, err);
-            return None;
-        }
-    };
-
-    let Some(content) = body["choices"][0]["message"]["content"].as_str() else {
-        warn!(
-            "⚠️ [{}] Response thiếu choices[0].message.content.",
-            log_label
-        );
-        return None;
-    };
-
-    Some(content.to_string())
+    None
 }
 
 /// Gọi OpenCode Go để review một tín hiệu thật.
@@ -742,6 +785,18 @@ mod tests {
     use crate::macro_flow::{CotSnapshot, MacroFlowScorecard, MacroMetric};
     use crate::models::{EntryType, SignalStatus, SignalType, Timeframe};
     use chrono::TimeZone;
+
+    #[test]
+    fn retry_after_delay_uses_header_and_falls_back() {
+        assert_eq!(retry_after_delay(Some("7"), 0), StdDuration::from_secs(7));
+        assert_eq!(retry_after_delay(None, 0), StdDuration::from_secs(1));
+        assert_eq!(retry_after_delay(None, 1), StdDuration::from_secs(3));
+        assert_eq!(retry_after_delay(Some("0"), 0), StdDuration::from_secs(1));
+        assert_eq!(
+            retry_after_delay(Some("999"), 0),
+            StdDuration::from_secs(60)
+        );
+    }
 
     fn sample_signal() -> Signal {
         Signal {

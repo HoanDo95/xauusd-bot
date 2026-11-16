@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ActionVerdict, ActionViewResponse, AiDecision, EntryCheckResult } from '../types';
 import { runAiEntryCheck } from '../lib/api';
 
@@ -138,18 +138,32 @@ export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
   const [entryCheck, setEntryCheck] = useState<EntryCheckResult | null>(null);
   const [entryCheckError, setEntryCheckError] = useState<string | null>(null);
   const [entryCheckLoading, setEntryCheckLoading] = useState(false);
+  const [entryCheckCooldown, setEntryCheckCooldown] = useState(0);
+
+  useEffect(() => {
+    if (entryCheckCooldown <= 0) return;
+    const timer = setTimeout(() => {
+      setEntryCheckCooldown((value) => Math.max(0, value - 1));
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [entryCheckCooldown]);
 
   const handleEntryCheck = async () => {
+    if (entryCheckLoading || entryCheckCooldown > 0) return;
     setEntryCheckLoading(true);
     setEntryCheckError(null);
     const response = await runAiEntryCheck();
     setEntryCheckLoading(false);
     if (response.status === 'ok' && response.result) {
       setEntryCheck(response.result);
+      setEntryCheckCooldown(0);
       return;
     }
     setEntryCheck(null);
     setEntryCheckError(response.message || 'AI Entry Check không khả dụng.');
+    // A 429 is often transient. Give the provider a short window instead of
+    // letting repeated clicks hammer it.
+    setEntryCheckCooldown(30);
   };
 
   if (!data) {
@@ -215,10 +229,14 @@ export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
           <button
             type="button"
             onClick={handleEntryCheck}
-            disabled={entryCheckLoading}
+            disabled={entryCheckLoading || entryCheckCooldown > 0}
             className="px-2.5 py-1 rounded-md border border-indigo-500/40 bg-indigo-500/10 text-[10px] font-mono font-bold uppercase tracking-wider text-indigo-200 hover:bg-indigo-500/20 disabled:cursor-wait disabled:opacity-60 transition-colors"
           >
-            {entryCheckLoading ? 'Đang check…' : 'AI Entry Check'}
+            {entryCheckLoading
+              ? 'Đang check…'
+              : entryCheckCooldown > 0
+                ? `Thử lại ${entryCheckCooldown}s`
+                : 'AI Entry Check'}
           </button>
         </div>
       </div>
