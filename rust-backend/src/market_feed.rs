@@ -472,6 +472,22 @@ impl MarketDataFeed {
             .count()
     }
 
+    /// Match count over the most recent `window` price candles. M15 history can
+    /// be dominated by weekend flat bars that Yahoo GC=F does not have, so the
+    /// overall ratio is not a good acceptance test for the live volume filter.
+    fn recent_volume_matches(
+        price_candles: &[Candle],
+        volume_candles: &[Candle],
+        window: usize,
+    ) -> (usize, usize) {
+        let start = price_candles.len().saturating_sub(window);
+        let recent = &price_candles[start..];
+        (
+            Self::count_volume_matches(recent, volume_candles),
+            recent.len(),
+        )
+    }
+
     /// Ghép volume/taker-buy từ Binance PAXG vào nến TwelveData theo timestamp.
     /// Trả `true` nếu có ít nhất một cây nến khớp.
     fn merge_volume_proxy(price_candles: &mut [Candle], volume_candles: &[Candle]) -> bool {
@@ -887,15 +903,15 @@ impl MarketDataFeed {
                         .as_deref()
                         .filter(|_| !twelve.candles.is_empty())
                         .map(|yahoo| {
-                            let matches = Self::count_volume_matches(&twelve.candles, yahoo);
-                            if matches * 2 >= twelve.candles.len() {
+                            let (matches, total) =
+                                Self::recent_volume_matches(&twelve.candles, yahoo, 20);
+                            if total > 0 && matches * 2 >= total {
                                 Self::merge_volume_proxy(&mut twelve.candles, yahoo);
                                 true
                             } else {
                                 warn!(
-                                    "⚠️ Yahoo GC=F chỉ khớp {}/{} nến — fallback PAXG.",
-                                    matches,
-                                    twelve.candles.len()
+                                    "⚠️ Yahoo GC=F chỉ khớp {}/{} nến gần nhất — fallback PAXG.",
+                                    matches, total
                                 );
                                 false
                             }
@@ -2381,6 +2397,22 @@ mod tests {
         let yahoo_open = 1794546000_i64 * 1000; // 2026-11-13 05:00 UTC
         let midnight = 1794528000_i64 * 1000; // 2026-11-13 00:00 UTC
         assert_eq!(yahoo_daily_timestamp(yahoo_open), midnight);
+    }
+
+    #[test]
+    fn test_recent_volume_matches_ignores_weekend_history() {
+        let price: Vec<Candle> = (0..100)
+            .map(|index| test_candle(index * 900_000, 0.0, 0.0))
+            .collect();
+        let volume: Vec<Candle> = (80..100)
+            .map(|index| test_candle(index * 900_000, 10.0, 0.0))
+            .collect();
+
+        let (matches, total) = MarketDataFeed::recent_volume_matches(&price, &volume, 20);
+        assert_eq!((matches, total), (20, 20));
+        // Overall coverage is only 20%, which is why the M15 acceptance test
+        // uses the recent window instead.
+        assert_eq!(MarketDataFeed::count_volume_matches(&price, &volume), 20);
     }
 
     #[test]
