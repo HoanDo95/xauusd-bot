@@ -65,6 +65,7 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         .read()
         .await
         .check_kill_switch(now, &config);
+    let market_open = !PersistentStore::is_market_closed_weekend(now);
 
     let last_scan_age_secs = last_scan_at.map(|at| (now - at).num_seconds().max(0));
     let spot_basis_age_secs = spot_basis
@@ -92,6 +93,8 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "symbol": config.symbol,
         "timeframe": config.timeframe,
         "isActive": config.is_active,
+        "marketOpen": market_open,
+        "weekendBriefEnabled": config.weekend_brief_enabled,
         "candlesCount": candles_count,
         "signalsCount": signals.len(),
         "signalsToday": signals_today,

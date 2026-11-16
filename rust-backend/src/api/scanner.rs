@@ -8,6 +8,7 @@ use crate::analyzer::GoldMarketAnalyzer;
 use crate::models::BotConfig;
 use crate::rsi::rsi_snapshot;
 use crate::scenarios::ScenarioResponse;
+use crate::storage::PersistentStore;
 use crate::volume_delta::compute_delta;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use chrono::Utc;
@@ -18,6 +19,8 @@ const TELEGRAM_ERROR_MESSAGE: &str =
     "Không gửi được Telegram. Kiểm tra token/chat ID và log server.";
 const TELEGRAM_NOT_CONFIGURED_MESSAGE: &str =
     "Telegram chưa cấu hình token/chat ID — scenario view chỉ hiển thị trên dashboard.";
+const WEEKEND_START_MESSAGE: &str =
+    "🌙 Thị trường vàng đóng cửa cuối tuần. Scanner sẽ không gửi entry hay trade alert. Weekend brief (tin tức + đánh giá tuần tới) sẽ gửi lúc 07:00 Thứ Bảy/Chủ Nhật.";
 
 /// Telegram simulator returns Ok(1001) when token/chat is empty, so the API
 /// must check configuration explicitly before reporting `telegramSent=true`.
@@ -41,6 +44,7 @@ pub(crate) struct StartResult {
     pub scenarios: ScenarioResponse,
     pub ai_decision: Option<AiDecision>,
     pub ai_error: Option<String>,
+    pub market_closed: bool,
 }
 
 const AI_DECISION_UNAVAILABLE_MESSAGE: &str =
@@ -130,6 +134,32 @@ pub(crate) async fn start_scanner_inner(state: &AppState) -> StartResult {
     let live_view = current_live_view(state).await;
     let scenarios = current_scenarios(state).await;
     let config = state.config.read().await.clone();
+
+    if PersistentStore::is_market_closed_weekend(Utc::now()) {
+        let (telegram_sent, telegram_error) = if !telegram_configured(&config) {
+            (false, Some(TELEGRAM_NOT_CONFIGURED_MESSAGE.to_string()))
+        } else {
+            let telegram = state.telegram.read().await.clone();
+            match telegram.send_html_message(WEEKEND_START_MESSAGE).await {
+                Ok(_) => (true, None),
+                Err(err) => {
+                    warn!("⚠️ Không gửi được weekend Start message: {}", err);
+                    (false, Some(TELEGRAM_ERROR_MESSAGE.to_string()))
+                }
+            }
+        };
+        return StartResult {
+            was_active,
+            telegram_sent,
+            telegram_error,
+            live_view,
+            scenarios,
+            ai_decision: None,
+            ai_error: None,
+            market_closed: true,
+        };
+    }
+
     let (ai_decision, ai_error) = start_ai_decision(state, &config, &scenarios).await;
 
     let (telegram_sent, telegram_error) = if !telegram_configured(&config) {
@@ -162,6 +192,7 @@ pub(crate) async fn start_scanner_inner(state: &AppState) -> StartResult {
         scenarios,
         ai_decision,
         ai_error,
+        market_closed: false,
     }
 }
 
@@ -181,6 +212,7 @@ pub(super) async fn start_scanner(State(state): State<AppState>) -> impl IntoRes
         "scenarios": result.scenarios,
         "aiDecision": result.ai_decision,
         "aiError": result.ai_error,
+        "marketClosed": result.market_closed,
     });
     if let Some(error) = result.telegram_error {
         payload["telegramError"] = json!(error);

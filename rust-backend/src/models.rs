@@ -442,6 +442,10 @@ pub struct BotConfig {
     /// Mặc định true.
     #[serde(default = "default_true")]
     pub daily_plan_enabled: bool,
+    /// Bật brief cuối tuần 07:00 Thứ Bảy/Chủ Nhật: tin tức tuần tới + đánh giá,
+    /// không gửi entry/SL/TP. Mặc định true.
+    #[serde(default = "default_true")]
+    pub weekend_brief_enabled: bool,
 }
 
 fn default_max_signals_per_day() -> usize {
@@ -615,6 +619,7 @@ impl Default for BotConfig {
             action_trigger_cooldown_minutes: default_action_trigger_cooldown(),
             macro_flow_enabled: true,
             daily_plan_enabled: true,
+            weekend_brief_enabled: true,
         }
     }
 }
@@ -1461,6 +1466,29 @@ mod tests {
         }
         .sanitized();
         assert!(!disabled.daily_plan_enabled);
+    }
+
+    #[test]
+    fn weekend_brief_defaults_true_and_is_backward_compatible() {
+        let defaults = BotConfig::default();
+        assert!(defaults.weekend_brief_enabled);
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        object.remove("weekend_brief_enabled");
+
+        let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(
+            config.weekend_brief_enabled,
+            "weekend brief must default ON for legacy configs"
+        );
+
+        let disabled = BotConfig {
+            weekend_brief_enabled: false,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert!(!disabled.weekend_brief_enabled);
     }
 }
 

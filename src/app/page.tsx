@@ -121,6 +121,7 @@ const DEFAULT_CONFIG: BotConfig = {
   action_trigger_cooldown_minutes: 30,
   macro_flow_enabled: true,
   daily_plan_enabled: true,
+  weekend_brief_enabled: true,
 };
 
 function scenarioTriggerLabel(scenario: Scenario): string {

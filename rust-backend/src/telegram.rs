@@ -879,6 +879,178 @@ impl TelegramNotifier {
         }
     }
 
+    /// Weekend brief: news for next week + weekly assessment. It intentionally
+    /// contains no entry/SL/TP and no trade signal; gold is closed Sat/Sun.
+    pub fn format_weekend_brief(
+        live_view: &serde_json::Value,
+        scenarios: &ScenarioResponse,
+        events: &[EconomicEvent],
+        report: &DailyMacroReport,
+    ) -> String {
+        let market = scenarios.market.as_ref();
+        let macro_bias = Self::escape_html(&truncate_chars(report.macro_bias.as_str(), 40));
+        let flow_quality = live_view
+            .get("macroFlow")
+            .and_then(|flow| flow.get("flowQuality"))
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty());
+        let mut macro_line = format!("Macro: {macro_bias} · {}%", report.confidence_score);
+        if let Some(flow_quality) = flow_quality {
+            macro_line.push_str(&format!(
+                " · {}",
+                Self::escape_html(&truncate_chars(flow_quality, 40))
+            ));
+        }
+
+        let mut lines = vec![
+            "🌙 <b>CUỐI TUẦN — XAU/USD WEEKEND BRIEF</b>".to_string(),
+            "Thị trường vàng đóng cửa Thứ Bảy/Chủ Nhật — không gửi entry/SL/TP hay trade alert."
+                .to_string(),
+            macro_line,
+        ];
+
+        if let Some(market) = market {
+            lines.push(format!(
+                "D1 {} · H4 {} · H1 {} · ATR H4 {:.1}",
+                Self::escape_html(&truncate_chars(&market.d1_bias, 40)),
+                Self::escape_html(&truncate_chars(&market.h4_bias, 40)),
+                Self::escape_html(&truncate_chars(&market.h1_bias, 40)),
+                market.h4_atr
+            ));
+            let rsi_h1 = market
+                .rsi_h1
+                .map(|value| format!("{value:.1}"))
+                .unwrap_or_else(|| "—".to_string());
+            let rsi_h4 = market
+                .rsi_h4
+                .map(|value| format!("{value:.1}"))
+                .unwrap_or_else(|| "—".to_string());
+            let daily_change = market
+                .daily_change_pct
+                .map(|value| format!("{value:+.2}%"))
+                .unwrap_or_else(|| "—".to_string());
+            lines.push(format!(
+                "RSI M15 {} · H1 {rsi_h1} · H4 {rsi_h4} · Daily {daily_change}",
+                market
+                    .rsi_m15
+                    .map(|value| format!("{value:.1}"))
+                    .unwrap_or_else(|| "—".to_string())
+            ));
+            lines.push(format!(
+                "Support {} · Resistance {}",
+                format_level(market.nearest_support),
+                format_level(market.nearest_resistance)
+            ));
+        }
+
+        let mut high_impact = events
+            .iter()
+            .filter(|event| {
+                event.impact == ImpactLevel::High && event.currency.eq_ignore_ascii_case("USD")
+            })
+            .take(6)
+            .map(|event| {
+                format!(
+                    "• {} — {}",
+                    event.scheduled_time.format("%a %d/%m %H:%M UTC"),
+                    Self::escape_html(&truncate_chars(&event.title, 64))
+                )
+            })
+            .collect::<Vec<_>>();
+        if high_impact.is_empty() {
+            high_impact.push("• Chưa có tin High Impact USD cho tuần tới.".to_string());
+        }
+        lines.push("📰 <b>Tin ảnh hưởng vàng tuần tới:</b>".to_string());
+        lines.extend(high_impact);
+
+        let macro_bias_upper = report.macro_bias.as_str().to_uppercase();
+        let d1 = market
+            .map(|market| market.d1_bias.to_uppercase())
+            .unwrap_or_default();
+        let h4 = market
+            .map(|market| market.h4_bias.to_uppercase())
+            .unwrap_or_default();
+        let assessment = if macro_bias_upper == "BEARISH" && d1 == "BEARISH" && h4 == "BEARISH" {
+            "BEARISH — ưu tiên canh bán tại kháng cự, tránh mua đuổi."
+        } else if macro_bias_upper == "BULLISH" && d1 == "BULLISH" && h4 == "BULLISH" {
+            "BULLISH — ưu tiên canh mua tại hỗ trợ, tránh bán đuổi."
+        } else {
+            "NEUTRAL — chờ breakout khỏi vùng S/R, giảm size."
+        };
+        let rsi_h4 = market.and_then(|market| market.rsi_h4);
+        let rsi_risk = if rsi_h4.is_some_and(|value| value < 30.0) {
+            "RSI H4 quá bán — có thể có relief rally; không chase."
+        } else if rsi_h4.is_some_and(|value| value > 70.0) {
+            "RSI H4 quá mua — có thể có nhịp điều chỉnh; không chase."
+        } else {
+            "RSI H4 neutral."
+        };
+        let event_risk = if events.iter().any(|event| event.impact == ImpactLevel::High) {
+            "Có tin High Impact USD tuần tới — giảm size quanh giờ tin."
+        } else {
+            "Không có tin High Impact USD nổi bật."
+        };
+
+        lines.push("🧭 <b>Đánh giá tuần tới:</b>".to_string());
+        lines.push(format!("• Bias: {assessment}"));
+        lines.push(format!("• Rủi ro: {rsi_risk} {event_risk}"));
+        lines.push(
+            "Đây là đánh giá cuối tuần, không phải entry/SL/TP. Không có trade signal vào cuối tuần."
+                .to_string(),
+        );
+        lines.join("\n")
+    }
+
+    /// Gửi weekend brief 07:00 Thứ Bảy/Chủ Nhật. Token/Chat trống = simulator.
+    pub async fn send_weekend_brief(
+        &self,
+        live_view: &serde_json::Value,
+        scenarios: &ScenarioResponse,
+        events: &[EconomicEvent],
+        report: &DailyMacroReport,
+    ) -> Result<i64, String> {
+        if self.bot_token.is_empty() || self.chat_id.is_empty() {
+            info!("⚠️ [Telegram Simulator] Weekend brief (chưa cấu hình token/chat)");
+            return Ok(1001);
+        }
+
+        let message_text = Self::format_weekend_brief(live_view, scenarios, events, report);
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
+        let payload = json!({
+            "chat_id": self.chat_id,
+            "text": message_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true
+        });
+
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let body: serde_json::Value =
+                        resp.json().await.map_err(|e| e.without_url().to_string())?;
+                    let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
+                    info!(
+                        "✅ Đã gửi weekend brief tới Telegram! Message ID: {}",
+                        msg_id
+                    );
+                    Ok(msg_id)
+                } else {
+                    let err_text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Lỗi không xác định".into());
+                    error!("❌ Telegram weekend brief API lỗi: {}", err_text);
+                    Err(format!("Telegram API Error: {}", err_text))
+                }
+            }
+            Err(err) => {
+                let err = err.without_url();
+                error!("❌ Không thể gửi weekend brief tới Telegram: {}", err);
+                Err(format!("Network Error: {}", err))
+            }
+        }
+    }
+
     /// Gửi snapshot kịch bản tham khảo tới Telegram. Token/Chat trống = simulator.
     /// Hàm này không đụng tới quota hay danh sách tín hiệu giao dịch.
     pub async fn send_scenario_summary(
@@ -2520,6 +2692,26 @@ mod tests {
             );
         }
         assert!(!message.contains("Retail sales"));
+    }
+
+    #[test]
+    fn format_weekend_brief_has_news_and_assessment_without_entry_levels() {
+        let message = TelegramNotifier::format_weekend_brief(
+            &sample_live_view(),
+            &sample_scenario_response(),
+            &sample_events(),
+            &sample_daily_report(),
+        );
+
+        assert!(message.contains("CUỐI TUẦN — XAU/USD WEEKEND BRIEF"));
+        assert!(message.contains("Tin ảnh hưởng vàng tuần tới"));
+        assert!(message.contains("CPI"));
+        assert!(message.contains("Đánh giá tuần tới"));
+        assert!(message.contains("BEARISH"));
+        assert!(message.contains("không phải entry/SL/TP"));
+        assert!(!message.contains("Entry "));
+        assert!(!message.contains("TP1"));
+        assert!(!message.contains("SL:"));
     }
 
     #[test]

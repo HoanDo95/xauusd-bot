@@ -18,6 +18,7 @@ use crate::rsi::rsi_snapshot;
 use crate::scenario_signal::{best_early_entry_scenario, signal_from_scenario};
 use crate::scenarios::{scenario_triggered, Scenario, ScenarioResponse};
 use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
+use crate::storage::PersistentStore;
 use crate::volume_delta::compute_delta;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use chrono::Utc;
@@ -29,6 +30,8 @@ pub(crate) const AI_DECISION_DISABLED_MESSAGE: &str = "AI Decision Mode đang t�
 pub(crate) const AI_DECISION_UNAVAILABLE_MESSAGE: &str =
     "AI không phản hồi hoặc phản hồi không hợp lệ.";
 pub(crate) const STANDBY_PLAN_NOTE: &str = "AI STANDBY — kế hoạch tham khảo, chưa phải entry";
+pub(crate) const MARKET_CLOSED_MESSAGE: &str =
+    "Thị trường vàng đóng cửa cuối tuần — không có entry check. Weekend brief 07:00.";
 
 /// Reference entry plan derived from a deterministic candidate or scenario.
 /// It is display-only; it is never inserted as a trade signal.
@@ -296,6 +299,9 @@ pub(crate) fn select_entry_plan(
 /// `/api/action-view` can display the latest verdict. No signal is inserted, no
 /// Telegram message is sent and the daily quota is untouched.
 pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult, String> {
+    if PersistentStore::is_market_closed_weekend(Utc::now()) {
+        return Err(MARKET_CLOSED_MESSAGE.to_string());
+    }
     let config = state.config.read().await.clone();
     if !ai_decision_enabled(&config) {
         return Err(AI_DECISION_DISABLED_MESSAGE.to_string());

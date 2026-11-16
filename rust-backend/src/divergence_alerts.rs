@@ -7,6 +7,7 @@
 
 use crate::api::AppState;
 use crate::rsi::{divergence_label, rsi_snapshot, RsiDivergence};
+use crate::storage::PersistentStore;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -124,6 +125,9 @@ pub fn spawn_divergence_worker(state: AppState) {
             interval.tick().await;
             let config = state.config.read().await.clone();
             if !config.divergence_alert_enabled {
+                continue;
+            }
+            if PersistentStore::is_market_closed_weekend(Utc::now()) {
                 continue;
             }
 

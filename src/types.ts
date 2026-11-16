@@ -617,6 +617,8 @@ export interface BotConfig {
   macro_flow_enabled?: boolean;
   /** Send the read-only 07:00 daily plan to Telegram. Default true; no quota impact. */
   daily_plan_enabled?: boolean;
+  /** Send the weekend brief (news + next-week assessment) at 07:00 Sat/Sun. Default true. */
+  weekend_brief_enabled?: boolean;
 }
 
 export interface DailyMacroReport {

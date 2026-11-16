@@ -467,6 +467,25 @@ Action: WAIT — chờ trigger của PRIMARY.
   `/api/health` exposes `dailyPlanEnabled`. With an empty Telegram token/chat the
   simulator returns `Ok(1001)` and logs that no message was sent.
 
+### Weekend mode (Saturday/Sunday, Vietnam time)
+
+Gold is closed on Saturday/Sunday, so the bot applies a hard weekend gate
+independent of `session_filter_enabled`:
+
+- **No trade signals** and no entry/action alerts: the scanner, action-trigger
+  worker, divergence alerts and session briefings all skip weekends.
+- `/start` still enables the scanner but sends only a short “market closed”
+  message; `/view` and `/start-entry` reply that the market is closed. The API
+  `POST /api/ai/entry-check` returns HTTP 503 with the same reason.
+- At **07:00 Sat/Sun**, the scheduler sends a **weekend brief** instead of the
+  daily plan: next week's High-Impact USD events, macro/flow, D1/H4/H1 context,
+  RSI, key support/resistance and a weekly bias assessment. It contains **no
+  entry/SL/TP** and is not a trade signal.
+- Toggle: `weekend_brief_enabled` (default true). `/api/health` exposes
+  `marketOpen=false` and `weekendBriefEnabled` on weekends.
+- The weekend news sync uses ForexFactory `ff_calendar_nextweek.json` and
+  updates the news filter for the coming week.
+
 ### Action Trigger alerts (Phase C7)
 
 The PRIMARY reference scenario now carries a structured trigger

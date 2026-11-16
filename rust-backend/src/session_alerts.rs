@@ -151,6 +151,9 @@ pub async fn evaluate_and_dispatch(state: &AppState) -> usize {
     }
 
     let now = Utc::now();
+    if PersistentStore::is_market_closed_weekend(now) {
+        return 0;
+    }
     let sent_keys = state.sent_session_alerts.read().await.clone();
     let due_alerts = check_due_session_alerts(now, config.session_alert_lead_minutes, &sent_keys);
     if due_alerts.is_empty() {

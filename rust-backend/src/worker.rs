@@ -394,6 +394,12 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                 continue;
             }
 
+            // 6.2b Hard weekend gate: no trade signals or entry alerts on
+            // Saturday/Sunday, even when the session filter is disabled.
+            if PersistentStore::is_market_closed_weekend(Utc::now()) {
+                continue;
+            }
+
             let now = Utc::now();
             let signals_snapshot = state.signals.read().await.clone();
 
@@ -815,7 +821,13 @@ pub fn spawn_daily_scheduler(state: AppState, scheduler: DailyScheduler) {
             );
             tokio::time::sleep(std::time::Duration::from_secs(sleep_seconds)).await;
 
-            let events = scheduler.fetch_daily_economic_events().await;
+            let now = Utc::now();
+            let weekend = PersistentStore::is_market_closed_weekend(now);
+            let events = if weekend {
+                scheduler.fetch_next_week_economic_events().await
+            } else {
+                scheduler.fetch_daily_economic_events().await
+            };
             {
                 let mut nf = state.news_filter.write().await;
                 nf.update_events(events.clone());
@@ -854,13 +866,28 @@ pub fn spawn_daily_scheduler(state: AppState, scheduler: DailyScheduler) {
                 warn!("⚠️ Không lưu được Daily Macro report: {}", err);
             }
 
-            // Kế hoạch ngày 07:00: read-only/advisory, không tiêu hao quota,
-            // không chèn signal và không đổi trạng thái scanner.
+            // 07:00: weekday = daily plan; weekend = news + weekly assessment.
+            // Both are read-only/advisory, no quota, no signal insertion.
             let config = state.config.read().await.clone();
-            if config.daily_plan_enabled {
-                let live_view = crate::api::current_live_view(&state).await;
-                let scenarios = crate::api::current_scenarios(&state).await;
-                let telegram = state.telegram.read().await.clone();
+            let live_view = crate::api::current_live_view(&state).await;
+            let scenarios = crate::api::current_scenarios(&state).await;
+            let telegram = state.telegram.read().await.clone();
+            if weekend {
+                if config.weekend_brief_enabled {
+                    match telegram
+                        .send_weekend_brief(&live_view, &scenarios, &events, &report)
+                        .await
+                    {
+                        Ok(message_id) => info!(
+                            "🌙 [Weekend Brief 07:00] Đã gửi tin tức + đánh giá tuần tới (message_id={}).",
+                            message_id
+                        ),
+                        Err(err) => warn!("⚠️ Không gửi được weekend brief: {}", err),
+                    }
+                } else {
+                    info!("🌙 [Weekend Brief 07:00] Weekend brief đang tắt.");
+                }
+            } else if config.daily_plan_enabled {
                 match telegram
                     .send_daily_plan(&live_view, &scenarios, &events, &report)
                     .await

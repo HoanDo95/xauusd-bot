@@ -650,6 +650,24 @@ export const ConfigPanel: React.FC<Props> = ({
             không tiêu hao quota, không chèn tín hiệu và không tự vào lệnh.
           </p>
 
+          <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+            <input
+              type="checkbox"
+              checked={formData.weekend_brief_enabled ?? true}
+              onChange={(e) =>
+                setFormData({ ...formData, weekend_brief_enabled: e.target.checked })
+              }
+              className="accent-sky-500 w-4 h-4 rounded cursor-pointer"
+            />
+            <span className="font-semibold text-white">
+              Bật weekend brief 07:00 (Thứ Bảy/Chủ Nhật)
+            </span>
+          </label>
+          <p className="text-[11px] text-neutral-500 leading-relaxed -mt-2">
+            Cuối tuần chỉ gửi tin tức ảnh hưởng vàng + đánh giá tuần tới. Không gửi entry/SL/TP,
+            không trade signal, không action trigger alert.
+          </p>
+
           {/* Volume Delta / CVD (optional, default OFF) */}
           <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/5 p-4 flex flex-col gap-4">
             <div className="flex flex-wrap items-start justify-between gap-3">

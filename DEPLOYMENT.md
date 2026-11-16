@@ -564,3 +564,20 @@ back to TwelveData when `TWELVEDATA_API_KEY` is set, then Binance PAXG.
   confirmed trade signal.
 - If the Telegram token/chat is empty, the simulator returns `Ok(1001)` and logs
   that no message was sent; the scheduler continues normally.
+
+## 16f. Weekend mode (Saturday/Sunday, Vietnam time)
+
+- Gold is closed on Saturday/Sunday. A hard weekend gate runs independently of
+  `session_filter_enabled`: no trade signals, action-trigger alerts, divergence
+  alerts, session briefings or entry checks.
+- `/start` enables the scanner but sends only a short market-closed message;
+  `/view` and `/start-entry` reply market closed. `POST /api/ai/entry-check`
+  returns HTTP 503 with the weekend reason.
+- At **07:00 Sat/Sun**, the scheduler sends a weekend brief instead of the daily
+  plan: next week's High-Impact USD events from ForexFactory
+  `ff_calendar_nextweek.json`, macro/flow, D1/H4/H1 context, RSI, key S/R and a
+  weekly bias assessment. It contains no entry/SL/TP and is not a trade signal.
+- Toggle: `weekend_brief_enabled` (default true). `/api/health` exposes
+  `marketOpen=false` and `weekendBriefEnabled` on weekends.
+- The weekend news sync updates the news filter with next week's events so the
+  Monday session starts with the correct calendar.

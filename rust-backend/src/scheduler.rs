@@ -8,6 +8,7 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 const FOREX_FACTORY_CALENDAR_URL: &str = "https://nfs.faireconomy.media/ff_calendar_thisweek.json";
+const FOREX_FACTORY_NEXT_WEEK_URL: &str = "https://nfs.faireconomy.media/ff_calendar_nextweek.json";
 const OPENCODE_GO_API_BASE: &str = "https://opencode.ai/inference/go/openai/v1";
 const GEMINI_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 const OPENROUTER_API_BASE: &str = "https://openrouter.ai/api/v1";
@@ -303,6 +304,54 @@ impl DailyScheduler {
                     err.without_url()
                 );
                 Self::fallback_economic_events()
+            }
+        }
+    }
+
+    /// Đồng bộ lịch kinh tế tuần tới cho weekend brief. Không fallback lịch cũ;
+    /// trả rỗng nếu ForexFactory lỗi để brief ghi "chưa có tin".
+    pub async fn fetch_next_week_economic_events(&self) -> Vec<EconomicEvent> {
+        info!("📅 [Weekend Brief] Đang đồng bộ lịch tin tuần tới từ ForexFactory...");
+        match self
+            .http_client
+            .get(FOREX_FACTORY_NEXT_WEEK_URL)
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                match response.json::<serde_json::Value>().await {
+                    Ok(payload) => {
+                        let events = Self::parse_forexfactory_events(&payload);
+                        if events.is_empty() {
+                            warn!("⚠️ ForexFactory tuần tới không có sự kiện USD High/Medium.");
+                            Vec::new()
+                        } else {
+                            info!(
+                                "✅ Đã đồng bộ {} sự kiện USD tuần tới từ ForexFactory.",
+                                events.len()
+                            );
+                            events
+                        }
+                    }
+                    Err(err) => {
+                        warn!(
+                            "⚠️ Không parse được ForexFactory tuần tới ({}).",
+                            err.without_url()
+                        );
+                        Vec::new()
+                    }
+                }
+            }
+            Ok(response) => {
+                warn!("⚠️ ForexFactory tuần tới HTTP {}.", response.status());
+                Vec::new()
+            }
+            Err(err) => {
+                warn!(
+                    "⚠️ Không kết nối được ForexFactory tuần tới ({}).",
+                    err.without_url()
+                );
+                Vec::new()
             }
         }
     }

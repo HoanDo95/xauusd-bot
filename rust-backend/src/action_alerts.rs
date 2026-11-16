@@ -9,6 +9,7 @@
 use crate::api::{current_scenarios, AppState};
 use crate::models::{Candle, Timeframe};
 use crate::scenarios::{scenario_triggered, Scenario};
+use crate::storage::PersistentStore;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -116,6 +117,9 @@ pub fn spawn_action_trigger_worker(state: AppState) {
 
             let config = state.config.read().await.clone();
             if !config.action_trigger_alert_enabled || !config.is_active {
+                continue;
+            }
+            if PersistentStore::is_market_closed_weekend(Utc::now()) {
                 continue;
             }
 

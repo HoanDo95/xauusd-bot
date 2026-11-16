@@ -182,6 +182,14 @@ impl PersistentStore {
 
         (13..=23).contains(&(vietnam_now.hour() as i64))
     }
+
+    /// Hard weekend gate: XAU/USD is closed on Saturday/Sunday (Vietnam time),
+    /// regardless of `session_filter_enabled`. Used to suppress trade signals
+    /// and all entry/action alerts while keeping the weekend brief.
+    pub fn is_market_closed_weekend(now: DateTime<Utc>) -> bool {
+        let vietnam_now = now + Duration::hours(7);
+        matches!(vietnam_now.weekday(), Weekday::Sat | Weekday::Sun)
+    }
 }
 
 #[cfg(test)]
@@ -411,6 +419,22 @@ mod tests {
             at(2026, 11, 7, 12, 0),
             false
         ));
+    }
+
+    #[test]
+    fn test_weekend_market_gate_is_independent_of_session_filter() {
+        // Saturday 07/11/2026 12:00 UTC = 19:00 VN.
+        assert!(PersistentStore::is_market_closed_weekend(at(
+            2026, 11, 7, 12, 0
+        )));
+        // Sunday 08/11/2026 06:00 UTC = 13:00 VN.
+        assert!(PersistentStore::is_market_closed_weekend(at(
+            2026, 11, 8, 6, 0
+        )));
+        // Monday 09/11/2026 06:00 UTC = 13:00 VN.
+        assert!(!PersistentStore::is_market_closed_weekend(at(
+            2026, 11, 9, 6, 0
+        )));
     }
 
     #[test]

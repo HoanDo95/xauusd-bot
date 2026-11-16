@@ -139,7 +139,7 @@ async fn handle_update(
         "/start" => {
             let result = start_scanner_inner(state).await;
             let config_chat = config.telegram_chat_id.trim().parse::<i64>().ok();
-            if !result.telegram_sent || config_chat != Some(admin_chat) {
+            if !result.market_closed && (!result.telegram_sent || config_chat != Some(admin_chat)) {
                 if let Err(err) = notifier
                     .send_scenario_summary(&result.live_view, &result.scenarios)
                     .await
@@ -147,7 +147,9 @@ async fn handle_update(
                     warn!("⚠️ Telegram /start không gửi được scenario view: {}", err);
                 }
             }
-            let reply = if result.was_active {
+            let reply = if result.market_closed {
+                "🌙 Thị trường đóng cửa cuối tuần — không gửi entry/trade alert. Weekend brief sẽ gửi lúc 07:00."
+            } else if result.was_active {
                 "Scanner đã bật sẵn — đã gửi lại scenario view."
             } else {
                 "▶️ Scanner đã bật. Scenario view đã gửi."
@@ -170,6 +172,17 @@ async fn handle_update(
             }
         }
         "/view" => {
+            if PersistentStore::is_market_closed_weekend(Utc::now()) {
+                if let Err(err) = notifier
+                    .send_html_message(
+                        "🌙 Thị trường đóng cửa cuối tuần — không gửi entry/scenario. Weekend brief sẽ gửi lúc 07:00.",
+                    )
+                    .await
+                {
+                    warn!("⚠️ Telegram /view weekend reply lỗi: {}", err);
+                }
+                return;
+            }
             let live_view = current_live_view(state).await;
             let scenarios = current_scenarios(state).await;
             if let Err(err) = notifier.send_scenario_summary(&live_view, &scenarios).await {
@@ -187,6 +200,17 @@ async fn handle_update(
             }
         }
         "/start-entry" => {
+            if PersistentStore::is_market_closed_weekend(Utc::now()) {
+                if let Err(err) = notifier
+                    .send_html_message(
+                        "🌙 Thị trường đóng cửa cuối tuần — không có entry check. Weekend brief sẽ gửi lúc 07:00.",
+                    )
+                    .await
+                {
+                    warn!("⚠️ Telegram /start-entry weekend reply lỗi: {}", err);
+                }
+                return;
+            }
             if is_rate_limited_with(last_entry_check_at, chat_id, ENTRY_CHECK_RATE_LIMIT) {
                 info!(
                     "⏳ Telegram /start-entry bị giới hạn 30s cho chat {}.",
