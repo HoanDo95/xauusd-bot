@@ -154,6 +154,17 @@ impl PersistentStore {
                 .any(|signal| !signal.is_simulated && signal.dedup_key == dedup_key)
     }
 
+    /// True when a live signal already exists for this exact M15 candle.
+    ///
+    /// Scenario signals use a dedup key that contains the scenario id and
+    /// entry, so two rebuilds of the same candle can produce different keys.
+    /// The candle timestamp is the stable identity for "one signal per candle".
+    pub fn is_duplicate_candle_timestamp(signals: &[Signal], candle_timestamp: i64) -> bool {
+        signals
+            .iter()
+            .any(|signal| !signal.is_simulated && signal.candle_timestamp == candle_timestamp)
+    }
+
     /// Giữ tối đa 40 dedup key briefing gần nhất (mới nhất ở cuối, cắt từ đầu).
     pub fn prune_session_alerts(keys: &mut Vec<String>) {
         const MAX_SESSION_ALERTS: usize = 40;
@@ -350,6 +361,31 @@ mod tests {
         assert!(!PersistentStore::is_duplicate_candle(
             &signals,
             "XAU/USD_M15_1700000000000"
+        ));
+        assert!(!PersistentStore::is_duplicate_candle_timestamp(
+            &signals,
+            now.timestamp_millis()
+        ));
+    }
+
+    #[test]
+    fn test_candle_timestamp_dedup_blocks_different_scenario_keys() {
+        let now = at(2026, 11, 9, 12, 0);
+        let signals = vec![sample_signal(
+            "SIG-1",
+            now,
+            false,
+            "XAU/USD_M15_1700000000000_SCENARIO_bearish_breakdown_3850.21",
+        )];
+
+        // Cùng nến nhưng key khác (scenario/entry đổi) vẫn là trùng.
+        assert!(PersistentStore::is_duplicate_candle_timestamp(
+            &signals,
+            now.timestamp_millis()
+        ));
+        assert!(!PersistentStore::is_duplicate_candle_timestamp(
+            &signals,
+            now.timestamp_millis() + 1
         ));
     }
 

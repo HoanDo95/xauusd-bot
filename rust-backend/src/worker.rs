@@ -1,3 +1,4 @@
+use crate::action_alerts::candle_is_closed_and_fresh;
 use crate::ai_decision::{
     ai_decision_enabled, decision_blocks_or_approves, relaxed_candidate_config,
     review_market_decision,
@@ -11,15 +12,15 @@ use crate::market_feed::{
     volume_source_has_buy_sell_delta, MarketDataFeed, MarketFeedSnapshot,
     SOURCE_TWELVEDATA_YAHOO_VOLUME,
 };
-use crate::models::{BotConfig, Candle, EntryType, Signal, Timeframe};
+use crate::models::{BotConfig, Candle, Signal, Timeframe};
 use crate::news_filter::ImpactLevel;
 use crate::risk_guardrails::{
     buy_rsi_h1_block_reason, counter_macro_block_reason, evaluate_risk_guardrails,
 };
 use crate::risk_manager::PositionSizer;
 use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot};
-use crate::scenario_signal::{best_confirmed_scenario, signal_from_scenario};
-use crate::scenarios::{anti_chase_blocks_breakout, build_scenarios};
+use crate::scenario_signal::{best_confirmed_scenario, confirmed_signal_from_scenario};
+use crate::scenarios::{anti_chase_blocks_breakout, build_scenarios, ScenarioResponse};
 use crate::scheduler::DailyScheduler;
 use crate::session_alerts::evaluate_and_dispatch;
 use crate::signal_review::{review_blocks_signal, review_signal};
@@ -238,8 +239,21 @@ async fn build_confirmed_scenario_signal(
     candles: &[Candle],
     config: &BotConfig,
     live_price: Option<f64>,
-) -> Option<Signal> {
+) -> Option<(Signal, ScenarioResponse)> {
     let last_candle = candles.last()?;
+    let now = Utc::now();
+
+    // Only a freshly closed M15 candle may produce a full signal. Without this
+    // guard a delayed feed could emit a "confirmed" alert on a candle that
+    // closed many minutes ago, which is exactly the late-chase behaviour the
+    // two-level pipeline is meant to prevent.
+    if !candle_is_closed_and_fresh(
+        last_candle,
+        now.timestamp_millis(),
+        config.max_candle_age_secs,
+    ) {
+        return None;
+    }
 
     let rsi = rsi_snapshot(
         candles,
@@ -256,18 +270,24 @@ async fn build_confirmed_scenario_signal(
     let macro_flow = state.macro_flow.read().await.clone();
     let active_data_source = state.active_data_source.read().await.clone();
     let active_volume_source = state.active_volume_source.read().await.clone();
+
+    // Build the setup from the candles *before* the confirming candle. Using
+    // the confirming candle would move the trigger to the next support and the
+    // breakout we just saw would never match its own scenario.
+    let setup_candles = &candles[..candles.len().saturating_sub(1)];
+    let setup_price = setup_candles.last().map(|candle| candle.close);
     let scenarios = build_scenarios(
-        candles,
+        setup_candles,
         config,
-        live_price,
+        setup_price,
         context.as_ref(),
         macro_flow.as_ref(),
         &active_data_source,
         &active_volume_source,
-        Utc::now().timestamp_millis(),
+        now.timestamp_millis(),
     );
     let scenario = best_confirmed_scenario(&scenarios, last_candle)?;
-    let mut signal = signal_from_scenario(scenario, config, candles, live_price, Utc::now())?;
+    let signal = confirmed_signal_from_scenario(scenario, config, candles, live_price, now)?;
 
     if config.quantum_trigger_confirmation_enabled
         && !pending_confirmation_ok(
@@ -284,10 +304,6 @@ async fn build_confirmed_scenario_signal(
         return None;
     }
 
-    // The M15 close already confirmed the scenario; present the signal as a
-    // filled MARKET alert, not as a pending order.
-    signal.entry_type = EntryType::Market;
-    signal.is_entry_filled = true;
     info!(
         "🚨 [Confirmed Signal] Scenario {} ({}) confidence {}% — entry {:.2} MARKET sau M15 close {:.2}.",
         scenario.role,
@@ -296,7 +312,7 @@ async fn build_confirmed_scenario_signal(
         signal.entry_price,
         last_candle.close
     );
-    Some(signal)
+    Some((signal, scenarios))
 }
 
 /// Background Scanner 24/7 — quét mỗi 60 giây.
@@ -460,11 +476,7 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                 Some(candle) => candle.timestamp,
                 None => continue,
             };
-            let candle_dedup_key = format!(
-                "{}_{}_{}",
-                config.symbol, config.timeframe, latest_timestamp
-            );
-            if PersistentStore::is_duplicate_candle(&signals_snapshot, &candle_dedup_key) {
+            if PersistentStore::is_duplicate_candle_timestamp(&signals_snapshot, latest_timestamp) {
                 continue;
             }
 
@@ -485,9 +497,14 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                 live_price,
                 Utc::now().timestamp_millis(),
             );
+            let mut confirmed_scenarios: Option<ScenarioResponse> = None;
             if candidate.is_none() && decision_mode {
-                candidate =
-                    build_confirmed_scenario_signal(&state, &candles, &config, live_price).await;
+                if let Some((signal, scenarios)) =
+                    build_confirmed_scenario_signal(&state, &candles, &config, live_price).await
+                {
+                    candidate = Some(signal);
+                    confirmed_scenarios = Some(scenarios);
+                }
             }
 
             if let Some(mut signal) = candidate {
@@ -519,16 +536,20 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     let macro_flow = state.macro_flow.read().await.clone();
                     let active_data_source = state.active_data_source.read().await.clone();
                     let delta = compute_delta(&candles, config.volume_delta_lookback);
-                    let scenarios = build_scenarios(
-                        &candles,
-                        &config,
-                        live_price,
-                        context.as_ref(),
-                        macro_flow.as_ref(),
-                        &active_data_source,
-                        &active_volume_source,
-                        Utc::now().timestamp_millis(),
-                    );
+                    let scenarios = if let Some(scenarios) = confirmed_scenarios.take() {
+                        scenarios
+                    } else {
+                        build_scenarios(
+                            &candles,
+                            &config,
+                            live_price,
+                            context.as_ref(),
+                            macro_flow.as_ref(),
+                            &active_data_source,
+                            &active_volume_source,
+                            Utc::now().timestamp_millis(),
+                        )
+                    };
 
                     // Macro/flow alignment is advisory context for the AI and UI.
                     attach_macro_flow_alignment(&mut signal, macro_flow.as_ref());

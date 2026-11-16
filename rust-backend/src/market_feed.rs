@@ -1697,7 +1697,12 @@ fn twelve_cache_label(timeframe: Timeframe) -> &'static str {
 /// Tổng usage ~504 request/ngày, an toàn cho free tier 800/ngày.
 fn twelve_cache_ttl(label: &str) -> Duration {
     match label.trim().to_uppercase().as_str() {
-        "M15" => Duration::from_secs(300),
+        // The scanner needs the M15 candle that just closed. A 5-minute cache
+        // made every M15 close 3-5 minutes old, so the freshness gate rejected
+        // it and no confirmed signal / setup-watching alert could ever fire.
+        // 45s guarantees the 60s feed tick refetches on every pass while still
+        // staying well inside the free-tier budget (1 request/minute).
+        "M15" => Duration::from_secs(45),
         "H1" | "H4" => Duration::from_secs(900),
         "D1" => Duration::from_secs(3600),
         _ => Duration::from_secs(300),
@@ -2014,7 +2019,9 @@ mod tests {
 
     #[test]
     fn test_twelve_cache_ttl_matches_free_tier_budget() {
-        assert_eq!(twelve_cache_ttl("M15"), Duration::from_secs(300));
+        // M15 must expire before the next 60s feed tick, otherwise the freshly
+        // closed candle is served from cache and the freshness gate rejects it.
+        assert_eq!(twelve_cache_ttl("M15"), Duration::from_secs(45));
         assert_eq!(twelve_cache_ttl("H1"), Duration::from_secs(900));
         assert_eq!(twelve_cache_ttl("H4"), Duration::from_secs(900));
         assert_eq!(twelve_cache_ttl("D1"), Duration::from_secs(3600));

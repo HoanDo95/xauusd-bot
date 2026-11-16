@@ -1,10 +1,13 @@
-//! Read-only Action Trigger alerts for the PRIMARY reference scenario.
+//! Read-only SETUP WATCHING alerts for the PRIMARY reference scenario.
 //!
 //! The worker watches the latest closed M15 candle and sends one Telegram alert
-//! when the PRIMARY scenario's structured trigger is hit. It is intentionally
-//! independent from the trade-signal pipeline: it never inserts a signal,
-//! consumes the daily Sniper quota, persists trade state, calls the AI review or
-//! places an order. Dedup/cooldown state is kept in memory only.
+//! when price is close to the PRIMARY scenario's structured trigger but the
+//! candle has NOT confirmed it. The message contains only the zone, trigger and
+//! distance — never Entry/SL/TP/Lot. The confirmed full signal is owned by the
+//! scanner. This worker is intentionally independent from the trade-signal
+//! pipeline: it never inserts a signal, consumes the daily Sniper quota,
+//! persists trade state, calls the AI review or places an order. Dedup/cooldown
+//! state is kept in memory only.
 
 use crate::api::{current_scenarios, AppState};
 use crate::models::{Candle, Timeframe};
@@ -107,7 +110,7 @@ fn timeframe_millis(timeframe: Timeframe) -> i64 {
 pub fn spawn_action_trigger_worker(state: AppState) {
     tokio::spawn(async move {
         info!(
-            "🚨 [Action Trigger] Worker cảnh báo trigger kịch bản đã khởi chạy (chu kỳ {} giây)...",
+            "👀 [Setup Watching] Worker cảnh báo vùng theo dõi đã khởi chạy (chu kỳ {} giây)...",
             ACTION_TRIGGER_INTERVAL_SECS
         );
         let mut interval = tokio::time::interval(Duration::from_secs(ACTION_TRIGGER_INTERVAL_SECS));

@@ -225,6 +225,39 @@ pub fn signal_from_scenario(
     })
 }
 
+/// Convert a scenario confirmed by a closed M15 candle into a filled MARKET
+/// signal. The reference entry stays at the scenario trigger (the level a stop
+/// order would have filled at during the confirming candle), while the alert is
+/// only emitted after the close.
+pub fn confirmed_signal_from_scenario(
+    scenario: &Scenario,
+    config: &BotConfig,
+    candles: &[Candle],
+    live_price: Option<f64>,
+    now: DateTime<Utc>,
+) -> Option<Signal> {
+    let mut signal = signal_from_scenario(scenario, config, candles, live_price, now)?;
+    let last_candle = candles.last()?;
+
+    signal.entry_type = EntryType::Market;
+    signal.is_entry_filled = true;
+    signal.price_action_notes = format!(
+        "Kịch bản {} ({}) confidence {}% — M15 đã đóng cửa {:.2} xác nhận trigger {:.2}. Entry tham chiếu tại trigger.",
+        scenario.name,
+        scenario.role.trim().to_uppercase(),
+        scenario.confidence,
+        last_candle.close,
+        signal.entry_price
+    );
+    signal.macro_flow_note = Some(format!(
+        "Scenario {} · confidence {}% · M15 close {:.2} đã xác nhận trigger",
+        scenario.role.trim().to_uppercase(),
+        scenario.confidence,
+        last_candle.close
+    ));
+    Some(signal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +373,37 @@ mod tests {
             best_confirmed_scenario(&response, &triggered).map(|scenario| scenario.id.as_str()),
             Some("bearish_breakdown")
         );
+    }
+
+    #[test]
+    fn confirmed_signal_is_market_filled_and_notes_confirmation() {
+        let scenario = scenario(
+            "bearish_breakdown",
+            "PRIMARY",
+            "BEARISH",
+            69,
+            3880.0,
+            3895.0,
+            3850.0,
+            3835.0,
+            "BELOW",
+        );
+        let candles = vec![candle(1, 3890.0), candle(2, 3879.0)];
+
+        let signal = confirmed_signal_from_scenario(
+            &scenario,
+            &config(),
+            &candles,
+            Some(3879.0),
+            Utc::now(),
+        )
+        .expect("confirmed signal");
+
+        assert_eq!(signal.entry_type, EntryType::Market);
+        assert!(signal.is_entry_filled);
+        assert_eq!(signal.entry_price, 3880.0);
+        assert!(signal.price_action_notes.contains("xác nhận trigger"));
+        assert!(!signal.price_action_notes.contains("chưa xác nhận"));
     }
 
     #[test]
