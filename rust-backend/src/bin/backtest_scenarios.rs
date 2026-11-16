@@ -129,6 +129,7 @@ struct Args {
     limit_days: Option<usize>,
     cache_path: PathBuf,
     csv_path: Option<PathBuf>,
+    cost_r: f64,
     out_json: PathBuf,
     out_md: PathBuf,
 }
@@ -143,6 +144,7 @@ impl Default for Args {
             limit_days: None,
             cache_path: manifest_dir.join("data/backtest/PAXGUSDT_M15.jsonl"),
             csv_path: None,
+            cost_r: 0.0,
             out_json: manifest_dir.join("report_scenarios.json"),
             out_md: manifest_dir.join("report_scenarios.md"),
         }
@@ -160,6 +162,7 @@ fn print_usage() {
            --symbol <SYMBOL>       Binance symbol (default: PAXGUSDT)\n\
            --cache <PATH>          JSONL candle cache path\n\
            --csv <PATH>            Read M15 CSV (timestamp,open,high,low,close,volume) instead of Binance\n\
+           --cost-r <R>            Subtract R cost per trade (default: 0.0)\n\
            --out-json <PATH>       JSON report path (default: rust-backend/report_scenarios.json)\n\
            --out-md <PATH>         Markdown report path (default: rust-backend/report_scenarios.md)\n\
            --help                  Show this help\n\
@@ -215,6 +218,18 @@ fn parse_args() -> Result<Args> {
             }
             "--csv" => {
                 args.csv_path = Some(PathBuf::from(require_value(&mut iter, &flag)?));
+            }
+            "--cost-r" => {
+                let value = require_value(&mut iter, &flag)?;
+                args.cost_r = value
+                    .trim()
+                    .parse::<f64>()
+                    .map_err(|_| AppError::Message(format!("invalid --cost-r: {value}")))?;
+                if !args.cost_r.is_finite() || args.cost_r < 0.0 {
+                    return Err(AppError::Message(
+                        "--cost-r must be finite and >= 0".to_string(),
+                    ));
+                }
             }
             "--out-json" => {
                 args.out_json = PathBuf::from(require_value(&mut iter, &flag)?);
@@ -1503,6 +1518,7 @@ struct Report {
     period: PeriodInfo,
     data: DataInfo,
     config: ConfigInfo,
+    cost_r: f64,
     fill_model: FillModelInfo,
     assumptions: Vec<String>,
     comparison: Vec<ComparisonRow>,
@@ -1517,7 +1533,7 @@ fn assumptions() -> Vec<String> {
         "TOUCH/LIMIT entries require the scenario entry level to trade in the next 8 closed M15 bars after the trigger; if it never trades, the trade is skipped.".to_string(),
         "BREAKOUT entries fill at the scenario entry level; if the trigger candle opens beyond the level, they fill at the candle open only when slippage is <= 0.5R, otherwise they are skipped.".to_string(),
         "Forward simulation starts on the M15 candle after the fill candle; the fill candle itself is not evaluated for SL/TP.".to_string(),
-        "No spread, commission, news filter or general slippage is modeled; only the breakout gap rule above is applied.".to_string(),
+        "No news filter or general slippage is modeled; --cost-r subtracts a fixed R cost per trade, and only the breakout gap rule above is applied.".to_string(),
         "Headline exit is TP1; TP2-before-SL is a separate hypothetical runner that ignores the TP1 exit.".to_string(),
         "If SL and TP print in the same M15 candle, SL wins (conservative).".to_string(),
         "Win rate = TP1 wins / all simulated trades; timeouts are neither wins nor losses. Profit factor and avg R include timeout exits.".to_string(),
@@ -1620,6 +1636,12 @@ fn render_markdown(report: &Report) -> String {
     .expect("write to string");
     writeln!(output).expect("write to string");
     writeln!(output, "Command: `{}`", report.command).expect("write to string");
+    writeln!(
+        output,
+        "Cost assumption: **{:.2}R per trade** (already subtracted from all R metrics).",
+        report.cost_r
+    )
+    .expect("write to string");
     writeln!(output).expect("write to string");
 
     writeln!(output, "## Fill model").expect("write to string");
@@ -2158,6 +2180,7 @@ struct RunOptions {
     aligned_only: bool,
     buy_rsi_h1_guard: bool,
     bearish_rejection_enabled: bool,
+    cost_r: f64,
 }
 
 struct RunResult {
@@ -2363,7 +2386,7 @@ fn run_variant(
             risk_reward: round4(risk_reward),
             exit_reason: sim.exit_reason,
             exit_price: round2(sim.exit_price),
-            r_multiple: round4(sim.r_multiple),
+            r_multiple: round4(sim.r_multiple - options.cost_r),
             tp2_before_sl: sim.tp2_before_sl,
             bars_held: sim.bars_held,
             session,
@@ -2513,6 +2536,7 @@ async fn run() -> Result<()> {
                 aligned_only,
                 buy_rsi_h1_guard,
                 bearish_rejection_enabled,
+                cost_r: args.cost_r,
             },
         );
         variants.insert(
@@ -2588,6 +2612,7 @@ async fn run() -> Result<()> {
             fetch_requests,
         },
         config: config_info(&base_config),
+        cost_r: args.cost_r,
         fill_model: fill_model_info(),
         assumptions: assumptions(),
         comparison,
