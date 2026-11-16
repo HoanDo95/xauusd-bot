@@ -707,10 +707,13 @@ TAG=<old-sha> docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up
 - Rotate the `@BotFather` token immediately if it was ever exposed (logs, chat,
   screenshot, public repo), then update it in the dashboard **and**
   `rust-backend/.env`.
-- The dashboard is intended for **Tailscale-only** access; Tailscale remains the
-  perimeter. Optional HTTP Basic auth is built in: set `DASHBOARD_USER` and
-  `DASHBOARD_PASSWORD` in the compose `.env` and restart `web`. Health and
-  TradingView webhook paths stay exempt (webhooks use the passphrase).
+- The dashboard is **Tailscale-only** by default; Tailscale remains the
+  perimeter. For remote machines outside the tailnet, enable **Tailscale
+  Funnel** (`tailscale funnel --bg 3000`) and keep Basic auth on: set
+  `DASHBOARD_USER` and `DASHBOARD_PASSWORD` in the compose `.env` and restart
+  `web`. Funnel is public, so use a long password and a non-empty
+  `WEBHOOK_PASSPHRASE`. Health and TradingView webhook paths stay exempt
+  (webhooks use the passphrase).
 - CI runs only on `push`/manual dispatch. Do not run fork/PR code on the
   self-hosted runner: it has Docker access and can read the deploy directory.
 - The persistent state file is written with `0600` permissions on Unix, and

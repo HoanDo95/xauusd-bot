@@ -166,12 +166,35 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d d
 Then open `http://xauusd-bot:8081` inside the tailnet.
 Dozzle mounts the Docker socket read-only; keep it tailnet-only.
 
-## 10. Tailscale Serve
+## 10. Tailscale Serve / Funnel
 
 The host Tailscale Serve proxies `https://xauusd-bot.tailec308e.ts.net/` →
-`http://127.0.0.1:3000` (the `web` container). It is tailnet-only, no public
-exposure. If you later need a public TradingView webhook, enable Tailscale
-Funnel explicitly or put Cloudflare Tunnel in front.
+`http://127.0.0.1:3000` (the `web` container). By default it is tailnet-only.
+
+For remote access from a machine outside the tailnet, enable **Tailscale
+Funnel** and keep Basic auth on:
+
+```bash
+# On the server
+tailscale funnel --bg 3000
+tailscale funnel status
+
+# Disable public exposure again
+tailscale funnel --https=443 off
+```
+
+Funnel publishes the same HTTPS URL to the internet; it does **not** open a
+router port. Always set `DASHBOARD_USER`/`DASHBOARD_PASSWORD` in
+`/home/jason/xauusd-bot/.env` before enabling Funnel, and set a strong
+`WEBHOOK_PASSPHRASE` in `rust-backend/.env` because webhook paths are exempt
+from Basic auth. See section 13b for the auth setup.
+
+Verify from outside:
+
+```bash
+curl -I https://xauusd-bot.tailec308e.ts.net/                    # 401
+curl -u operator:<password> -I https://xauusd-bot.tailec308e.ts.net/  # 200
+```
 
 ## 11. CI on the self-hosted runner (current mode)
 
