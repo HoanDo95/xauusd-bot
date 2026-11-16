@@ -339,6 +339,11 @@ in **Sniper & Risk Config**, not in env.
 
 - Model: `AI_SIGNAL_REVIEW_MODEL` (default `gemini-4-argon`); base URL:
   `OPENCODE_GO_BASE_URL`; key: the existing `OPENCODE_GO_API_KEY`.
+- **429 resilience:** OpenCode Go may return 429 when the upstream Gemini TPM
+  quota is exhausted. The client retries twice with `Retry-After`/backoff, then
+  falls back to `AI_SIGNAL_REVIEW_FALLBACK_MODEL` (default
+  `deepseek-v4.1-flash`). Set it to `off` to disable the fallback. The model
+  actually used is stored in the decision/review `model` field.
 - **DECISION:** AI is the primary BUY/SELL/STANDBY layer. Candidate discovery
   relaxes `volume_filter_enabled` and `macro_bias` so AI can review setups the
   old soft filters rejected. After AI approval the HTF/Volume Delta/RSI soft
