@@ -1,10 +1,13 @@
 use crate::models::{BotConfig, SignalType};
 use crate::risk_manager::PositionSizeResult;
 
-/// Minimum allowed stop-loss distance in gold price points.
-const MIN_RISK_POINTS: f64 = 3.0;
-/// Maximum allowed stop-loss distance in gold price points.
-const MAX_RISK_POINTS: f64 = 45.0;
+/// Minimum allowed stop-loss distance as a percent of entry price.
+const MIN_RISK_PCT: f64 = 0.05;
+/// Maximum allowed stop-loss distance as a percent of entry price.
+const MAX_RISK_PCT: f64 = 1.50;
+/// Absolute floors preserve the original safety bounds at normal gold prices.
+const MIN_RISK_FLOOR: f64 = 3.0;
+const MAX_RISK_FLOOR: f64 = 45.0;
 /// TP2 must sit strictly beyond TP1 by more than one cent.
 const MIN_TP2_GAP: f64 = 0.01;
 /// Floating-point tolerance for the minimum R:R comparison.
@@ -14,7 +17,9 @@ const RR_EPSILON: f64 = 1e-9;
 ///
 /// Rules:
 /// - every price is finite and > 0;
-/// - `risk = |entry - stop_loss|` is within `3.0..=45.0`;
+/// - `risk = |entry - stop_loss|` is within
+///   `max(3.0, 0.05% of entry)..=max(45.0, 1.5% of entry)`, so the ceiling
+///   scales with the price level while the original safety floor stays;
 /// - BUY: `stop_loss < entry < tp1 < tp2`; SELL is the mirror image;
 /// - TP1 reward / risk is at least `min_risk_reward` (with 1e-9 epsilon);
 /// - TP2 reward is strictly greater than TP1 reward by more than $0.01.
@@ -38,9 +43,11 @@ pub fn validate_signal_levels(
     }
 
     let risk = (entry_price - stop_loss).abs();
-    if !(MIN_RISK_POINTS..=MAX_RISK_POINTS).contains(&risk) {
+    let min_risk = (entry_price * MIN_RISK_PCT / 100.0).max(MIN_RISK_FLOOR);
+    let max_risk = (entry_price * MAX_RISK_PCT / 100.0).max(MAX_RISK_FLOOR);
+    if !(min_risk..=max_risk).contains(&risk) {
         return Err(format!(
-            "risk distance must be within {MIN_RISK_POINTS:.1}..={MAX_RISK_POINTS:.1} (got {risk:.2})"
+            "risk distance must be within {min_risk:.2}..={max_risk:.2} (got {risk:.2})"
         ));
     }
 
@@ -200,17 +207,27 @@ mod tests {
 
     #[test]
     fn risk_distance_outside_bounds_is_rejected() {
-        // 2.99 points is below the 3.0 floor.
+        // At 2400 the bounds are 3.00..=45.00.
         let too_tight =
             validate_signal_levels(SignalType::Buy, 2400.0, 2397.01, 2420.0, 2430.0, 2.0)
                 .expect_err("risk below 3 points must fail");
         assert!(too_tight.contains("risk distance"));
 
-        // 45.01 points is above the 45.0 ceiling.
         let too_wide =
             validate_signal_levels(SignalType::Buy, 2400.0, 2354.99, 2420.0, 2430.0, 2.0)
                 .expect_err("risk above 45 points must fail");
         assert!(too_wide.contains("risk distance"));
+    }
+
+    #[test]
+    fn risk_bounds_scale_with_price_level() {
+        // 50 points is 1.25% at 4000 (inside) but 2.5% at 2000 (outside).
+        assert!(
+            validate_signal_levels(SignalType::Buy, 4000.0, 3950.0, 4100.0, 4150.0, 2.0).is_ok()
+        );
+        let err = validate_signal_levels(SignalType::Buy, 2000.0, 1950.0, 2100.0, 2150.0, 2.0)
+            .expect_err("50 points is too wide at 2000");
+        assert!(err.contains("risk distance"));
     }
 
     #[test]

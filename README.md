@@ -297,21 +297,36 @@ and trail by M15 structure. The bot still never places or modifies orders.
 | `counter_macro_filter_enabled` | `true` | Skip entries whose macro/flow alignment is `COUNTER` (backtest: -0.50R/trade) |
 | `bearish_rejection_enabled` | `false` | Enable the `bearish_rejection` scenario (backtest: -0.57R/trade) |
 | `min_rsi_h1_for_buy` | `30.0` | Block BUY entries when RSI H1 is below this value (0 = off; backtest <30: -0.32R) |
+| `htf_levels_enabled` | `true` | Merge H4/H1/D1 S/R into the scenario level set; a level confirmed by 2+ HTF timeframes is preferred for breakout/breakdown triggers |
+| `structural_sl_atr_cap` | `1.0` | Cap a breakout/breakdown structural stop at N × H4 ATR from the broken level (0 = off) |
 
 COUNTER-macro PRIMARY scenarios are no longer promoted: the ranking prefers an
 `ALIGNED` scenario for PRIMARY. If no aligned scenario exists, the counter
-scenario is shown as non-tradable and Action View returns `NO_TRADE`. These
-filters are based on a PAXG-proxy backtest without spread/commission and should
-be revalidated on true XAU/USD data.
+scenario is shown as non-tradable and Action View returns `NO_TRADE`.
+
+**Scenario geometry (2026-11-16):** the old scenario builder read S/R only from
+the M15 window, so a breakdown trigger could sit 18 points below the real H4
+support while carrying a 44-point stop (5.25× H4 ATR). The builder now merges
+M15 zones with H4/H1/D1 S/R and EMA levels, counts distinct HTF timeframes as
+confluence, and caps the structural stop. Example on the live 3855.55 market:
+breakdown trigger moved from 3837.09 / SL 3881.52 (risk 44.43) to 3851.15 /
+SL 3861.74 (risk 10.59). Cost-adjusted A/B (0.05R per trade): PAXG 2025
++0.037R → +0.110R; Dukascopy 2025 +0.096R → +0.141R; Dukascopy 2022–2023
+-0.043R → +0.031R. The 2022–2023 result is still not statistically
+significant (95% CI [-0.077, +0.140]); forward-testing remains required.
+
+These filters are based on backtests without a full spread/commission model and
+should be revalidated on true XAU/USD data.
 
 ### RSI context (Phase R1/R2)
 
 RSI is **advisory/context first**. The Rust engine computes Wilder RSI on
 closed candles and exposes it everywhere the bot makes or explains a decision:
 
-- `GET /api/context` returns `rsi_m15`, `rsi_h1` and `rsi_h4` snapshots
-  (`value`, `state`, `divergence`). The dashboard "View toàn cảnh" panel shows
-  M15/H1/H4 with Oversold/Overbought colouring and divergence badges.
+- `GET /api/context` returns `rsi_m15`, `rsi_h1`, `rsi_h4` and `rsi_d1`
+  snapshots (`value`, `state`, `divergence`). The dashboard "View toàn cảnh"
+  panel shows M15/H1/H4/D1 with Oversold/Overbought colouring and divergence
+  badges. The AI prompt also receives the D1 RSI line.
 - Every real signal carries `rsi_value`, `rsi_state` and `rsi_divergence`; they
   are shown in the signal modal and appended to Telegram alerts.
 - Both AI modes receive the RSI block plus the 3-layer rules (H4/H1

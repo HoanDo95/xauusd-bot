@@ -277,6 +277,7 @@ mod tests {
                 daily_change_pct: None,
                 rsi_h1: None,
                 rsi_h4: None,
+                rsi_d1: None,
             }),
             scenarios,
             warnings: vec![],

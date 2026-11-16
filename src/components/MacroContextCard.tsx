@@ -134,16 +134,18 @@ const RsiPanel: React.FC<{
   m15?: RsiSnapshot | null;
   h1?: RsiSnapshot | null;
   h4?: RsiSnapshot | null;
-}> = ({ m15, h1, h4 }) => (
+  d1?: RsiSnapshot | null;
+}> = ({ m15, h1, h4, d1 }) => (
   <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 px-3 py-2.5 flex flex-col gap-2">
     <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono">
       <span className="text-neutral-400 uppercase tracking-wider">📐 RSI Wilder (context)</span>
-      <span className="text-neutral-600">M15 trigger · H1/H4 fixed 70/30 · advisory</span>
+      <span className="text-neutral-600">M15 trigger · H1/H4/D1 fixed 70/30 · advisory</span>
     </div>
-    <div className="grid grid-cols-3 gap-2">
+    <div className="grid grid-cols-4 gap-2">
       <RsiCell label="M15" snapshot={m15} />
       <RsiCell label="H1" snapshot={h1} />
       <RsiCell label="H4" snapshot={h4} />
+      <RsiCell label="D1" snapshot={d1} />
     </div>
   </div>
 );
@@ -296,7 +298,12 @@ export const MacroContextCard: React.FC<Props> = ({ context, volumeDelta }) => {
 
       <DeltaBadge delta={volumeDelta} />
 
-      <RsiPanel m15={context.rsi_m15} h1={context.rsi_h1} h4={context.rsi_h4} />
+      <RsiPanel
+        m15={context.rsi_m15}
+        h1={context.rsi_h1}
+        h4={context.rsi_h4}
+        d1={context.rsi_d1}
+      />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <TimeframePanel context={context.d1} />

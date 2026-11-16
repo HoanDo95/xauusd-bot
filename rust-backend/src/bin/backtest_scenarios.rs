@@ -1478,6 +1478,8 @@ struct VariantConfig {
     aligned_only: bool,
     buy_rsi_h1_guard: bool,
     bearish_rejection_enabled: bool,
+    htf_levels_enabled: bool,
+    structural_sl_atr_cap: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2180,6 +2182,8 @@ struct RunOptions {
     aligned_only: bool,
     buy_rsi_h1_guard: bool,
     bearish_rejection_enabled: bool,
+    htf_levels_enabled: bool,
+    structural_sl_atr_cap: f64,
     cost_r: f64,
 }
 
@@ -2203,6 +2207,8 @@ fn run_variant(
         min_risk_reward: 2.0,
         anti_chase_filter_enabled: options.anti_chase_filter_enabled,
         bearish_rejection_enabled: options.bearish_rejection_enabled,
+        htf_levels_enabled: options.htf_levels_enabled,
+        structural_sl_atr_cap: options.structural_sl_atr_cap,
         min_rsi_h1_for_buy: if options.buy_rsi_h1_guard { 30.0 } else { 0.0 },
         early_entry_enabled: true,
         early_entry_min_confidence: 90,
@@ -2473,43 +2479,73 @@ async fn run() -> Result<()> {
     let variant_specs = [
         (
             "legacy",
-            "Anti-chase ON; bearish_rejection ON; no BUY RSI H1 guard; all valid PRIMARY.",
+            "M15-only levels; no SL cap; bearish_rejection ON; no BUY RSI H1 guard; all valid PRIMARY.",
             true,
             false,
             false,
             true,
+            false,
+            0.0,
+        ),
+        (
+            "htf_only",
+            "HTF-merged levels; no SL cap; bearish_rejection OFF; BUY RSI H1 guard ON.",
+            true,
+            false,
+            true,
+            false,
+            true,
+            0.0,
+        ),
+        (
+            "sl_cap_only",
+            "M15-only levels; SL cap 1×ATR; bearish_rejection OFF; BUY RSI H1 guard ON.",
+            true,
+            false,
+            true,
+            false,
+            false,
+            1.0,
         ),
         (
             "current",
-            "Anti-chase ON; bearish_rejection OFF; BUY RSI H1 guard ON; all valid PRIMARY.",
+            "HTF-merged levels; SL cap 1×ATR; bearish_rejection OFF; BUY RSI H1 guard ON.",
             true,
             false,
             true,
             false,
+            true,
+            1.0,
         ),
         (
             "anti_chase_off",
-            "Anti-chase OFF; bearish_rejection OFF; BUY RSI H1 guard ON; all valid PRIMARY.",
+            "HTF-merged levels; SL cap 1×ATR; anti-chase OFF; BUY RSI H1 guard ON.",
             false,
             false,
             true,
             false,
+            true,
+            1.0,
         ),
         (
             "aligned_only",
-            "Anti-chase ON; bearish_rejection OFF; BUY RSI H1 guard ON; skip COUNTER PRIMARY.",
+            "HTF-merged levels; SL cap 1×ATR; skip COUNTER PRIMARY.",
             true,
             true,
             true,
             false,
+            true,
+            1.0,
         ),
         (
             "aligned_only_no_anti_chase",
-            "Anti-chase OFF; bearish_rejection OFF; BUY RSI H1 guard ON; skip COUNTER PRIMARY.",
+            "HTF-merged levels; SL cap 1×ATR; skip COUNTER PRIMARY; anti-chase OFF.",
             false,
             true,
             true,
             false,
+            true,
+            1.0,
         ),
     ];
 
@@ -2521,6 +2557,8 @@ async fn run() -> Result<()> {
         aligned_only,
         buy_rsi_h1_guard,
         bearish_rejection_enabled,
+        htf_levels_enabled,
+        structural_sl_atr_cap,
     ) in variant_specs
     {
         println!("Running variant {name}...");
@@ -2536,6 +2574,8 @@ async fn run() -> Result<()> {
                 aligned_only,
                 buy_rsi_h1_guard,
                 bearish_rejection_enabled,
+                htf_levels_enabled,
+                structural_sl_atr_cap,
                 cost_r: args.cost_r,
             },
         );
@@ -2549,6 +2589,8 @@ async fn run() -> Result<()> {
                     aligned_only,
                     buy_rsi_h1_guard,
                     bearish_rejection_enabled,
+                    htf_levels_enabled,
+                    structural_sl_atr_cap,
                 },
                 funnel: result.funnel,
                 overall: result.overall,
@@ -2560,6 +2602,8 @@ async fn run() -> Result<()> {
 
     let comparison: Vec<ComparisonRow> = [
         "legacy",
+        "htf_only",
+        "sl_cap_only",
         "current",
         "anti_chase_off",
         "aligned_only",

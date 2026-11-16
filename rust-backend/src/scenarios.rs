@@ -1,14 +1,24 @@
 use crate::analyzer::GoldMarketAnalyzer;
 use crate::macro_flow::{align_signal_with_macro_flow, MacroFlowSnapshot};
 use crate::market_context::MarketContext;
-use crate::models::{BotConfig, Candle, EntryType, SignalType};
+use crate::models::{BotConfig, Candle, EntryType, SignalType, SupportResistanceZone};
 use crate::rsi::{rsi_snapshot, RsiDivergence};
 use crate::signal_validation::validate_signal_levels;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Cluster tolerance for the dynamic S/R zones used by the scenario view.
-const SR_CLUSTER_TOLERANCE: f64 = 2.5;
+/// Cluster tolerance floor for the dynamic S/R zones used by the scenario view.
+const SR_CLUSTER_TOLERANCE_MIN: f64 = 2.5;
+/// ATR-scaled cluster tolerance for M15 zones (fraction of H4 ATR).
+const SR_CLUSTER_ATR_FRACTION: f64 = 0.30;
+/// ATR-scaled merge tolerance when combining M15 zones with HTF levels.
+const HTF_MERGE_ATR_FRACTION: f64 = 0.50;
+/// Prefer an HTF-confirmed level only when it is within this many ATR of price.
+const HTF_PREFERRED_WINDOW_ATR: f64 = 3.0;
+/// Proximity window for a limit setup at an HTF-confirmed level.
+const HTF_PROXIMITY_ATR: f64 = 3.0;
+/// Proximity window for a limit setup at a single-timeframe level.
+const SINGLE_LEVEL_PROXIMITY_ATR: f64 = 1.5;
 /// ATR floor so tiny M15 ranges do not collapse the scenario buffers.
 const MIN_ATR: f64 = 2.5;
 /// Minimum breakout buffer above/below a level.
@@ -113,6 +123,9 @@ pub struct ScenarioMarket {
     /// RSI H4 context, when available.
     #[serde(default)]
     pub rsi_h4: Option<f64>,
+    /// RSI D1 context, when available.
+    #[serde(default)]
+    pub rsi_d1: Option<f64>,
 }
 
 /// GET /api/scenarios response. Pure snapshot; no Telegram, quota or persistence.
@@ -231,11 +244,23 @@ pub fn build_scenarios(
         };
     };
 
-    let (support_levels, resistance_levels) = collect_levels(candles, config, price, context);
-    let nearest_support = support_levels.first().copied();
-    let nearest_resistance = resistance_levels.first().copied();
-
     let atr = effective_atr(candles, context);
+    let (support_set, resistance_set) = collect_levels(candles, config, price, atr, context);
+    // Momentum setups use the confluence-preferred level; limit setups use the
+    // nearest level so a bounce/rejection is not forced to wait 2-3 ATR.
+    let nearest_support = support_set.nearest.map(|level| level.price);
+    let nearest_resistance = resistance_set.nearest.map(|level| level.price);
+    let bounce_support = support_set.nearest_overall.map(|level| level.price);
+    let bounce_support_confluence = support_set
+        .nearest_overall
+        .map(|level| level.htf_confluence)
+        .unwrap_or(0);
+    let rejection_resistance = resistance_set.nearest_overall.map(|level| level.price);
+    let rejection_resistance_confluence = resistance_set
+        .nearest_overall
+        .map(|level| level.htf_confluence)
+        .unwrap_or(0);
+
     let breakout_buffer = (atr * 0.25).max(BREAKOUT_BUFFER_MIN);
     let sl_buffer = (atr * 0.50).max(SL_BUFFER_MIN);
     let swing_high = recent_swing_high(candles, STRUCTURE_LOOKBACK);
@@ -277,6 +302,9 @@ pub fn build_scenarios(
         rsi_h4: context
             .and_then(|context| context.rsi_h4.as_ref())
             .and_then(|snapshot| snapshot.value),
+        rsi_d1: context
+            .and_then(|context| context.rsi_d1.as_ref())
+            .and_then(|snapshot| snapshot.value),
     };
 
     let inputs = ScenarioInputs {
@@ -305,9 +333,10 @@ pub fn build_scenarios(
             breakout_buffer,
             sl_buffer,
             nearest_resistance,
-            &resistance_levels,
+            &resistance_set.levels,
             config.min_risk_reward,
             swing_low,
+            config.structural_sl_atr_cap,
         ),
         bearish_breakdown_draft(
             price,
@@ -315,17 +344,19 @@ pub fn build_scenarios(
             breakout_buffer,
             sl_buffer,
             nearest_support,
-            &support_levels,
+            &support_set.levels,
             config.min_risk_reward,
             swing_high,
+            config.structural_sl_atr_cap,
         ),
         bullish_bounce_draft(
             price,
             atr,
             breakout_buffer,
             sl_buffer,
-            nearest_support,
+            bounce_support,
             nearest_resistance,
+            bounce_support_confluence,
             config.min_risk_reward,
         ),
         bearish_rejection_draft(
@@ -334,7 +365,8 @@ pub fn build_scenarios(
             breakout_buffer,
             sl_buffer,
             nearest_support,
-            nearest_resistance,
+            rejection_resistance,
+            rejection_resistance_confluence,
             config.min_risk_reward,
         ),
     ];
@@ -414,6 +446,7 @@ fn bullish_breakout_draft(
     resistance_levels: &[f64],
     min_risk_reward: f64,
     swing_low: Option<f64>,
+    sl_cap_atr: f64,
 ) -> ScenarioDraft {
     let trigger = round2(
         nearest_resistance
@@ -425,9 +458,15 @@ fn bullish_breakout_draft(
             .map(|level| level - sl_buffer)
             .unwrap_or(trigger - 2.0 * atr),
     );
+    let cap = nearest_resistance
+        .filter(|_| sl_cap_atr > 0.0)
+        .map(|level| level - atr * sl_cap_atr);
     let stop_loss = swing_low
         .map(|low| round2(low - structural_buffer(atr)))
-        .map(|structural| structural.min(atr_stop_loss))
+        .map(|structural| {
+            let capped = cap.map_or(structural, |cap| structural.max(cap));
+            round2(capped.min(atr_stop_loss))
+        })
         .unwrap_or(atr_stop_loss);
     let risk = (trigger - stop_loss).abs();
     let tp1_reward = min_tp1_reward(risk, min_risk_reward);
@@ -489,6 +528,7 @@ fn bearish_breakdown_draft(
     support_levels: &[f64],
     min_risk_reward: f64,
     swing_high: Option<f64>,
+    sl_cap_atr: f64,
 ) -> ScenarioDraft {
     let trigger = round2(
         nearest_support
@@ -500,9 +540,15 @@ fn bearish_breakdown_draft(
             .map(|level| level + sl_buffer)
             .unwrap_or(trigger + 2.0 * atr),
     );
+    let cap = nearest_support
+        .filter(|_| sl_cap_atr > 0.0)
+        .map(|level| level + atr * sl_cap_atr);
     let stop_loss = swing_high
         .map(|high| round2(high + structural_buffer(atr)))
-        .map(|structural| structural.max(atr_stop_loss))
+        .map(|structural| {
+            let capped = cap.map_or(structural, |cap| structural.min(cap));
+            round2(capped.max(atr_stop_loss))
+        })
         .unwrap_or(atr_stop_loss);
     let risk = (stop_loss - trigger).abs();
     let tp1_reward = min_tp1_reward(risk, min_risk_reward);
@@ -554,6 +600,7 @@ fn bearish_breakdown_draft(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn bullish_bounce_draft(
     price: f64,
     atr: f64,
@@ -561,6 +608,7 @@ fn bullish_bounce_draft(
     sl_buffer: f64,
     nearest_support: Option<f64>,
     nearest_resistance: Option<f64>,
+    support_confluence: u8,
     min_risk_reward: f64,
 ) -> ScenarioDraft {
     let Some(support) = nearest_support else {
@@ -580,7 +628,12 @@ fn bullish_bounce_draft(
     };
 
     let distance = (price - support).abs();
-    if distance > atr * 1.5 {
+    let max_distance = if support_confluence >= 2 {
+        atr * HTF_PROXIMITY_ATR
+    } else {
+        atr * SINGLE_LEVEL_PROXIMITY_ATR
+    };
+    if distance > max_distance {
         return ScenarioDraft {
             id: "bullish_bounce",
             name: "Bullish bounce",
@@ -596,9 +649,10 @@ fn bullish_bounce_draft(
             trigger_price: None,
             trigger_direction: "NONE",
             notes: vec![format!(
-                "Hỗ trợ gần nhất quá xa ({:.2} > 1.5×ATR = {:.2}) — không đủ điều kiện.",
+                "Hỗ trợ gần nhất quá xa ({:.2} > {:.1}×ATR = {:.2}) — không đủ điều kiện.",
                 distance,
-                atr * 1.5
+                max_distance / atr,
+                max_distance
             )],
         };
     }
@@ -633,6 +687,7 @@ fn bullish_bounce_draft(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn bearish_rejection_draft(
     price: f64,
     atr: f64,
@@ -640,6 +695,7 @@ fn bearish_rejection_draft(
     sl_buffer: f64,
     nearest_support: Option<f64>,
     nearest_resistance: Option<f64>,
+    resistance_confluence: u8,
     min_risk_reward: f64,
 ) -> ScenarioDraft {
     let Some(resistance) = nearest_resistance else {
@@ -659,7 +715,12 @@ fn bearish_rejection_draft(
     };
 
     let distance = (resistance - price).abs();
-    if distance > atr * 1.5 {
+    let max_distance = if resistance_confluence >= 2 {
+        atr * HTF_PROXIMITY_ATR
+    } else {
+        atr * SINGLE_LEVEL_PROXIMITY_ATR
+    };
+    if distance > max_distance {
         return ScenarioDraft {
             id: "bearish_rejection",
             name: "Bearish rejection",
@@ -675,9 +736,10 @@ fn bearish_rejection_draft(
             trigger_price: None,
             trigger_direction: "NONE",
             notes: vec![format!(
-                "Kháng cự gần nhất quá xa ({:.2} > 1.5×ATR = {:.2}) — không đủ điều kiện.",
+                "Kháng cự gần nhất quá xa ({:.2} > {:.1}×ATR = {:.2}) — không đủ điều kiện.",
                 distance,
-                atr * 1.5
+                max_distance / atr,
+                max_distance
             )],
         };
     }
@@ -1153,26 +1215,158 @@ fn scenario_macro_alignment(bias: &str, macro_flow: Option<&MacroFlowSnapshot>) 
     align_signal_with_macro_flow(signal_type, macro_flow).alignment
 }
 
+/// One merged S/R level. `htf_confluence` counts how many distinct HTF
+/// timeframes (H1/H4/D1) confirm it; M15 zones do not add confluence.
+#[derive(Debug, Clone, Copy)]
+struct LevelPick {
+    price: f64,
+    htf_confluence: u8,
+}
+
+/// Merged level set for one side of price.
+struct LevelSet {
+    /// All merged prices, nearest first (supports descending, resistances ascending).
+    levels: Vec<f64>,
+    /// Confluence-preferred level used for breakout/breakdown triggers.
+    nearest: Option<LevelPick>,
+    /// Nearest level regardless of confluence, used for bounce/rejection limits.
+    nearest_overall: Option<LevelPick>,
+}
+
+const SOURCE_M15: u8 = 1 << 0;
+const SOURCE_H1: u8 = 1 << 1;
+const SOURCE_H4: u8 = 1 << 2;
+const SOURCE_D1: u8 = 1 << 3;
+
+#[derive(Debug, Clone, Copy)]
+struct LevelCandidate {
+    price: f64,
+    mask: u8,
+    priority: u8,
+}
+
 fn collect_levels(
     candles: &[Candle],
     config: &BotConfig,
     price: f64,
+    atr: f64,
     context: Option<&MarketContext>,
-) -> (Vec<f64>, Vec<f64>) {
-    let (supports, resistances) = GoldMarketAnalyzer::detect_dynamic_sr_zones(
-        candles,
-        config.lookback_period,
-        SR_CLUSTER_TOLERANCE,
-    );
+) -> (LevelSet, LevelSet) {
+    let m15_tolerance = if config.htf_levels_enabled {
+        (atr * SR_CLUSTER_ATR_FRACTION).max(SR_CLUSTER_TOLERANCE_MIN)
+    } else {
+        SR_CLUSTER_TOLERANCE_MIN
+    };
+    let (zones_support, zones_resistance) =
+        GoldMarketAnalyzer::detect_dynamic_sr_zones(candles, config.lookback_period, m15_tolerance);
 
-    let mut support_levels: Vec<f64> = supports
+    if !config.htf_levels_enabled {
+        return legacy_collect_levels(candles, &zones_support, &zones_resistance, price, context);
+    }
+
+    let mut candidates: Vec<LevelCandidate> = zones_support
+        .iter()
+        .chain(zones_resistance.iter())
+        .filter(|zone| zone.price.is_finite() && zone.price > 0.0)
+        .map(|zone| LevelCandidate {
+            price: zone.price,
+            mask: SOURCE_M15,
+            priority: 0,
+        })
+        .collect();
+
+    if let Some(context) = context {
+        for (timeframe, mask, priority) in [
+            (&context.h1, SOURCE_H1, 1u8),
+            (&context.h4, SOURCE_H4, 2u8),
+            (&context.d1, SOURCE_D1, 3u8),
+        ] {
+            for level in [
+                timeframe.nearest_support,
+                timeframe.nearest_resistance,
+                Some(timeframe.ema50),
+                Some(timeframe.ema200),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if level.is_finite() && level > 0.0 {
+                    candidates.push(LevelCandidate {
+                        price: level,
+                        mask,
+                        priority,
+                    });
+                }
+            }
+        }
+    }
+
+    let merge_tolerance = (atr * HTF_MERGE_ATR_FRACTION).max(SR_CLUSTER_TOLERANCE_MIN);
+    let mut merged = merge_level_candidates(candidates, merge_tolerance);
+
+    let start = candles.len().saturating_sub(SWING_FALLBACK_LOOKBACK);
+    if !merged.iter().any(|level| level.price < price) {
+        if let Some(level) = candles[start..]
+            .iter()
+            .map(|candle| candle.low)
+            .filter(|level| level.is_finite() && *level < price)
+            .max_by(f64::total_cmp)
+        {
+            merged.push(LevelPick {
+                price: level,
+                htf_confluence: 0,
+            });
+        }
+    }
+    if !merged.iter().any(|level| level.price > price) {
+        if let Some(level) = candles[start..]
+            .iter()
+            .map(|candle| candle.high)
+            .filter(|level| level.is_finite() && *level > price)
+            .min_by(f64::total_cmp)
+        {
+            merged.push(LevelPick {
+                price: level,
+                htf_confluence: 0,
+            });
+        }
+    }
+
+    let mut supports: Vec<LevelPick> = merged
+        .iter()
+        .copied()
+        .filter(|level| level.price < price)
+        .collect();
+    supports.sort_by(|left, right| right.price.total_cmp(&left.price));
+
+    let mut resistances: Vec<LevelPick> = merged
+        .iter()
+        .copied()
+        .filter(|level| level.price > price)
+        .collect();
+    resistances.sort_by(|left, right| left.price.total_cmp(&right.price));
+
+    (
+        build_level_set(&supports, price, atr),
+        build_level_set(&resistances, price, atr),
+    )
+}
+
+fn legacy_collect_levels(
+    candles: &[Candle],
+    zones_support: &[SupportResistanceZone],
+    zones_resistance: &[SupportResistanceZone],
+    price: f64,
+    context: Option<&MarketContext>,
+) -> (LevelSet, LevelSet) {
+    let mut support_levels: Vec<f64> = zones_support
         .iter()
         .map(|zone| zone.price)
         .filter(|level| level.is_finite() && *level < price)
         .collect();
     support_levels.sort_by(|left, right| right.total_cmp(left));
 
-    let mut resistance_levels: Vec<f64> = resistances
+    let mut resistance_levels: Vec<f64> = zones_resistance
         .iter()
         .map(|zone| zone.price)
         .filter(|level| level.is_finite() && *level > price)
@@ -1237,7 +1431,78 @@ fn collect_levels(
         resistance_levels = fallback;
     }
 
-    (support_levels, resistance_levels)
+    let support_nearest = support_levels.first().copied().map(|price| LevelPick {
+        price,
+        htf_confluence: 0,
+    });
+    let resistance_nearest = resistance_levels.first().copied().map(|price| LevelPick {
+        price,
+        htf_confluence: 0,
+    });
+
+    (
+        LevelSet {
+            levels: support_levels,
+            nearest: support_nearest,
+            nearest_overall: support_nearest,
+        },
+        LevelSet {
+            levels: resistance_levels,
+            nearest: resistance_nearest,
+            nearest_overall: resistance_nearest,
+        },
+    )
+}
+
+fn merge_level_candidates(mut candidates: Vec<LevelCandidate>, tolerance: f64) -> Vec<LevelPick> {
+    candidates.sort_by(|left, right| left.price.total_cmp(&right.price));
+    let mut clusters: Vec<Vec<LevelCandidate>> = Vec::new();
+    for candidate in candidates {
+        match clusters.last_mut() {
+            Some(cluster) if (candidate.price - cluster[0].price).abs() <= tolerance => {
+                cluster.push(candidate);
+            }
+            _ => clusters.push(vec![candidate]),
+        }
+    }
+
+    clusters
+        .into_iter()
+        .map(|cluster| {
+            let mask = cluster.iter().fold(0u8, |mask, level| mask | level.mask);
+            let best = cluster
+                .iter()
+                .max_by_key(|level| level.priority)
+                .copied()
+                .expect("cluster is non-empty");
+            LevelPick {
+                price: best.price,
+                htf_confluence: (mask & !SOURCE_M15).count_ones() as u8,
+            }
+        })
+        .collect()
+}
+
+fn build_level_set(levels: &[LevelPick], price: f64, atr: f64) -> LevelSet {
+    let window = atr * HTF_PREFERRED_WINDOW_ATR;
+    let in_window = |level: &LevelPick| (level.price - price).abs() <= window;
+    let nearest = levels
+        .iter()
+        .copied()
+        .find(|level| level.htf_confluence >= 2 && in_window(level))
+        .or_else(|| {
+            levels
+                .iter()
+                .copied()
+                .find(|level| level.htf_confluence >= 1 && in_window(level))
+        })
+        .or_else(|| levels.first().copied());
+
+    LevelSet {
+        levels: levels.iter().map(|level| level.price).collect(),
+        nearest,
+        nearest_overall: levels.first().copied(),
+    }
 }
 
 fn effective_atr(candles: &[Candle], context: Option<&MarketContext>) -> f64 {
@@ -1625,7 +1890,20 @@ mod tests {
     fn breakdown_sl_is_anchored_above_recent_swing_high() {
         let candles = zigzag_candles(60);
         let swing_high = recent_swing_high(&candles, STRUCTURE_LOOKBACK).expect("swing high");
-        let response = build(&candles, None);
+        let uncapped = BotConfig {
+            structural_sl_atr_cap: 0.0,
+            ..config()
+        };
+        let response = build_scenarios(
+            &candles,
+            &uncapped,
+            None,
+            None,
+            None,
+            "TEST",
+            "TEST_VOLUME",
+            BASE_TS,
+        );
         let breakdown = response
             .scenarios
             .iter()
@@ -1635,12 +1913,12 @@ mod tests {
         let stop_loss = breakdown.stop_loss.expect("stop loss");
         assert!(
             stop_loss >= swing_high,
-            "breakdown SL {stop_loss} must sit at/above swing high {swing_high}"
+            "uncapped breakdown SL {stop_loss} must sit at/above swing high {swing_high}"
         );
     }
 
     #[test]
-    fn breakdown_with_too_wide_structural_sl_is_invalid_not_tightened() {
+    fn breakdown_with_wide_structural_sl_is_capped() {
         let draft = bearish_breakdown_draft(
             2700.0,
             10.0,
@@ -1650,9 +1928,12 @@ mod tests {
             &[2670.0, 2660.0],
             2.0,
             Some(2800.0),
+            1.0,
         );
         let levels = draft.levels.expect("levels");
-        assert!(levels.stop_loss > 2800.0);
+        // entry 2677.5, cap 2690.0, raw structural stop 2803.0.
+        assert!(levels.stop_loss <= 2690.0);
+        assert!(levels.stop_loss >= 2685.0);
         assert!(validate_signal_levels(
             SignalType::Sell,
             levels.entry,
@@ -1661,7 +1942,85 @@ mod tests {
             levels.take_profit_2,
             2.0,
         )
-        .is_err());
+        .is_ok());
+    }
+
+    #[test]
+    fn htf_confluence_beats_a_nearer_single_level() {
+        let merged = merge_level_candidates(
+            vec![
+                LevelCandidate {
+                    price: 2690.0,
+                    mask: SOURCE_M15,
+                    priority: 0,
+                },
+                LevelCandidate {
+                    price: 2700.0,
+                    mask: SOURCE_H4,
+                    priority: 2,
+                },
+                LevelCandidate {
+                    price: 2700.5,
+                    mask: SOURCE_H1,
+                    priority: 1,
+                },
+            ],
+            2.5,
+        );
+        let mut resistances = merged;
+        resistances.sort_by(|left, right| left.price.total_cmp(&right.price));
+        let set = build_level_set(&resistances, 2684.0, 10.0);
+
+        assert_eq!(set.nearest.map(|level| level.price), Some(2700.0));
+        assert_eq!(set.nearest.map(|level| level.htf_confluence), Some(2));
+    }
+
+    #[test]
+    fn far_htf_level_does_not_override_a_near_m15_level() {
+        let merged = merge_level_candidates(
+            vec![
+                LevelCandidate {
+                    price: 2690.0,
+                    mask: SOURCE_M15,
+                    priority: 0,
+                },
+                LevelCandidate {
+                    price: 2750.0,
+                    mask: SOURCE_D1,
+                    priority: 3,
+                },
+            ],
+            2.5,
+        );
+        let mut resistances = merged;
+        resistances.sort_by(|left, right| left.price.total_cmp(&right.price));
+        let set = build_level_set(&resistances, 2684.0, 10.0);
+
+        assert_eq!(set.nearest.map(|level| level.price), Some(2690.0));
+        assert_eq!(set.nearest.map(|level| level.htf_confluence), Some(0));
+    }
+
+    #[test]
+    fn htf_merge_clusters_h4_and_h1_levels() {
+        let merged = merge_level_candidates(
+            vec![
+                LevelCandidate {
+                    price: 2700.0,
+                    mask: SOURCE_H4,
+                    priority: 2,
+                },
+                LevelCandidate {
+                    price: 2700.5,
+                    mask: SOURCE_H1,
+                    priority: 1,
+                },
+            ],
+            2.5,
+        );
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].price, 2700.0);
+        assert_eq!(merged[0].htf_confluence, 2);
     }
 
     #[test]

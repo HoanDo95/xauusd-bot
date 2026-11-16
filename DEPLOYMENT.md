@@ -380,8 +380,16 @@ in **Sniper & Risk Config**, not in env.
   skips COUNTER-macro entries; `bearish_rejection_enabled=false` disables the
   negative-expectancy rejection scenario; `min_rsi_h1_for_buy=30.0` blocks BUY
   entries in deep H1 oversold. COUNTER PRIMARY scenarios are replaced by an
-  ALIGNED scenario, or marked non-tradable if none exists. These values come
-  from the 2025 PAXG-proxy backtest and should be revalidated on XAU/USD data.
+  ALIGNED scenario, or marked non-tradable if none exists.
+- **Scenario geometry:** `htf_levels_enabled=true` merges H4/H1/D1 S/R and EMA
+  levels into the scenario level set; a level confirmed by 2+ HTF timeframes is
+  preferred for breakout/breakdown triggers. `structural_sl_atr_cap=1.0` caps a
+  breakout/breakdown structural stop at 1× H4 ATR from the broken level, so an
+  entry that has already travelled away from the swing cannot carry a 5× ATR
+  stop. `rsi_d1` is now part of `/api/context`, the dashboard RSI panel and the
+  AI prompt. Cost-adjusted A/B (0.05R): PAXG 2025 +0.037R → +0.110R, Dukascopy
+  2025 +0.096R → +0.141R, Dukascopy 2022–2023 -0.043R → +0.031R. These values
+  still need forward-testing and a full spread/commission model.
 - **VETO_ONLY:** AI may only approve, contradict or return `STANDBY`.
   `ai_signal_review_fail_open` (default `true`) applies only here; `false`
   makes it fail-closed.

@@ -178,8 +178,15 @@ fn format_rsi_block(candidate: &Signal, context: Option<&MarketContext>) -> Stri
         .and_then(|context| context.rsi_h4.as_ref())
         .map(format_rsi_value)
         .unwrap_or_else(|| "n/a".to_string());
+    let d1 = context
+        .and_then(|context| context.rsi_d1.as_ref())
+        .map(format_rsi_value)
+        .unwrap_or_else(|| "n/a".to_string());
 
-    format!("rsi_m15: {}\nrsi_h1: {}\nrsi_h4: {}", m15, h1, h4)
+    format!(
+        "rsi_m15: {}\nrsi_h1: {}\nrsi_h4: {}\nrsi_d1: {}",
+        m15, h1, h4, d1
+    )
 }
 
 pub(crate) fn format_metric_value(value: Option<f64>, decimals: usize) -> String {
@@ -1075,6 +1082,7 @@ mod tests {
         assert!(prompt.contains("rsi_m15: value=76.4 state=Overbought divergence=Bearish"));
         assert!(prompt.contains("rsi_h1: n/a"));
         assert!(prompt.contains("rsi_h4: n/a"));
+        assert!(prompt.contains("rsi_d1: n/a"));
         assert!(prompt.contains("SELL setup requires H4/H1 supply confluence"));
         assert!(prompt.contains("BUY is the mirror"));
         assert!(prompt.contains("Volume confirmation: absorption"));

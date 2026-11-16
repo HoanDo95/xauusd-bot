@@ -62,6 +62,8 @@ export interface MarketContext {
   rsi_h1?: RsiSnapshot | null;
   /** H4 RSI context (fixed 70/30 semantics). */
   rsi_h4?: RsiSnapshot | null;
+  /** D1 RSI context (fixed 70/30 semantics). */
+  rsi_d1?: RsiSnapshot | null;
 }
 
 /**
@@ -256,6 +258,7 @@ export interface ScenarioMarket {
   rsi_state: string;
   rsi_h1?: number | null;
   rsi_h4?: number | null;
+  rsi_d1?: number | null;
   daily_change_pct?: number | null;
   macro_bias: string;
   macro_confidence: number;
@@ -552,6 +555,10 @@ export interface BotConfig {
   bearish_rejection_enabled?: boolean;
   /** Minimum RSI H1 for BUY entries (0 = off). Default 30. */
   min_rsi_h1_for_buy?: number;
+  /** Merge H4/H1/D1 S/R levels into scenarios. Default true. */
+  htf_levels_enabled?: boolean;
+  /** Cap structural SL at N × ATR from the broken level (0 = off). Default 1.0. */
+  structural_sl_atr_cap?: number;
   /** Prefer the high-liquidity Vietnam session 13:00 – 23:00 (GMT+7). */
   session_filter_enabled: boolean;
   /** Send informational Telegram briefings before London/New York opens (Mon–Fri, DST-aware). */

@@ -502,9 +502,9 @@ export const ConfigPanel: React.FC<Props> = ({
             {/* Strategy filters from the 2025 backtest */}
             <div className="flex flex-col gap-2 md:col-span-2 xl:col-span-4 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
               <div className="text-xs font-bold uppercase tracking-wider text-amber-300">
-                🧪 Strategy filters (backtest 2025)
+                🧪 Strategy filters &amp; scenario geometry
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-3">
                 <label className="flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
@@ -564,10 +564,53 @@ export const ConfigPanel: React.FC<Props> = ({
                     0 = tắt · backtest &lt;30: -0.32R
                   </span>
                 </div>
+                <label className="flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={formData.htf_levels_enabled ?? true}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        htf_levels_enabled: e.target.checked,
+                      })
+                    }
+                    className="accent-amber-500 w-4 h-4 rounded cursor-pointer mt-0.5"
+                  />
+                  <span className="text-[11px] text-neutral-300 leading-snug">
+                    Merge H4/H1/D1 levels
+                    <span className="block text-[10px] text-neutral-500">
+                      Trigger sát cấu trúc chart hơn
+                    </span>
+                  </span>
+                </label>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-semibold text-neutral-400">
+                    SL cap (× ATR H4)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="3"
+                    step="0.25"
+                    value={formData.structural_sl_atr_cap ?? 1}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        structural_sl_atr_cap: Math.max(
+                          0,
+                          Math.min(3, parseFloat(e.target.value) || 0)
+                        ),
+                      })
+                    }
+                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-amber-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
+                  />
+                  <span className="text-[10px] text-neutral-500">0 = tắt · mặc định 1.0</span>
+                </div>
               </div>
               <p className="text-[11px] text-neutral-500">
-                Các filter này dựa trên backtest 2025 (PAXG proxy, chưa tính spread/commission).
-                Có thể tắt để tham khảo, nhưng nên giữ bật cho đến khi có backtest XAU/USD đầy đủ.
+                COUNTER/RSI filter dựa trên backtest 2025. Merge HTF + SL cap dùng để kéo trigger
+                về đúng H4/H1/D1 structure và chặn stop phình khi entry đã đi xa swing. Chạy lại
+                backtest trước khi đổi mặc định.
               </p>
             </div>
 

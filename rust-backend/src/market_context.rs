@@ -64,6 +64,9 @@ pub struct MarketContext {
     /// RSI H4 (context cố định 70/30).
     #[serde(default)]
     pub rsi_h4: Option<RsiSnapshot>,
+    /// RSI D1 (context cố định 70/30).
+    #[serde(default)]
+    pub rsi_d1: Option<RsiSnapshot>,
 }
 
 /// Dựng bối cảnh từ nến đã đóng của D1/H4/H1.
@@ -92,6 +95,14 @@ pub fn build_market_context(
         )),
         rsi_h4: Some(rsi_snapshot(
             h4,
+            RSI_CONTEXT_PERIOD,
+            RSI_CONTEXT_OVERBOUGHT,
+            RSI_CONTEXT_OVERSOLD,
+            RSI_CONTEXT_LOOKBACK,
+            RSI_CONTEXT_PIVOT_K,
+        )),
+        rsi_d1: Some(rsi_snapshot(
+            d1,
             RSI_CONTEXT_PERIOD,
             RSI_CONTEXT_OVERBOUGHT,
             RSI_CONTEXT_OVERSOLD,
@@ -450,6 +461,7 @@ mod tests {
             rsi_m15: None,
             rsi_h1: None,
             rsi_h4: None,
+            rsi_d1: None,
         }
     }
 
@@ -629,13 +641,15 @@ mod tests {
         assert!(context.rsi_m15.is_none());
         assert!(context.rsi_h1.is_some());
         assert!(context.rsi_h4.is_some());
+        assert!(context.rsi_d1.is_some());
     }
 
     #[test]
-    fn build_market_context_populates_h1_h4_rsi_with_enough_candles() {
+    fn build_market_context_populates_h1_h4_d1_rsi_with_enough_candles() {
+        let d1 = trend_candles(220, 2000.0, 1.0);
         let h4 = trend_candles(220, 2000.0, 1.0);
         let h1 = trend_candles(220, 2000.0, 1.0);
-        let context = build_market_context(&[], &h4, &h1, "BINANCE_PAXG", None);
+        let context = build_market_context(&d1, &h4, &h1, "BINANCE_PAXG", None);
 
         let h4_rsi = context.rsi_h4.expect("H4 RSI snapshot");
         assert_eq!(h4_rsi.value, Some(100.0));
@@ -644,13 +658,20 @@ mod tests {
         let h1_rsi = context.rsi_h1.expect("H1 RSI snapshot");
         assert_eq!(h1_rsi.value, Some(100.0));
         assert_eq!(h1_rsi.state, "Overbought");
+
+        let d1_rsi = context.rsi_d1.expect("D1 RSI snapshot");
+        assert_eq!(d1_rsi.value, Some(100.0));
+        assert_eq!(d1_rsi.state, "Overbought");
     }
 
     #[test]
     fn build_market_context_with_empty_candles_returns_neutral_rsi() {
         let context = build_market_context(&[], &[], &[], "BINANCE_PAXG", None);
 
-        for rsi in [context.rsi_h1, context.rsi_h4].into_iter().flatten() {
+        for rsi in [context.rsi_h1, context.rsi_h4, context.rsi_d1]
+            .into_iter()
+            .flatten()
+        {
             assert_eq!(rsi.value, None);
             assert_eq!(rsi.state, "Neutral");
         }
@@ -672,6 +693,7 @@ mod tests {
             "rsi_m15",
             "rsi_h1",
             "rsi_h4",
+            "rsi_d1",
         ] {
             assert!(payload.get(key).is_some(), "missing key: {}", key);
         }

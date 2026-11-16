@@ -216,9 +216,13 @@ fn format_rsi_block(rsi: Option<&RsiSnapshot>, context: Option<&MarketContext>) 
         .and_then(|context| context.rsi_h4.as_ref())
         .map(format_rsi_value)
         .unwrap_or_else(|| "n/a".to_string());
+    let d1 = context
+        .and_then(|context| context.rsi_d1.as_ref())
+        .map(format_rsi_value)
+        .unwrap_or_else(|| "n/a".to_string());
 
     format!(
-        "rsi_m15: {m15}\nrsi_h1: {h1}\nrsi_h4: {h4}\n\
+        "rsi_m15: {m15}\nrsi_h1: {h1}\nrsi_h4: {h4}\nrsi_d1: {d1}\n\
         RSI semantics: 70/30 means >=70 Overbought and <=30 Oversold. \
         It flags an extended move, not an automatic reversal; divergence is a warning, not an entry."
     )
@@ -777,6 +781,7 @@ mod tests {
                 daily_change_pct: None,
                 rsi_h1: None,
                 rsi_h4: None,
+                rsi_d1: None,
             }),
             scenarios: vec![
                 scenario("PRIMARY", true),
@@ -875,6 +880,7 @@ mod tests {
         assert!(prompt.contains("GLD="));
         assert!(prompt.contains("MMF="));
         assert!(prompt.contains("rsi_m15: value=76.4"));
+        assert!(prompt.contains("rsi_d1: value=n/a"));
         assert!(prompt.contains("70/30 means >=70 Overbought"));
         assert!(prompt.contains("delta=400.00"));
         assert!(prompt.contains("PAXG proxy caveat"));

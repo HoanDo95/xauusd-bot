@@ -88,6 +88,8 @@ const DEFAULT_CONFIG: BotConfig = {
   counter_macro_filter_enabled: true,
   bearish_rejection_enabled: false,
   min_rsi_h1_for_buy: 30.0,
+  htf_levels_enabled: true,
+  structural_sl_atr_cap: 1.0,
   session_filter_enabled: true,
   session_alerts_enabled: true,
   session_alert_lead_minutes: 60,

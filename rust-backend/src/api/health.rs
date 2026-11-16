@@ -109,6 +109,8 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "counterMacroFilterEnabled": config.counter_macro_filter_enabled,
         "bearishRejectionEnabled": config.bearish_rejection_enabled,
         "minRsiH1ForBuy": config.min_rsi_h1_for_buy,
+        "htfLevelsEnabled": config.htf_levels_enabled,
+        "structuralSlAtrCap": config.structural_sl_atr_cap,
         "sessionFilterEnabled": config.session_filter_enabled,
         "h4FilterEnabled": config.htf_h4_filter_enabled,
         "d1FilterEnabled": config.htf_d1_filter_enabled,

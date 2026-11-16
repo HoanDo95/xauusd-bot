@@ -156,11 +156,13 @@ const MarketStrip: React.FC<{ market: ScenarioMarket; currentPrice: number | nul
       hint={market.rsi_state || '—'}
     />
     <Metric
-      label="RSI H1 / H4"
+      label="RSI H1 / H4 / D1"
       value={`${
         typeof market.rsi_h1 === 'number' ? market.rsi_h1.toFixed(1) : '—'
-      } / ${typeof market.rsi_h4 === 'number' ? market.rsi_h4.toFixed(1) : '—'}`}
-      hint="H1 / H4 context"
+      } / ${typeof market.rsi_h4 === 'number' ? market.rsi_h4.toFixed(1) : '—'} / ${
+        typeof market.rsi_d1 === 'number' ? market.rsi_d1.toFixed(1) : '—'
+      }`}
+      hint="H1 / H4 / D1 context"
     />
     <Metric
       label="Macro"

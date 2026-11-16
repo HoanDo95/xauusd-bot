@@ -330,6 +330,14 @@ pub struct BotConfig {
     /// RSI H1 tối thiểu cho BUY entry (0 = tắt). Mặc định 30.
     #[serde(default = "default_min_rsi_h1_for_buy")]
     pub min_rsi_h1_for_buy: f64,
+    /// Merge H4/H1/D1 S/R levels vào kịch bản với confluence. Mặc định BẬT.
+    /// Tắt để quay lại hành vi M15-only cũ (dùng cho A/B backtest).
+    #[serde(default = "default_true")]
+    pub htf_levels_enabled: bool,
+    /// Giới hạn SL cấu trúc ở N × ATR tính từ level bị phá (0 = tắt).
+    /// Mặc định 1.0 — tránh stop phình 5×ATR khi entry đã đi xa khỏi swing.
+    #[serde(default = "default_structural_sl_atr_cap")]
+    pub structural_sl_atr_cap: f64,
     /// Bật bộ lọc khung giờ thanh khoản Âu-Mỹ 13:00-23:00 GMT+7
     #[serde(default = "default_session_filter_enabled")]
     pub session_filter_enabled: bool,
@@ -500,6 +508,10 @@ fn default_min_rsi_h1_for_buy() -> f64 {
     30.0
 }
 
+fn default_structural_sl_atr_cap() -> f64 {
+    1.0
+}
+
 fn default_entry_mode() -> String {
     "MARKET".to_string()
 }
@@ -633,6 +645,8 @@ impl Default for BotConfig {
             counter_macro_filter_enabled: true,
             bearish_rejection_enabled: false,
             min_rsi_h1_for_buy: default_min_rsi_h1_for_buy(),
+            htf_levels_enabled: true,
+            structural_sl_atr_cap: default_structural_sl_atr_cap(),
             session_filter_enabled: default_session_filter_enabled(),
             data_source: default_data_source(),
             webhook_passphrase: String::new(),
@@ -713,6 +727,7 @@ impl BotConfig {
         self.max_daily_loss_r = finite_or(self.max_daily_loss_r, 2.0).clamp(0.0, 20.0);
         self.same_direction_cooldown_minutes = self.same_direction_cooldown_minutes.clamp(0, 1440);
         self.min_rsi_h1_for_buy = finite_or(self.min_rsi_h1_for_buy, 30.0).clamp(0.0, 50.0);
+        self.structural_sl_atr_cap = finite_or(self.structural_sl_atr_cap, 1.0).clamp(0.0, 3.0);
         self.pre_news_buffer_minutes = self.pre_news_buffer_minutes.clamp(0, 120);
         self.post_news_buffer_minutes = self.post_news_buffer_minutes.clamp(0, 120);
 
@@ -907,6 +922,8 @@ mod tests {
         assert!(defaults.counter_macro_filter_enabled);
         assert!(!defaults.bearish_rejection_enabled);
         assert_eq!(defaults.min_rsi_h1_for_buy, 30.0);
+        assert!(defaults.htf_levels_enabled);
+        assert_eq!(defaults.structural_sl_atr_cap, 1.0);
 
         let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
         let object = value.as_object_mut().expect("config object");
@@ -914,6 +931,8 @@ mod tests {
             "counter_macro_filter_enabled",
             "bearish_rejection_enabled",
             "min_rsi_h1_for_buy",
+            "htf_levels_enabled",
+            "structural_sl_atr_cap",
         ] {
             object.remove(key);
         }
@@ -922,13 +941,17 @@ mod tests {
         assert!(config.counter_macro_filter_enabled);
         assert!(!config.bearish_rejection_enabled);
         assert_eq!(config.min_rsi_h1_for_buy, 30.0);
+        assert!(config.htf_levels_enabled);
+        assert_eq!(config.structural_sl_atr_cap, 1.0);
 
         let clamped = BotConfig {
             min_rsi_h1_for_buy: 99.0,
+            structural_sl_atr_cap: 9.0,
             ..BotConfig::default()
         }
         .sanitized();
         assert_eq!(clamped.min_rsi_h1_for_buy, 50.0);
+        assert_eq!(clamped.structural_sl_atr_cap, 3.0);
     }
 
     #[test]
