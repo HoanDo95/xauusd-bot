@@ -596,7 +596,7 @@ pub async fn review_market_decision(
     let prompt = build_decision_prompt(
         candidate, context, macro_flow, scenarios, rsi, delta, events, now, config,
     );
-    let content = post_ai_chat_completion(
+    let (content, model_used) = post_ai_chat_completion(
         &settings,
         "You are the Chief Market Analyst for an XAU/USD signal bot. Decide BUY, SELL or STANDBY from the supplied brief. Never invent prices or change live SL/TP. Return pure valid JSON only, with no markdown wrapping.",
         &prompt,
@@ -606,7 +606,7 @@ pub async fn review_market_decision(
     )
     .await?;
 
-    let decision = parse_decision_content(&content, "opencode_go", &settings.model);
+    let decision = parse_decision_content(&content, "opencode_go", &model_used);
     match decision.as_ref() {
         Some(decision) => info!(
             "🧠 [AI Decision] action={} confidence={:.2} scenario={} model={} macro_alignment={}",

@@ -14,6 +14,11 @@ const OPENCODE_GO_API_BASE: &str = "https://opencode.ai/inference/go/openai/v1";
 const DEFAULT_REVIEW_MODEL: &str = "gemini-4-argon";
 const OPENCODE_GO_USER_AGENT: &str = "xauusd-bot/1.0";
 const REVIEW_TIMEOUT_SECS: u64 = 20;
+/// Fallback when the primary model's upstream quota is exhausted (429).
+/// DeepSeek V4.1 Flash is cheap, supports JSON mode and is a different upstream
+/// from Gemini, so it keeps AI Decision / Entry Check usable during Gemini
+/// TPM/resource exhaustion.
+const DEFAULT_FALLBACK_MODEL: &str = "deepseek-v4.1-flash";
 /// Extra attempts when OpenCode Go returns HTTP 429 (rate limit).
 const AI_MAX_RATE_LIMIT_RETRIES: usize = 2;
 /// Fallback backoff per retry when the provider does not send Retry-After.
@@ -625,8 +630,28 @@ fn retry_after_delay(retry_after: Option<&str>, attempt: usize) -> StdDuration {
     StdDuration::from_secs(secs)
 }
 
+/// Resolve the fallback model. `None` when disabled or identical to primary.
+fn fallback_model(primary: &str, configured: Option<&str>) -> Option<String> {
+    let fallback = configured
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_FALLBACK_MODEL);
+    if matches!(
+        fallback.to_ascii_lowercase().as_str(),
+        "none" | "off" | "disabled"
+    ) || fallback == primary
+    {
+        None
+    } else {
+        Some(fallback.to_string())
+    }
+}
+
 /// Shared OpenCode Go chat-completion call used by both the veto-only review and
-/// the AI decision engine. Returns the raw assistant content, never the key.
+/// the AI decision engine. Returns `(assistant_content, model_used)`; never the
+/// key. On HTTP 429 the primary model is retried with a short backoff, then the
+/// fallback model is tried so an exhausted primary quota does not take AI
+/// Decision / Entry Check down.
 pub(crate) async fn post_ai_chat_completion(
     settings: &ReviewSettings,
     system_prompt: &str,
@@ -634,95 +659,122 @@ pub(crate) async fn post_ai_chat_completion(
     session_id: &str,
     temperature: f64,
     log_label: &str,
-) -> Option<String> {
+) -> Option<(String, String)> {
     let url = format!(
         "{}/chat/completions",
         settings.api_base.trim_end_matches('/')
     );
-    let payload = json!({
-        "model": settings.model,
-        "messages": [
-            { "role": "system", "content": system_prompt },
-            { "role": "user", "content": prompt }
-        ],
-        "response_format": { "type": "json_object" },
-        "temperature": temperature
-    });
 
     let client = Client::builder()
         .timeout(StdDuration::from_secs(REVIEW_TIMEOUT_SECS))
         .build()
         .unwrap_or_else(|_| Client::new());
 
-    for attempt in 0..=AI_MAX_RATE_LIMIT_RETRIES {
-        let request = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", settings.api_key))
-            .header("Content-Type", "application/json")
-            .header("User-Agent", OPENCODE_GO_USER_AGENT)
-            .header("x-opencode-session", session_id);
+    let mut models = vec![settings.model.clone()];
+    if let Some(fallback) = fallback_model(
+        &settings.model,
+        std::env::var("AI_SIGNAL_REVIEW_FALLBACK_MODEL")
+            .ok()
+            .as_deref(),
+    ) {
+        models.push(fallback);
+    }
 
-        let response = match request.json(&payload).send().await {
-            Ok(response) => response,
-            Err(err) => {
-                warn!(
-                    "⚠️ [{}] Không kết nối được OpenCode Go ({}).",
-                    log_label,
-                    err.without_url()
-                );
-                return None;
-            }
-        };
+    for (model_index, model) in models.iter().enumerate() {
+        let payload = json!({
+            "model": model,
+            "messages": [
+                { "role": "system", "content": system_prompt },
+                { "role": "user", "content": prompt }
+            ],
+            "response_format": { "type": "json_object" },
+            "temperature": temperature
+        });
 
-        let status = response.status();
-        if status.is_success() {
-            let body = match response.json::<Value>().await {
-                Ok(body) => body,
+        for attempt in 0..=AI_MAX_RATE_LIMIT_RETRIES {
+            let request = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", settings.api_key))
+                .header("Content-Type", "application/json")
+                .header("User-Agent", OPENCODE_GO_USER_AGENT)
+                .header("x-opencode-session", session_id);
+
+            let response = match request.json(&payload).send().await {
+                Ok(response) => response,
                 Err(err) => {
-                    warn!("⚠️ [{}] Response JSON lỗi: {}", log_label, err);
+                    warn!(
+                        "⚠️ [{}] Không kết nối được OpenCode Go ({}).",
+                        log_label,
+                        err.without_url()
+                    );
                     return None;
                 }
             };
 
-            let Some(content) = body["choices"][0]["message"]["content"].as_str() else {
-                warn!(
-                    "⚠️ [{}] Response thiếu choices[0].message.content.",
-                    log_label
-                );
-                return None;
-            };
+            let status = response.status();
+            if status.is_success() {
+                let body = match response.json::<Value>().await {
+                    Ok(body) => body,
+                    Err(err) => {
+                        warn!("⚠️ [{}] Response JSON lỗi: {}", log_label, err);
+                        return None;
+                    }
+                };
 
-            return Some(content.to_string());
-        }
+                let Some(content) = body["choices"][0]["message"]["content"].as_str() else {
+                    warn!(
+                        "⚠️ [{}] Response thiếu choices[0].message.content.",
+                        log_label
+                    );
+                    return None;
+                };
 
-        let retry_after = response
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        let body = response.text().await.unwrap_or_default();
-        let body_snippet: String = body.chars().take(300).collect();
-        warn!(
-            "⚠️ [{}] OpenCode Go trả HTTP {} (attempt {}/{}): {}",
-            log_label,
-            status,
-            attempt + 1,
-            AI_MAX_RATE_LIMIT_RETRIES + 1,
-            body_snippet
-        );
+                return Some((content.to_string(), model.clone()));
+            }
 
-        if status.as_u16() == 429 && attempt < AI_MAX_RATE_LIMIT_RETRIES {
-            let delay = retry_after_delay(retry_after.as_deref(), attempt);
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+            let body = response.text().await.unwrap_or_default();
+            let body_snippet: String = body.chars().take(300).collect();
             warn!(
-                "⏳ [{}] AI bị giới hạn tần suất — thử lại sau {}s.",
+                "⚠️ [{}] OpenCode Go trả HTTP {} (model {}, attempt {}/{}): {}",
                 log_label,
-                delay.as_secs()
+                status,
+                model,
+                attempt + 1,
+                AI_MAX_RATE_LIMIT_RETRIES + 1,
+                body_snippet
             );
-            tokio::time::sleep(delay).await;
-            continue;
+
+            if status.as_u16() == 429 && attempt < AI_MAX_RATE_LIMIT_RETRIES {
+                let delay = retry_after_delay(retry_after.as_deref(), attempt);
+                warn!(
+                    "⏳ [{}] AI bị giới hạn tần suất — thử lại sau {}s.",
+                    log_label,
+                    delay.as_secs()
+                );
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+
+            if status.as_u16() == 429 {
+                break;
+            }
+
+            return None;
         }
 
-        return None;
+        if model_index + 1 < models.len() {
+            warn!(
+                "🔁 [{}] {} bị 429 — chuyển sang model dự phòng {}.",
+                log_label,
+                model,
+                models[model_index + 1]
+            );
+        }
     }
 
     None
@@ -751,7 +803,7 @@ pub async fn review_signal(
 
     let now = Utc::now();
     let prompt = build_review_prompt(candidate, context, macro_flow, events, now);
-    let content = post_ai_chat_completion(
+    let (content, model_used) = post_ai_chat_completion(
         &settings,
         "You are the independent Chief Risk Officer for an XAU/USD signal bot. You can only approve, veto (STANDBY) or contradict a candidate. Return pure valid JSON only, with no markdown wrapping.",
         &prompt,
@@ -761,7 +813,7 @@ pub async fn review_signal(
     )
     .await?;
 
-    let mut review = parse_review_content(&content, "opencode_go", &settings.model);
+    let mut review = parse_review_content(&content, "opencode_go", &model_used);
     if let Some(review) = review.as_mut() {
         apply_candidate_rsi_fallback(review, candidate);
         apply_macro_flow_fallback(review, candidate, macro_flow);
@@ -795,6 +847,25 @@ mod tests {
         assert_eq!(
             retry_after_delay(Some("999"), 0),
             StdDuration::from_secs(60)
+        );
+    }
+
+    #[test]
+    fn fallback_model_skips_same_and_disabled() {
+        assert_eq!(
+            fallback_model("gemini-4-argon", None).as_deref(),
+            Some(DEFAULT_FALLBACK_MODEL)
+        );
+        assert_eq!(
+            fallback_model("gemini-4-argon", Some(" deepseek-v4.1-flash ")).as_deref(),
+            Some("deepseek-v4.1-flash")
+        );
+        assert!(fallback_model("deepseek-v4.1-flash", Some("deepseek-v4.1-flash")).is_none());
+        assert!(fallback_model("gemini-4-argon", Some("off")).is_none());
+        assert!(fallback_model("gemini-4-argon", Some("disabled")).is_none());
+        assert_eq!(
+            fallback_model("gemini-4-argon", Some("")).as_deref(),
+            Some(DEFAULT_FALLBACK_MODEL)
         );
     }
 
