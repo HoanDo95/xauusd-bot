@@ -99,6 +99,17 @@ pub fn signal_from_scenario(
     if risk_points <= 0.0 {
         return None;
     }
+    // Early entry is only useful while price is still close to the trigger.
+    // If the market has already moved more than `early_entry_max_distance_r`
+    // away, wait for a fresh scenario instead of creating a stale pending order.
+    let live = live_price
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(last_candle.close);
+    if config.early_entry_max_distance_r > 0.0
+        && (live - entry).abs() > risk_points * config.early_entry_max_distance_r
+    {
+        return None;
+    }
     let risk_reward_ratio = round2(reward_points_tp1 / risk_points);
     let sizing = PositionSizer::calculate_lot_size(
         config.account_balance,
@@ -345,8 +356,8 @@ mod tests {
             3835.0,
             "BELOW",
         );
-        let candles = vec![candle(1, 3900.0), candle(2, 3898.0)];
-        let signal = signal_from_scenario(&scenario, &config(), &candles, Some(3898.0), Utc::now())
+        let candles = vec![candle(1, 3890.0), candle(2, 3890.0)];
+        let signal = signal_from_scenario(&scenario, &config(), &candles, Some(3890.0), Utc::now())
             .expect("signal");
 
         assert_eq!(signal.signal_type, SignalType::Sell);
@@ -383,6 +394,27 @@ mod tests {
         .expect("signal");
         assert_eq!(signal.entry_type, EntryType::Limit);
         assert!(!signal.is_entry_filled);
+    }
+
+    #[test]
+    fn rejects_early_entry_when_price_is_far_from_trigger() {
+        let scenario = scenario(
+            "bearish_breakdown",
+            "PRIMARY",
+            "BEARISH",
+            90,
+            3880.0,
+            3895.0,
+            3850.0,
+            3835.0,
+            "BELOW",
+        );
+        let candles = vec![candle(1, 3900.0), candle(2, 3898.0)];
+        // risk 15; 1.0R cap = 15; distance 18 > 15 -> reject.
+        assert!(
+            signal_from_scenario(&scenario, &config(), &candles, Some(3898.0), Utc::now(),)
+                .is_none()
+        );
     }
 
     #[test]

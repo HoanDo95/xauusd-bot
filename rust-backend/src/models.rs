@@ -404,6 +404,10 @@ pub struct BotConfig {
     /// Entry vẫn là mức trigger của scenario (lệnh chờ), không phải market entry.
     #[serde(default = "default_early_entry_min_confidence")]
     pub early_entry_min_confidence: u8,
+    /// Khoảng cách tối đa từ giá live tới trigger, tính theo R, để được early entry.
+    /// 0 = tắt. Mặc định 1.0 — tránh tạo pending signal khi giá đã cách trigger quá xa.
+    #[serde(default = "default_early_entry_max_distance_r")]
+    pub early_entry_max_distance_r: f64,
     /// Chặn breakout/breakdown khi giá đã chạy quá biên độ ngày và RSI H1
     /// quá cực đoan (anti-chase). Mặc định BẬT.
     #[serde(default = "default_true")]
@@ -560,6 +564,10 @@ fn default_early_entry_min_confidence() -> u8 {
     90
 }
 
+fn default_early_entry_max_distance_r() -> f64 {
+    1.0
+}
+
 fn default_anti_chase_daily_change_pct() -> f64 {
     -2.0
 }
@@ -670,6 +678,7 @@ impl Default for BotConfig {
             ai_signal_review_fail_open: true,
             early_entry_enabled: true,
             early_entry_min_confidence: default_early_entry_min_confidence(),
+            early_entry_max_distance_r: default_early_entry_max_distance_r(),
             anti_chase_filter_enabled: true,
             anti_chase_daily_change_pct: default_anti_chase_daily_change_pct(),
             anti_chase_rsi_h1: default_anti_chase_rsi_h1(),
@@ -770,6 +779,8 @@ impl BotConfig {
         self.ai_signal_review_min_confidence =
             finite_or(self.ai_signal_review_min_confidence, 0.75).clamp(0.5, 1.0);
         self.early_entry_min_confidence = self.early_entry_min_confidence.clamp(50, 100);
+        self.early_entry_max_distance_r =
+            finite_or(self.early_entry_max_distance_r, 1.0).clamp(0.0, 3.0);
         self.anti_chase_daily_change_pct =
             finite_or(self.anti_chase_daily_change_pct, -2.0).clamp(-10.0, -0.5);
         self.anti_chase_rsi_h1 = finite_or(self.anti_chase_rsi_h1, 25.0).clamp(10.0, 40.0);

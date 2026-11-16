@@ -594,6 +594,8 @@ export interface BotConfig {
   early_entry_enabled?: boolean;
   /** Minimum scenario confidence (50–100) for early approval. Default 90. */
   early_entry_min_confidence?: number;
+  /** Max distance from live price to trigger for early entry, in R (0 = off). Default 1.0. */
+  early_entry_max_distance_r?: number;
   /** Block breakout/breakdown entries after an exhausted daily move. Default true. */
   anti_chase_filter_enabled?: boolean;
   /** Daily change percent that activates anti-chase. Default -2.0. */

@@ -148,15 +148,25 @@ impl TelegramNotifier {
             .map(|price| format!("🔁 <b>Vùng Limit Retest:</b> <code>${:.2}</code>\n", price))
             .unwrap_or_default();
         let fill_line = match signal.entry_type {
-            EntryType::Limit | EntryType::Breakout => format!(
-                "{} <b>Trạng thái khớp:</b> {}\n",
-                if signal.is_entry_filled { "✅" } else { "⏳" },
-                if signal.is_entry_filled {
-                    "FILLED"
-                } else {
-                    "PENDING"
+            EntryType::Limit | EntryType::Breakout => {
+                let mut line = format!(
+                    "{} <b>Trạng thái khớp:</b> {}\n",
+                    if signal.is_entry_filled { "✅" } else { "⏳" },
+                    if signal.is_entry_filled {
+                        "FILLED"
+                    } else {
+                        "PENDING"
+                    }
+                );
+                if !signal.is_entry_filled {
+                    line.push_str(&format!(
+                        "⚠️ <b>PENDING</b> — chỉ khớp khi giá chạm <code>${:.2}</code>; \
+                         KHÔNG market sell/chase tại giá hiện tại.\n",
+                        signal.entry_price
+                    ));
                 }
-            ),
+                line
+            }
             EntryType::Market => String::new(),
         };
         let price_action = Self::escape_html(&signal.price_action_notes);
@@ -2040,6 +2050,7 @@ mod tests {
         assert!(message.contains("BINANCE_PAXG"));
         assert!(message.contains("Trạng thái khớp:"));
         assert!(message.contains("PENDING"));
+        assert!(message.contains("KHÔNG market sell/chase"));
         assert!(!message.contains("<script>"));
     }
 

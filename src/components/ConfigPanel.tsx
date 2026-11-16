@@ -1524,6 +1524,35 @@ export const ConfigPanel: React.FC<Props> = ({
                   />
                   <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">%</span>
                 </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-semibold text-neutral-400">
+                    Max distance to trigger (R)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="3"
+                    step="0.25"
+                    disabled={
+                      !formData.ai_signal_review_enabled ||
+                      !(formData.early_entry_enabled ?? true)
+                    }
+                    value={formData.early_entry_max_distance_r ?? 1}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        early_entry_max_distance_r: Math.max(
+                          0,
+                          Math.min(3, parseFloat(e.target.value) || 0)
+                        ),
+                      })
+                    }
+                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-indigo-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                  />
+                  <span className="text-[10px] text-neutral-500">
+                    0 = tắt · mặc định 1.0R — không tạo pending nếu giá đã cách trigger quá xa
+                  </span>
+                </div>
                 <span className="text-[11px] text-neutral-500">
                   AI được duyệt PRIMARY/ALTERNATE khi confidence ≥ ngưỡng, dù trigger M15 chưa in.
                   Entry vẫn là mức trigger (lệnh chờ), không chase giá.

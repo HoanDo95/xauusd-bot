@@ -28,6 +28,10 @@ fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
+/// Huỷ pending Limit/Breakout nếu giá đi xa entry hơn 1.5R trước khi khớp.
+/// Đây là lớp bảo vệ chống tín hiệu "stale" khi thị trường đã chạy khỏi trigger.
+const MAX_PENDING_DISTANCE_R: f64 = 1.5;
+
 /// Theo dõi các tín hiệu đang mở và cập nhật TP1/TP2/SL từ nến ĐÃ ĐÓNG CỬA.
 ///
 /// Quy tắc an toàn:
@@ -114,6 +118,26 @@ pub fn evaluate_active_signals(signals: &mut [Signal], candles: &[Candle]) -> Ve
                     changed = true;
                     // Bỏ qua cây nến khớp lệnh để tránh đánh giá TP/SL mơ hồ trong cùng nến.
                     continue;
+                }
+
+                // Stale pending: giá đã đi quá xa entry trước khi khớp.
+                // Ví dụ SELL 3851.15, risk 10.59: giá lên 3868+ (>1.5R) thì
+                // pending không còn là breakdown nữa, huỷ thay vì treo lệnh.
+                let risk = (signal.entry_price - signal.stop_loss).abs();
+                let adverse = match signal.signal_type {
+                    SignalType::Sell => (candle.high - signal.entry_price).max(0.0),
+                    SignalType::Buy => (signal.entry_price - candle.low).max(0.0),
+                };
+                if risk > 0.0 && adverse > risk * MAX_PENDING_DISTANCE_R {
+                    status = SignalStatus::Cancelled;
+                    signal.cancel_reason = Some(format!(
+                        "Giá đã đi xa entry {:.2} điểm (> {:.1}R = {:.2}) trước khi khớp — huỷ pending.",
+                        adverse,
+                        MAX_PENDING_DISTANCE_R,
+                        risk * MAX_PENDING_DISTANCE_R
+                    ));
+                    changed = true;
+                    break;
                 }
 
                 if idx + 1 >= MAX_FILL_CANDLES {
@@ -522,6 +546,74 @@ mod tests {
 
         assert!(!signals[0].is_entry_filled);
         assert_eq!(signals[0].status, SignalStatus::Cancelled);
+    }
+
+    #[test]
+    fn pending_sell_cancels_when_price_moves_more_than_1_5r_away() {
+        let mut signals = vec![signal(SignalType::Sell, 100.0, 110.0, 80.0, 70.0, 1)];
+        signals[0].entry_type = EntryType::Breakout;
+        signals[0].is_entry_filled = false;
+
+        // risk 10; 1.5R = 15. High 116 = adverse 16; low 100.5 > entry -> no fill.
+        let candles = vec![candle(2, 101.0, 116.0, 100.5, 115.0)];
+
+        evaluate_active_signals(&mut signals, &candles);
+
+        assert!(!signals[0].is_entry_filled);
+        assert_eq!(signals[0].status, SignalStatus::Cancelled);
+        assert!(signals[0]
+            .cancel_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("đi xa entry")));
+    }
+
+    #[test]
+    fn pending_sell_stays_active_when_price_is_within_1_5r() {
+        let mut signals = vec![signal(SignalType::Sell, 100.0, 110.0, 80.0, 70.0, 1)];
+        signals[0].entry_type = EntryType::Breakout;
+        signals[0].is_entry_filled = false;
+
+        // risk 10; 1.5R = 15. High 114 = adverse 14; low 100.5 > entry -> no fill.
+        let candles = vec![candle(2, 101.0, 114.0, 100.5, 113.0)];
+
+        evaluate_active_signals(&mut signals, &candles);
+
+        assert!(!signals[0].is_entry_filled);
+        assert_eq!(signals[0].status, SignalStatus::Active);
+    }
+
+    #[test]
+    fn pending_sell_fill_takes_precedence_over_stale_cancel() {
+        let mut signals = vec![signal(SignalType::Sell, 100.0, 110.0, 80.0, 70.0, 1)];
+        signals[0].entry_type = EntryType::Breakout;
+        signals[0].is_entry_filled = false;
+
+        // Low 99.5 <= entry -> fill; the high is far away but fill happens first.
+        let candles = vec![candle(2, 100.0, 116.0, 99.5, 105.0)];
+
+        evaluate_active_signals(&mut signals, &candles);
+
+        assert!(signals[0].is_entry_filled);
+        assert_eq!(signals[0].status, SignalStatus::Active);
+    }
+
+    #[test]
+    fn pending_buy_cancels_when_price_moves_more_than_1_5r_away() {
+        let mut signals = vec![signal(SignalType::Buy, 100.0, 90.0, 120.0, 130.0, 1)];
+        signals[0].entry_type = EntryType::Breakout;
+        signals[0].is_entry_filled = false;
+
+        // risk 10; 1.5R = 15. Low 84 = adverse 16; high 99.5 < entry -> no fill.
+        let candles = vec![candle(2, 99.0, 99.5, 84.0, 85.0)];
+
+        evaluate_active_signals(&mut signals, &candles);
+
+        assert!(!signals[0].is_entry_filled);
+        assert_eq!(signals[0].status, SignalStatus::Cancelled);
+        assert!(signals[0]
+            .cancel_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("đi xa entry")));
     }
 
     #[test]

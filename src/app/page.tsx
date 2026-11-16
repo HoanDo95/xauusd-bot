@@ -108,6 +108,7 @@ const DEFAULT_CONFIG: BotConfig = {
   ai_signal_review_fail_open: true,
   early_entry_enabled: true,
   early_entry_min_confidence: 90,
+  early_entry_max_distance_r: 1.0,
   anti_chase_filter_enabled: true,
   anti_chase_daily_change_pct: -2.0,
   anti_chase_rsi_h1: 25.0,
