@@ -774,7 +774,7 @@ export interface BotConfig {
   /** Minutes before session open to send the briefing (15–120). */
   session_alert_lead_minutes: number;
   /** Active free market data source. */
-  data_source?: 'BINANCE_PAXG' | 'TWELVEDATA' | 'OANDA';
+  data_source?: 'BINANCE_PAXG' | 'TWELVEDATA' | 'OANDA' | 'EXNESS';
   /** Entry strategy: immediate market fill, limit retest, or breakout. */
   entry_mode: EntryMode;
   /** Broker price offset in USD applied to candles and live price. */

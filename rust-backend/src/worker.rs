@@ -112,6 +112,7 @@ pub fn normalize_data_source(config: &mut BotConfig) {
     config.data_source = match config.data_source.trim().to_uppercase().as_str() {
         "TWELVEDATA" => "TWELVEDATA",
         "OANDA" => "OANDA",
+        "EXNESS" => "EXNESS",
         _ => "BINANCE_PAXG",
     }
     .to_string();

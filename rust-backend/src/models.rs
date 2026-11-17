@@ -861,6 +861,7 @@ impl BotConfig {
         self.data_source = match self.data_source.trim().to_uppercase().as_str() {
             "TWELVEDATA" => "TWELVEDATA",
             "OANDA" => "OANDA",
+            "EXNESS" => "EXNESS",
             _ => "BINANCE_PAXG",
         }
         .to_string();

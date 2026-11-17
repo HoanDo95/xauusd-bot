@@ -5,6 +5,7 @@ pub mod ai_decision;
 pub mod analyzer;
 pub mod api;
 pub mod divergence_alerts;
+pub mod exness_feed;
 pub mod macro_flow;
 pub mod market_context;
 pub mod market_feed;

@@ -683,12 +683,13 @@ export const ConfigPanel: React.FC<Props> = ({
               <select
                 value={formData.data_source ?? 'BINANCE_PAXG'}
                 onChange={(e) =>
-                  setFormData({ ...formData, data_source: e.target.value as 'BINANCE_PAXG' | 'TWELVEDATA' | 'OANDA' })
+                  setFormData({ ...formData, data_source: e.target.value as 'BINANCE_PAXG' | 'TWELVEDATA' | 'OANDA' | 'EXNESS' })
                 }
                 className="w-full bg-neutral-950 border border-neutral-800 focus:border-sky-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
               >
                 <option value="BINANCE_PAXG">Binance PAXG/USDT (OHLCV + proxy volume)</option>
                 <option value="TWELVEDATA">TwelveData XAU/USD + GC=F volume</option>
+                <option value="EXNESS">Exness MT5 XAUUSDm (broker feed)</option>
                 <option value="OANDA">OANDA XAU/USD + tick volume</option>
               </select>
               <label className="flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">

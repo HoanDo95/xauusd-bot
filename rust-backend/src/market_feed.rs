@@ -1,8 +1,13 @@
+use crate::exness_feed::{
+    exness_candles, load_exness_file, timeframe_label, DEFAULT_EXNESS_PATH, EXNESS_MAX_AGE_SECS,
+    SOURCE_EXNESS, VOLUME_SOURCE_EXNESS_TICK,
+};
 use crate::models::{Candle, Timeframe};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -81,6 +86,8 @@ pub struct MarketDataFeed {
     yahoo_futures_volume_config_enabled: Arc<AtomicBool>,
     yahoo_cache: YahooVolumeCache,
     yahoo_failures: Arc<tokio::sync::Mutex<YahooFailureState>>,
+    /// Read-only Exness MT5 JSON feed (`data/exness_bars.json`).
+    exness_path: PathBuf,
 }
 
 impl MarketDataFeed {
@@ -129,6 +136,10 @@ impl MarketDataFeed {
             yahoo_futures_volume_config_enabled: Arc::new(AtomicBool::new(true)),
             yahoo_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             yahoo_failures: Arc::new(tokio::sync::Mutex::new(YahooFailureState::default())),
+            exness_path: PathBuf::from(
+                std::env::var("EXNESS_BARS_PATH")
+                    .unwrap_or_else(|_| DEFAULT_EXNESS_PATH.to_string()),
+            ),
         }
     }
 
@@ -323,6 +334,17 @@ impl MarketDataFeed {
         limit: usize,
         source: &str,
     ) -> (Vec<Candle>, String) {
+        if source.trim().eq_ignore_ascii_case("EXNESS") {
+            if let Some(candles) =
+                self.exness_htf_candles(timeframe_label(timeframe), timeframe, limit)
+            {
+                return (candles, SOURCE_EXNESS.to_string());
+            }
+            warn!(
+                "⚠️ Exness HTF {} không khả dụng/cũ, fallback sang nguồn khác.",
+                timeframe
+            );
+        }
         let use_oanda = source.trim().eq_ignore_ascii_case("OANDA");
         if use_oanda && self.oanda_api_token.is_some() {
             if let Some(snapshot) = self.fetch_oanda_snapshot(timeframe, limit).await {
@@ -388,6 +410,12 @@ impl MarketDataFeed {
         limit: usize,
         source: &str,
     ) -> (Vec<Candle>, String) {
+        if source.trim().eq_ignore_ascii_case("EXNESS") {
+            if let Some(candles) = self.exness_htf_candles("D1", Timeframe::H4, limit) {
+                return (candles, SOURCE_EXNESS.to_string());
+            }
+            warn!("⚠️ Exness D1 không khả dụng/cũ, fallback sang nguồn khác.");
+        }
         let use_oanda = source.trim().eq_ignore_ascii_case("OANDA");
         if use_oanda && self.oanda_api_token.is_some() {
             if let Some(snapshot) = self.fetch_oanda_daily_snapshot(limit).await {
@@ -851,6 +879,71 @@ impl MarketDataFeed {
         Ok(candles)
     }
 
+    /// Build a snapshot from the read-only Exness MT5 JSON feed.
+    fn exness_snapshot(
+        &self,
+        timeframe: Timeframe,
+        limit: usize,
+        broker_price_offset: f64,
+    ) -> Option<MarketFeedSnapshot> {
+        let file = load_exness_file(&self.exness_path)?;
+        let now = Utc::now();
+        if !file.is_fresh(now, EXNESS_MAX_AGE_SECS) {
+            warn!(
+                "⚠️ [ExnessFeed] Dữ liệu cũ {}s (max {}s) — bỏ qua.",
+                file.age_secs(now).unwrap_or(i64::MAX),
+                EXNESS_MAX_AGE_SECS
+            );
+            return None;
+        }
+        let label = timeframe_label(timeframe);
+        let candles = exness_candles(&file, label, timeframe, limit);
+        if candles.is_empty() {
+            warn!("⚠️ [ExnessFeed] Không có nến {} trong file.", label);
+            return None;
+        }
+        let live_price = file
+            .tick
+            .as_ref()
+            .and_then(|tick| tick.mid())
+            .or_else(|| candles.last().map(|candle| candle.close));
+        let mut snapshot = MarketFeedSnapshot {
+            candles,
+            source: SOURCE_EXNESS.to_string(),
+            live_price,
+            volume_source: VOLUME_SOURCE_EXNESS_TICK.to_string(),
+        };
+        Self::apply_broker_offset(&mut snapshot, broker_price_offset);
+        info!(
+            "📡 [MarketFeed] Exness {} {}: {} nến đã đóng, live={:?}, server={}.",
+            label,
+            file.symbol,
+            snapshot.candles.len(),
+            snapshot.live_price,
+            file.server
+        );
+        Some(snapshot)
+    }
+
+    fn exness_htf_candles(
+        &self,
+        label: &str,
+        timeframe: Timeframe,
+        limit: usize,
+    ) -> Option<Vec<Candle>> {
+        let file = load_exness_file(&self.exness_path)?;
+        if !file.is_fresh(Utc::now(), EXNESS_MAX_AGE_SECS) {
+            warn!("⚠️ [ExnessFeed] HTF {} stale — bỏ qua.", label);
+            return None;
+        }
+        let candles = exness_candles(&file, label, timeframe, limit);
+        if candles.is_empty() {
+            None
+        } else {
+            Some(candles)
+        }
+    }
+
     /// Kéo ảnh chụp thị trường: nến đã đóng, giá live và nguồn thực tế.
     ///
     /// `preferred_source` quyết định provider được thử trước. Nếu provider ưu tiên
@@ -868,6 +961,14 @@ impl MarketDataFeed {
         let prefer_oanda = preferred == "OANDA";
         let mut prefer_twelve = preferred == "TWELVEDATA";
         let has_twelve = self.twelve_data_api_key.is_some();
+
+        if preferred == "EXNESS" {
+            if let Some(snapshot) = self.exness_snapshot(timeframe, limit, broker_price_offset) {
+                return snapshot;
+            }
+            warn!("⚠️ Exness feed không khả dụng/cũ — fallback sang nguồn khác.");
+            prefer_twelve = has_twelve;
+        }
 
         if prefer_oanda {
             if self.oanda_api_token.is_some() {
@@ -1673,6 +1774,7 @@ fn yahoo_daily_timestamp(timestamp_ms: i64) -> i64 {
 /// must not be derived from them.
 pub fn volume_source_has_buy_sell_delta(source: &str) -> bool {
     !source.eq_ignore_ascii_case(VOLUME_SOURCE_OANDA_TICK)
+        && !source.eq_ignore_ascii_case(VOLUME_SOURCE_EXNESS_TICK)
         && !source.eq_ignore_ascii_case(VOLUME_SOURCE_YAHOO_FUTURES_PROXY)
         && !source.eq_ignore_ascii_case(VOLUME_SOURCE_NONE)
 }
@@ -2447,6 +2549,7 @@ mod tests {
             VOLUME_SOURCE_YAHOO_FUTURES_PROXY
         ));
         assert!(!volume_source_has_buy_sell_delta(VOLUME_SOURCE_OANDA_TICK));
+        assert!(!volume_source_has_buy_sell_delta(VOLUME_SOURCE_EXNESS_TICK));
         assert!(!volume_source_has_buy_sell_delta(VOLUME_SOURCE_NONE));
     }
 
