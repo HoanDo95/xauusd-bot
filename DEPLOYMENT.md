@@ -611,6 +611,19 @@ on from the dashboard or `POST /api/config` only for an explicit A/B run.
   unchanged. This keeps the strategist narrative and the risk veto separate.
 - `/start-entry` includes the cached strategist view when enabled (advisory).
 
+### Confirmation types + 60/30/10 score (Phase 3/4)
+
+- Confirmation is one of `PINBAR`, `ENGULFING`, `RSI_CROSS` (limit/touch)
+  or `DIRECTIONAL_CLOSE` (breakout), always with volume expansion. The type
+  is stored on the trigger journal event and the signal note.
+- The deterministic Market View score is **structure/60 + trigger/30 +
+  macro/10 = total/100**. It is shown in the dashboard/Telegram and included
+  in the strategist prompt. The score is context/A-B evidence; it does not
+  bypass hard risk or change the sniper threshold.
+- The report adds **By Confirmation Type** and **By Score** buckets. Use them
+  to decide whether a confirmation type or score band actually has positive
+  expectancy before changing rules.
+
 ### Trigger journal (analysis-only)
 
 Every setup, trigger, AI review and hypothetical outcome is appended to

@@ -23,10 +23,10 @@ Telegram, inserts a signal, consumes quota or places an order.
 
 | Event | When | Key fields |
 |---|---|---|
-| `scenario_observed` | Once per M15 close, even outside session | scenario, trigger, confidence, valid, distance, session, regime |
-| `setup_created` | A SETUP WATCHING alert was sent; levels are frozen | setup_id, scenario, entry/SL/TP, distance, watch_distance |
+| `scenario_observed` | Once per M15 close, even outside session | scenario, trigger, confidence, valid, distance, session, regime, score_* |
+| `setup_created` | A SETUP WATCHING alert was sent; levels are frozen | setup_id, scenario, entry/SL/TP, distance, watch_distance, score_* |
 | `setup_closed` | Watched setup expired/invalidated/triggered before a signal | setup_id, reason, bars_open |
-| `triggered` | M15 close crossed the frozen trigger | setup_id, signal_id, close, fill, confirmation_pass/reason |
+| `triggered` | M15 close crossed the frozen trigger | setup_id, signal_id, close, fill, confirmation_pass/reason, confirmation_type, score_* |
 | `ai_review` | AI Decision returned or was unavailable | setup_id, ai_action, ai_confidence, ai_model, ai_blocked, ai_reason |
 | `outcome` | Hypothetical TP1/SL/TIMEOUT completed | setup_id, outcome, r_multiple, MFE/MAE at 1/4/8/24 bars |
 | `strategist_view` | AI Market Strategist H1 view generated (advisory) | prompt_version, ai_model, market_view, scenario_id (primary), ai_action, session, regime |
@@ -69,6 +69,8 @@ That is the point: the raw trigger must be measurable.
 - **AI confidence buckets**: `<0.60`, `0.60–0.70`, `0.70–0.80`, `0.80–0.90`,
   `>=0.90`, `NO_AI`.
 - **Confirmation buckets**: `CONFIRMED` / `REJECTED`.
+- **Confirmation type**: `PINBAR`, `ENGULFING`, `RSI_CROSS`, `DIRECTIONAL_CLOSE`, or `UNKNOWN`.
+- **Score buckets**: `<50`, `50–59`, `60–69`, `70–79`, `80–89`, `90+` using the deterministic 60/30/10 total. The score is context/A-B evidence; it does not bypass hard risk or change the sniper threshold.
 
 ## Decision rule (pre-registered)
 
