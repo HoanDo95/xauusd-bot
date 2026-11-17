@@ -16,6 +16,7 @@
 use crate::api::{current_scenarios, persist_state, AppState};
 use crate::market_view::MarketScore;
 use crate::models::{Candle, Timeframe};
+use crate::rsi::rsi_snapshot;
 use crate::scenarios::{
     scenario_triggered, Scenario, ScenarioMarket, WatchedSetup, WATCH_SETUP_MAX_BARS,
 };
@@ -189,7 +190,20 @@ pub fn spawn_action_trigger_worker(state: AppState) {
                 let candles = state.candles.read().await;
                 crate::market_strategist::volume_surge_ratio(&candles, 20)
             };
-            let context = state.market_context.read().await.clone();
+            let mut context = state.market_context.read().await.clone();
+            if let Some(context) = context.as_mut() {
+                if context.rsi_m15.is_none() {
+                    let candles = state.candles.read().await;
+                    context.rsi_m15 = Some(rsi_snapshot(
+                        &candles,
+                        config.rsi_period,
+                        config.rsi_overbought,
+                        config.rsi_oversold,
+                        config.rsi_divergence_lookback,
+                        config.rsi_pivot_k,
+                    ));
+                }
+            }
             let score =
                 crate::market_view::score_market(&scenarios, context.as_ref(), volume_ratio);
 

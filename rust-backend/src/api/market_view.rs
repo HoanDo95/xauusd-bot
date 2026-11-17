@@ -21,10 +21,22 @@ pub async fn compute_market_outlook(state: &AppState) -> MarketOutlook {
     let config = state.config.read().await.clone();
     let now = Utc::now();
     let scenarios = current_scenarios(state).await;
-    let context = state.market_context.read().await.clone();
-    let session_in = PersistentStore::is_within_golden_session(now, config.session_filter_enabled);
-    let last_candle = state.candles.read().await.last().cloned();
     let candles = state.candles.read().await.clone();
+    let last_candle = candles.last().cloned();
+    let mut context = state.market_context.read().await.clone();
+    if let Some(context) = context.as_mut() {
+        if context.rsi_m15.is_none() {
+            context.rsi_m15 = Some(rsi_snapshot(
+                &candles,
+                config.rsi_period,
+                config.rsi_overbought,
+                config.rsi_oversold,
+                config.rsi_divergence_lookback,
+                config.rsi_pivot_k,
+            ));
+        }
+    }
+    let session_in = PersistentStore::is_within_golden_session(now, config.session_filter_enabled);
     let volume_ratio = volume_surge_ratio(&candles, 20);
     let score = score_market(&scenarios, context.as_ref(), volume_ratio);
     let spread = match last_candle.as_ref() {
