@@ -600,7 +600,11 @@ on from the dashboard or `POST /api/config` only for an explicit A/B run.
 - The H1 worker calls the strategist once per H1 close during the session,
   caches the view, records a `strategist_view` journal event, and includes the
   narrative in the Market View API/dashboard/Telegram. On AI failure the
-  deterministic view remains.
+  deterministic view remains. Manual read-only refresh:
+  `POST /api/market-view/strategist` (no Telegram/signal/quota).
+- The strategist prompt receives D1/H4/H1, RSI M15/H1, volume surge vs MA20 and
+  the deterministic scenario list. It is advisory; it does not change the
+  Risk Officer/Decision prompt or the hard-risk gates.
 - The AI may only select `scenario_id` values from the deterministic builder;
   Entry/SL/TP always come from the scenario. Unknown ids are rejected.
 - The existing AI Decision / Risk Officer prompt for sniper approval is
