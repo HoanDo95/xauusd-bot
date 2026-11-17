@@ -216,6 +216,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // trigger, including those blocked by confirmation/AI/risk.
     gold_signal_bot::trigger_journal_worker::spawn_trigger_journal_worker(state.clone());
 
+    // 6f. H1 MARKET VIEW Telegram worker — dashboard/API stays 24/5; Telegram
+    // only on H1 close during the session and on material change.
+    gold_signal_bot::market_view_worker::spawn_market_view_worker(state.clone());
+
     // 8d. Macro & Flow Worker — FRED/Yahoo/CFTC read-only, refresh mỗi 15 phút.
     macro_flow::spawn_macro_flow_worker(state.clone());
 

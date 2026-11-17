@@ -10,6 +10,7 @@ import {
   LiveViewResponse,
   MacroFlowResponse,
   MarketContext,
+  MarketOutlook,
   NewsCalendarData,
   Scenario,
   ScenarioResponse,
@@ -26,6 +27,7 @@ import {
   fetchLiveView,
   fetchMacroFlow,
   fetchMarketContext,
+  fetchMarketView,
   fetchNewsCalendar,
   fetchScenarios,
   fetchSignals,
@@ -40,6 +42,7 @@ import {
 } from '../lib/api';
 import { Header, type DashboardTab } from '../components/Header';
 import { ActionCard } from '../components/ActionCard';
+import { MarketViewCard } from '../components/MarketViewCard';
 import { MetricCards } from '../components/MetricCards';
 import { MacroContextCard } from '../components/MacroContextCard';
 import { MacroFlowCard } from '../components/MacroFlowCard';
@@ -138,6 +141,9 @@ const DEFAULT_CONFIG: BotConfig = {
   action_watch_max_distance_points: 15,
   action_watch_min_confidence: 60,
   trigger_journal_enabled: true,
+  market_view_telegram_enabled: true,
+  market_view_cooldown_minutes: 120,
+  max_spread_proxy_atr: 1.0,
   macro_flow_enabled: true,
   daily_plan_enabled: true,
   weekend_brief_enabled: true,
@@ -212,6 +218,7 @@ export default function DashboardPage() {
   });
   const [liveView, setLiveView] = useState<LiveViewResponse | null>(null);
   const [actionView, setActionView] = useState<ActionViewResponse | null>(null);
+  const [marketView, setMarketView] = useState<MarketOutlook | null>(null);
   const [aiDecision, setAiDecision] = useState<AiDecision | null>(null);
   const [macroFlow, setMacroFlow] = useState<MacroFlowResponse | null>(null);
   const [scenarios, setScenarios] = useState<ScenarioResponse | null>(null);
@@ -328,6 +335,16 @@ export default function DashboardPage() {
     }
   }, []);
 
+  // Fetch the always-available H1 Market View (read-only, no quota/Telegram).
+  const loadMarketView = useCallback(async () => {
+    try {
+      const data = await fetchMarketView();
+      setMarketView(data);
+    } catch (err) {
+      console.error('Lỗi tải market view:', err);
+    }
+  }, []);
+
   // Fetch the read-only macro/flow snapshot (FRED/Yahoo/CFTC; no quota impact).
   const loadMacroFlow = useCallback(async () => {
     try {
@@ -398,6 +415,16 @@ export default function DashboardPage() {
 
     return () => clearInterval(timer);
   }, [loadActionView]);
+
+  // Market View is independent of the scanner: fetch on load and every 60s.
+  useEffect(() => {
+    void loadMarketView();
+    const timer = setInterval(() => {
+      void loadMarketView();
+    }, 60_000);
+
+    return () => clearInterval(timer);
+  }, [loadMarketView]);
 
   // Macro & Flow is independent of the scanner; refresh once a minute.
   useEffect(() => {
@@ -604,6 +631,9 @@ export default function DashboardPage() {
         {/* Tab 1: Live Trading Desk & Candlestick Monitor */}
         {currentTab === 'monitor' && (
           <div className="flex flex-col gap-6">
+            {/* Always-on H1 Market View — structure + primary/alternative zones */}
+            <MarketViewCard data={marketView} />
+
             {/* Top-level "Should I enter now?" verdict (read-only, no quota) */}
             <ActionCard data={actionView} aiDecision={actionView?.aiDecision ?? aiDecision} />
 

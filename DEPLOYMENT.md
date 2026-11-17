@@ -605,6 +605,26 @@ or, on the server, `docker compose exec api trigger_report --path data/trigger_j
 See [`TRIGGER_JOURNAL_SPEC.md`](TRIGGER_JOURNAL_SPEC.md) for the schema,
 outcome rules and pre-registered decision rule.
 
+### BotState + always-on Market View (Phase 1)
+
+- **NO_TRADE** — hard gates only: weekend/market closed, high-impact USD news
+  ±`pre/post_news_buffer_minutes` (default 30), stale/fallback data, and the
+  spread proxy `|live − last M15 close| / H4 ATR > max_spread_proxy_atr`
+  (default 1.0). RSI/EMA/macro never silence the view.
+- **MARKET_VIEW** — always available 24/5 on the dashboard via
+  `GET /api/market-view`: structure (trend/pullback/range/reversal), PRIMARY and
+  ALTERNATIVE zones, invalidation and risk notes. Levels come from the scenario
+  builder; the view is a reference plan, not an entry.
+- **SNIPER_TRIGGER** — a live confirmed signal exists; only this state can show
+  a full GOLD SIGNAL with Entry/SL/TP/Lot after confirmation + AI + hard risk.
+- **Session split** — the 13:00–23:00 session gate applies to sniper/watching
+  only. Market View stays available outside the session.
+- **Telegram** — `market_view_worker` sends on a new H1 close during the session,
+  only when the view changed materially and after `market_view_cooldown_minutes`
+  (default 120). Dashboard polling is every 60s.
+- **AI roles** — Phase 1 does not change the Risk Officer prompt. The strategist
+  prompt for Market View is Phase 2 and must not replace the risk veto.
+
 ### Two-level notification pipeline
 
 - **SETUP WATCHING** — sent **once per setup** when price approaches a valid

@@ -33,6 +33,7 @@ mod journal;
 mod live;
 mod macro_flow;
 mod market;
+mod market_view;
 mod news;
 mod scanner;
 mod scenarios;
@@ -64,6 +65,7 @@ use webhooks::{receive_candle_webhook, receive_tradingview_webhook};
 pub(crate) use entry_check::run_entry_check;
 pub use entry_check::{EntryCheckResult, EntryPlan};
 pub(crate) use live::current_live_view;
+pub(crate) use market_view::compute_market_outlook;
 pub(crate) use scanner::{start_scanner_inner, stop_scanner_inner};
 pub(crate) use scenarios::current_scenarios;
 
@@ -167,6 +169,7 @@ pub fn create_router(state: AppState) -> Router {
             "/api/trigger-journal/summary",
             get(journal::get_trigger_journal_summary),
         )
+        .route("/api/market-view", get(market_view::get_market_view))
         // Bối cảnh đa khung D1/H4/H1 (read-only, 204 khi chưa sẵn sàng)
         .route("/api/context", get(get_market_context))
         // Nến H4/D1 đã đóng cho chart "view toàn cảnh" (read-only)

@@ -13,6 +13,7 @@ import type {
   MacroBias,
   MacroFlowResponse,
   MarketContext,
+  MarketOutlook,
   NewsCalendarData,
   ScenarioResponse,
   Signal,
@@ -335,6 +336,22 @@ export async function fetchActionView(): Promise<ActionViewResponse> {
     return (await res.json()) as ActionViewResponse;
   } catch {
     return unavailable;
+  }
+}
+
+/**
+ * GET /api/market-view — always-available H1 Market Outlook.
+ * Read-only: never sends Telegram, inserts a signal or consumes quota.
+ */
+export async function fetchMarketView(): Promise<MarketOutlook | null> {
+  try {
+    const res = await fetch('/api/market-view');
+    if (!res.ok) return null;
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) return null;
+    return (await res.json()) as MarketOutlook;
+  } catch {
+    return null;
   }
 }
 

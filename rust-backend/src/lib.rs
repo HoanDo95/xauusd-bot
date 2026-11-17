@@ -8,6 +8,8 @@ pub mod divergence_alerts;
 pub mod macro_flow;
 pub mod market_context;
 pub mod market_feed;
+pub mod market_view;
+pub mod market_view_worker;
 pub mod models;
 pub mod news_filter;
 pub mod risk_guardrails;

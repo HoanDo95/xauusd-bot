@@ -313,6 +313,47 @@ export interface ActionViewResponse {
   generated_at: string;
 }
 
+/** Three operating states: NO_TRADE / MARKET_VIEW / SNIPER_TRIGGER. */
+export type BotState = 'NO_TRADE' | 'MARKET_VIEW' | 'SNIPER_TRIGGER';
+
+/** Reference scenario inside the H1 Market View. Levels are a plan, not an entry. */
+export interface OutlookScenario {
+  role: string;
+  scenario_id: string;
+  action: 'WATCH_SELL' | 'WATCH_BUY' | 'STAND_ASIDE' | string;
+  zone_low: number;
+  zone_high: number;
+  trigger: string;
+  stop_loss: number | null;
+  take_profit_1: number | null;
+  take_profit_2: number | null;
+  confidence: number;
+  invalidation: string;
+}
+
+/**
+ * GET /api/market-view — always-available H1 Market Outlook.
+ * Deterministic levels from the scenario builder; never an automatic order.
+ */
+export interface MarketOutlook {
+  bot_state: BotState;
+  generated_at: string;
+  valid_until: string;
+  structure: string;
+  market_view: string;
+  primary: OutlookScenario | null;
+  alternative: OutlookScenario | null;
+  risk_notes: string[];
+  no_trade_reason: string | null;
+  session: 'IN' | 'OUT' | string;
+  spread_proxy_atr: number | null;
+  d1_bias: string;
+  h4_bias: string;
+  h1_bias: string;
+  price: number | null;
+  h4_atr: number | null;
+}
+
 /** Aggressive taker flow of the latest M15 candle + CVD over the lookback window. */
 export interface VolumeDeltaSnapshot {
   buy_volume: number;
@@ -658,6 +699,12 @@ export interface BotConfig {
   action_watch_min_confidence?: number;
   /** Append-only trigger journal for raw trigger efficacy. Default true. */
   trigger_journal_enabled?: boolean;
+  /** Send MARKET VIEW to Telegram on H1 close during the session. Default true. */
+  market_view_telegram_enabled?: boolean;
+  /** Minimum minutes between MARKET VIEW Telegram messages (15–1440, default 120). */
+  market_view_cooldown_minutes?: number;
+  /** Spread proxy threshold (|live − M15 close| / H4 ATR) for NO_TRADE. Default 1.0. */
+  max_spread_proxy_atr?: number;
   /** Read-only Macro & Flow dashboard (FRED/Yahoo/CFTC). Default true; never affects signals. */
   macro_flow_enabled?: boolean;
   /** Send the read-only 07:00 daily plan to Telegram. Default true; no quota impact. */

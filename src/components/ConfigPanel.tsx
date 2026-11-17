@@ -1559,6 +1559,89 @@ export const ConfigPanel: React.FC<Props> = ({
             </span>
           </div>
 
+          {/* MARKET VIEW — always-on outlook */}
+          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 flex flex-col gap-4">
+            <div>
+              <div className="text-xs font-bold text-emerald-300 uppercase tracking-wider">
+                🧭 MARKET VIEW — luôn có kịch bản, không khóa bởi RSI/EMA
+              </div>
+              <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
+                Xuất Market Outlook mỗi H1 close: cấu trúc, Primary/Alternative zones,
+                invalidation và risk notes. Dashboard cập nhật 24/5; Telegram chỉ gửi trong
+                phiên khi view thay đổi materially và qua cooldown.
+              </p>
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+              <input
+                type="checkbox"
+                checked={formData.market_view_telegram_enabled ?? true}
+                onChange={(e) =>
+                  setFormData({ ...formData, market_view_telegram_enabled: e.target.checked })
+                }
+                className="accent-emerald-500 w-4 h-4 rounded cursor-pointer"
+              />
+              <span className="font-semibold text-white">Bật MARKET VIEW Telegram</span>
+            </label>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">
+                  Cooldown MARKET VIEW
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min="15"
+                    max="1440"
+                    step="15"
+                    disabled={!(formData.market_view_telegram_enabled ?? true)}
+                    value={formData.market_view_cooldown_minutes ?? 120}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        market_view_cooldown_minutes: Math.min(
+                          1440,
+                          Math.max(15, parseInt(e.target.value) || 120)
+                        ),
+                      })
+                    }
+                    className="w-full bg-neutral-950 border border-neutral-800 focus:border-emerald-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                  />
+                  <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">
+                    phút
+                  </span>
+                </div>
+                <span className="text-[11px] text-neutral-500">
+                  15–1440 phút, mặc định 120. Chỉ gửi khi view đổi materially.
+                </span>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">
+                  Max spread proxy (× H4 ATR)
+                </label>
+                <input
+                  type="number"
+                  min="0.2"
+                  max="3"
+                  step="0.1"
+                  value={formData.max_spread_proxy_atr ?? 1.0}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      max_spread_proxy_atr: Math.max(
+                        0.2,
+                        Math.min(3, parseFloat(e.target.value) || 1.0)
+                      ),
+                    })
+                  }
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-emerald-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
+                />
+                <span className="text-[11px] text-neutral-500">
+                  0.2–3.0, mặc định 1.0. Vượt ngưỡng → NO_TRADE (spread proxy, không phải broker spread).
+                </span>
+              </div>
+            </div>
+          </div>
+
           {/* AI Decision Mode / legacy VETO_ONLY */}
           <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/5 p-4 flex flex-col gap-4">
             <div className="flex flex-wrap items-start justify-between gap-3">

@@ -1,6 +1,7 @@
 use crate::ai_decision::AiDecision;
 use crate::api::EntryCheckResult;
 use crate::divergence_alerts::DivergenceAlert;
+use crate::market_view::{MarketOutlook, OutlookScenario};
 use crate::models::{
     DailyMacroReport, EconomicEvent, EntryType, ImpactLevel, Signal, SignalStatus, SignalType,
     SupportResistanceZone,
@@ -533,6 +534,114 @@ impl TelegramNotifier {
             Err(err) => {
                 let err = err.without_url();
                 error!("❌ Không thể gửi setup watching tới Telegram: {}", err);
+                Err(format!("Network Error: {err}"))
+            }
+        }
+    }
+
+    /// Format the H1 MARKET VIEW. Levels are reference plan only; never a
+    /// confirmed entry and never a Lot size.
+    pub fn format_market_view_message(outlook: &MarketOutlook) -> String {
+        let mut lines = Vec::new();
+        if let Some(reason) = outlook.no_trade_reason.as_ref() {
+            lines.push(format!(
+                "⛔ <b>NO_TRADE</b> — {}",
+                Self::escape_html(reason)
+            ));
+        }
+        lines.push("🧭 <b>MARKET VIEW</b> — XAU/USD".to_string());
+        lines.push(format!(
+            "State: <b>{}</b> · Structure: <b>{}</b>",
+            outlook.bot_state.as_str(),
+            Self::escape_html(&outlook.structure)
+        ));
+        lines.push(format!(
+            "D1 {} / H4 {} / H1 {} · Giá {} · H4 ATR {}",
+            Self::escape_html(&outlook.d1_bias),
+            Self::escape_html(&outlook.h4_bias),
+            Self::escape_html(&outlook.h1_bias),
+            format_level(outlook.price),
+            format_level(outlook.h4_atr)
+        ));
+        lines.push(Self::escape_html(&outlook.market_view));
+        lines.push(String::new());
+        match outlook.primary.as_ref() {
+            Some(primary) => lines.push(Self::format_outlook_scenario("🎯 PRIMARY", primary)),
+            None => lines.push("🎯 PRIMARY: chưa có scenario hợp lệ.".to_string()),
+        }
+        if let Some(alternative) = outlook.alternative.as_ref() {
+            lines.push(String::new());
+            lines.push(Self::format_outlook_scenario("🔄 ALTERNATIVE", alternative));
+        }
+        lines.push(String::new());
+        lines.push("⚠️ <b>Risk</b>".to_string());
+        for note in &outlook.risk_notes {
+            lines.push(format!("• {}", Self::escape_html(note)));
+        }
+        lines.push(String::new());
+        lines.push("KẾ HOẠCH THAM KHẢO — CHƯA PHẢI ENTRY.".to_string());
+        lines.join("\n").chars().take(3500).collect()
+    }
+
+    fn format_outlook_scenario(label: &str, scenario: &OutlookScenario) -> String {
+        format!(
+            "{} — <b>{}</b>\nZone: <code>{:.2}–{:.2}</code>\nTrigger: {}\nSL {} · TP1 {} · TP2 {} · Conf {}%\nInvalidation: {}",
+            label,
+            Self::escape_html(&scenario.action),
+            scenario.zone_low,
+            scenario.zone_high,
+            Self::escape_html(&scenario.trigger),
+            format_level(scenario.stop_loss),
+            format_level(scenario.take_profit_1),
+            format_level(scenario.take_profit_2),
+            scenario.confidence,
+            Self::escape_html(&scenario.invalidation)
+        )
+    }
+
+    /// Gửi MARKET VIEW H1. Read-only: không signal, không quota, không Lot.
+    pub async fn send_market_view(&self, outlook: &MarketOutlook) -> Result<i64, String> {
+        if self.bot_token.is_empty() || self.chat_id.is_empty() {
+            info!(
+                "⚠️ [Telegram Simulator] MARKET VIEW {} (chưa cấu hình token)",
+                outlook.bot_state.as_str()
+            );
+            return Ok(1001);
+        }
+
+        let message_text = Self::format_market_view_message(outlook);
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
+        let payload = json!({
+            "chat_id": self.chat_id,
+            "text": message_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true
+        });
+
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let body: serde_json::Value =
+                        resp.json().await.map_err(|e| e.without_url().to_string())?;
+                    let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
+                    info!(
+                        "✅ Đã gửi MARKET VIEW {} tới Telegram! Message ID: {}",
+                        outlook.bot_state.as_str(),
+                        msg_id
+                    );
+                    Ok(msg_id)
+                } else {
+                    let err_text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Lỗi không xác định".into());
+                    error!("❌ Telegram MARKET VIEW API lỗi: {}", err_text);
+                    Err(format!("Telegram API Error: {err_text}"))
+                }
+            }
+            Err(err) => {
+                let err = err.without_url();
+                error!("❌ Không thể gửi MARKET VIEW tới Telegram: {}", err);
                 Err(format!("Network Error: {err}"))
             }
         }
@@ -1881,6 +1990,7 @@ fn truncate_chars(input: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::api::EntryPlan;
+    use crate::market_view::{BotState, MarketOutlook, OutlookScenario};
     use crate::models::{EconomicEvent, EntryType, MacroBias, SignalStatus, Timeframe, ZoneType};
     use crate::news_filter::ImpactLevel;
     use crate::scenarios::ScenarioMarket;
@@ -2320,6 +2430,59 @@ mod tests {
         assert!(message.contains("NONE —"));
         assert!(message.contains("Entry — · SL — · TP1 — · TP2 — · R:R 1:—"));
         assert!(message.contains("KHÔNG phải trade signal"));
+    }
+
+    #[test]
+    fn format_market_view_contains_plan_and_no_lot() {
+        let outlook = MarketOutlook {
+            bot_state: BotState::MarketView,
+            generated_at: "2026-11-17T03:00:00Z".to_string(),
+            valid_until: "2026-11-17T04:00:00Z".to_string(),
+            structure: "TECHNICAL_PULLBACK".to_string(),
+            market_view: "H4/H1 bearish, M15 hồi lên kháng cự.".to_string(),
+            primary: Some(OutlookScenario {
+                role: "PRIMARY".to_string(),
+                scenario_id: "bearish_rejection".to_string(),
+                action: "WATCH_SELL".to_string(),
+                zone_low: 3872.0,
+                zone_high: 3876.0,
+                trigger: "M15 close dưới 3872".to_string(),
+                stop_loss: Some(3884.0),
+                take_profit_1: Some(3848.0),
+                take_profit_2: Some(3835.0),
+                confidence: 72,
+                invalidation: "H1 close trên 3884".to_string(),
+            }),
+            alternative: Some(OutlookScenario {
+                role: "ALTERNATE".to_string(),
+                scenario_id: "bullish_bounce".to_string(),
+                action: "WATCH_BUY".to_string(),
+                zone_low: 3860.0,
+                zone_high: 3864.0,
+                trigger: "M15 close trên 3864".to_string(),
+                stop_loss: Some(3852.0),
+                take_profit_1: Some(3880.0),
+                take_profit_2: Some(3892.0),
+                confidence: 65,
+                invalidation: "H1 close dưới 3852".to_string(),
+            }),
+            risk_notes: vec!["Tin đỏ USD 21:30.".to_string()],
+            no_trade_reason: None,
+            session: "IN".to_string(),
+            spread_proxy_atr: Some(0.2),
+            d1_bias: "BEARISH".to_string(),
+            h4_bias: "BEARISH".to_string(),
+            h1_bias: "BEARISH".to_string(),
+            price: Some(3864.0),
+            h4_atr: Some(12.0),
+        };
+        let message = TelegramNotifier::format_market_view_message(&outlook);
+        assert!(message.contains("MARKET VIEW"));
+        assert!(message.contains("PRIMARY"));
+        assert!(message.contains("ALTERNATIVE"));
+        assert!(message.contains("3872.00"));
+        assert!(message.contains("CHƯA PHẢI ENTRY"));
+        assert!(!message.contains("Lot "));
     }
 
     #[test]

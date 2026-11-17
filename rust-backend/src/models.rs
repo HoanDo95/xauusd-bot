@@ -506,6 +506,16 @@ pub struct BotConfig {
     /// (setup/trigger/confirmation/AI/outcome). Mặc định true.
     #[serde(default = "default_true")]
     pub trigger_journal_enabled: bool,
+    /// Gửi MARKET VIEW qua Telegram khi đóng nến H1 (trong phiên). Mặc định true.
+    #[serde(default = "default_true")]
+    pub market_view_telegram_enabled: bool,
+    /// Cooldown tối thiểu giữa hai MARKET VIEW Telegram (15..=1440, mặc định 120).
+    #[serde(default = "default_market_view_cooldown")]
+    pub market_view_cooldown_minutes: i64,
+    /// Ngưỡng spread proxy (|live − M15 close| / H4 ATR) để vào NO_TRADE.
+    /// Không phải spread broker thật; 0.2..=3.0, mặc định 1.0.
+    #[serde(default = "default_max_spread_proxy_atr")]
+    pub max_spread_proxy_atr: f64,
     /// Bật dashboard Macro & Flow read-only (FRED/Yahoo/CFTC). Mặc định true.
     #[serde(default = "default_true")]
     pub macro_flow_enabled: bool,
@@ -670,6 +680,14 @@ fn default_action_watch_min_confidence() -> u8 {
     60
 }
 
+fn default_market_view_cooldown() -> i64 {
+    120
+}
+
+fn default_max_spread_proxy_atr() -> f64 {
+    1.0
+}
+
 impl Default for BotConfig {
     fn default() -> Self {
         Self {
@@ -754,6 +772,9 @@ impl Default for BotConfig {
             action_watch_max_distance_points: default_action_watch_max_distance_points(),
             action_watch_min_confidence: default_action_watch_min_confidence(),
             trigger_journal_enabled: true,
+            market_view_telegram_enabled: true,
+            market_view_cooldown_minutes: default_market_view_cooldown(),
+            max_spread_proxy_atr: default_max_spread_proxy_atr(),
             macro_flow_enabled: true,
             daily_plan_enabled: true,
             weekend_brief_enabled: true,
@@ -873,6 +894,8 @@ impl BotConfig {
         self.action_watch_max_distance_points =
             finite_or(self.action_watch_max_distance_points, 15.0).clamp(5.0, 50.0);
         self.action_watch_min_confidence = self.action_watch_min_confidence.min(100);
+        self.market_view_cooldown_minutes = self.market_view_cooldown_minutes.clamp(15, 1440);
+        self.max_spread_proxy_atr = finite_or(self.max_spread_proxy_atr, 1.0).clamp(0.2, 3.0);
 
         self.telegram_bot_token = self.telegram_bot_token.trim().to_string();
         self.telegram_chat_id = self.telegram_chat_id.trim().to_string();
