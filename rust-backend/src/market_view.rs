@@ -496,9 +496,19 @@ fn h1_confirmation(
             );
         }
     } else if direction == "TOUCH" {
-        result.status = "PENDING".to_string();
-        result.note =
-            "Limit/touch: H1 confirmation không áp dụng; dùng M15 retest/rejection.".to_string();
+        let opposite = (scenario_bias == "BULLISH" && h1_bias == "BEARISH")
+            || (scenario_bias == "BEARISH" && h1_bias == "BULLISH");
+        if opposite {
+            result.status = "INVALID".to_string();
+            result.note = format!(
+                "Limit/touch ngược H1 bias {}; chỉ đánh bounce ngắn nếu M15 xác nhận mạnh.",
+                h1_bias
+            );
+        } else {
+            result.status = "PENDING".to_string();
+            result.note = "Limit/touch: H1 confirmation không áp dụng; dùng M15 retest/rejection."
+                .to_string();
+        }
     } else {
         result.note = "Thiếu bias/trigger để xác nhận H1.".to_string();
     }
@@ -783,6 +793,24 @@ mod tests {
         bullish_context.h1.prev_close = 2705.0;
         let confirmation = h1_confirmation(alternative, Some(&bullish_context), 2708.0, 2712.0);
         assert_eq!(confirmation.status, "CONFIRMED");
+    }
+
+    #[test]
+    fn h1_confirmation_marks_touch_against_h1_bias_invalid() {
+        let mut touch = scenario(
+            "touch",
+            "ALTERNATE",
+            "BULLISH",
+            2710.0,
+            2700.0,
+            2730.0,
+            2740.0,
+        );
+        touch.trigger_direction = "TOUCH".to_string();
+        let bearish_context = context("BEARISH", "BEARISH", "BEARISH");
+        let confirmation = h1_confirmation(&touch, Some(&bearish_context), 2708.0, 2712.0);
+        assert_eq!(confirmation.status, "INVALID");
+        assert!(confirmation.note.contains("ngược H1 bias BEARISH"));
     }
 
     #[test]
