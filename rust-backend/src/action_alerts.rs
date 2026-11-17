@@ -488,6 +488,87 @@ mod tests {
         }
     }
 
+    fn market() -> ScenarioMarket {
+        ScenarioMarket {
+            h4_bias: "BULLISH".to_string(),
+            h1_bias: "BULLISH".to_string(),
+            d1_bias: "BULLISH".to_string(),
+            h4_atr: 12.0,
+            nearest_support: Some(2690.0),
+            nearest_resistance: Some(2710.0),
+            rsi_m15: Some(55.0),
+            rsi_state: "Neutral".to_string(),
+            macro_bias: "BULLISH".to_string(),
+            macro_confidence: 80,
+            daily_change_pct: Some(0.5),
+            rsi_h1: None,
+            rsi_h4: None,
+            rsi_d1: None,
+        }
+    }
+
+    #[test]
+    fn observation_event_carries_scenario_and_session() {
+        let scenario = scenario(true, Some(2701.0), "ABOVE");
+        let event = observation_event(
+            &scenario,
+            Some(&market()),
+            &candle(BASE_TS, 2705.0, 2695.0, 2700.0),
+            fixed_now(),
+            false,
+        );
+        assert_eq!(event.event, "scenario_observed");
+        assert_eq!(event.scenario_id.as_deref(), Some("bullish_breakout"));
+        assert_eq!(event.trigger, Some(2701.0));
+        assert_eq!(event.session.as_deref(), Some("OUT"));
+        assert_eq!(event.regime.as_deref(), Some("TREND_BULL"));
+        assert_eq!(event.valid, Some(true));
+    }
+
+    #[test]
+    fn setup_created_event_carries_frozen_levels_and_distance() {
+        let setup = WatchedSetup {
+            setup_id: "SETUP-1".to_string(),
+            scenario: scenario(true, Some(2701.0), "ABOVE"),
+            created_at: fixed_now(),
+            created_candle_timestamp: BASE_TS,
+            alerted_price: 2705.0,
+        };
+        let event = setup_created_event(
+            &setup,
+            Some(&market()),
+            &candle(BASE_TS, 2705.0, 2695.0, 2705.0),
+            fixed_now(),
+            4.0,
+            10.0,
+        );
+        assert_eq!(event.event, "setup_created");
+        assert_eq!(event.setup_id.as_deref(), Some("SETUP-1"));
+        assert_eq!(event.distance, Some(4.0));
+        assert_eq!(event.watch_distance, Some(10.0));
+        assert_eq!(event.source.as_deref(), Some("watching_alert"));
+    }
+
+    #[test]
+    fn setup_closed_event_records_reason_and_bars() {
+        let setup = WatchedSetup {
+            setup_id: "SETUP-1".to_string(),
+            scenario: scenario(true, Some(2701.0), "ABOVE"),
+            created_at: fixed_now(),
+            created_candle_timestamp: BASE_TS,
+            alerted_price: 2705.0,
+        };
+        let event = setup_closed_event(
+            &setup,
+            &candle(BASE_TS + 2 * 15 * 60 * 1000, 2700.0, 2690.0, 2695.0),
+            fixed_now(),
+            "expired",
+        );
+        assert_eq!(event.event, "setup_closed");
+        assert_eq!(event.reason.as_deref(), Some("expired"));
+        assert_eq!(event.bars_open, Some(2));
+    }
+
     #[test]
     fn should_send_requires_enabled_valid_and_a_trigger_price() {
         let now = fixed_now();
