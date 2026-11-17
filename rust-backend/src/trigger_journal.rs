@@ -68,6 +68,14 @@ pub struct TriggerEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub score_total: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score_structure: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score_trigger: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score_macro: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bars_open: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub macro_alignment: Option<String>,
@@ -93,6 +101,8 @@ pub struct TriggerEvent {
     pub confirmation_pass: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confirmation_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmation_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_action: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -488,6 +498,8 @@ pub struct TriggerSummary {
     pub by_session: Vec<BucketSummary>,
     pub by_ai_confidence: Vec<BucketSummary>,
     pub by_confirmation: Vec<BucketSummary>,
+    pub by_confirmation_type: Vec<BucketSummary>,
+    pub by_score: Vec<BucketSummary>,
     pub strategist_views: usize,
     pub strategist_models: Vec<CountBucket>,
     pub strategist_primaries: Vec<CountBucket>,
@@ -582,6 +594,8 @@ pub fn summarize(events: &[TriggerEvent]) -> TriggerSummary {
     let mut session_map: HashMap<String, Vec<f64>> = HashMap::new();
     let mut ai_map: HashMap<String, Vec<f64>> = HashMap::new();
     let mut confirmation_map: HashMap<String, Vec<f64>> = HashMap::new();
+    let mut confirmation_type_map: HashMap<String, Vec<f64>> = HashMap::new();
+    let mut score_map: HashMap<String, Vec<f64>> = HashMap::new();
 
     for outcome in &outcomes {
         let Some(setup_id) = outcome.setup_id.as_ref() else {
@@ -630,6 +644,15 @@ pub fn summarize(events: &[TriggerEvent]) -> TriggerSummary {
             .and_then(|event| event.confirmation_pass)
             .map(|pass| if pass { "CONFIRMED" } else { "REJECTED" })
             .unwrap_or("UNKNOWN");
+        let confirmation_type = trigger_event
+            .and_then(|event| event.confirmation_type.clone())
+            .unwrap_or_else(|| "UNKNOWN".to_string());
+        let score_total = trigger_event
+            .and_then(|event| event.score_total)
+            .or_else(|| meta.and_then(|event| event.score_total));
+        let score_key = score_total
+            .map(score_bucket)
+            .unwrap_or_else(|| "UNKNOWN".to_string());
         let ai_bucket = ai_reviews
             .get(setup_id)
             .and_then(|event| event.ai_confidence)
@@ -644,6 +667,11 @@ pub fn summarize(events: &[TriggerEvent]) -> TriggerSummary {
             .entry(confirmation.to_string())
             .or_default()
             .push(r);
+        confirmation_type_map
+            .entry(confirmation_type)
+            .or_default()
+            .push(r);
+        score_map.entry(score_key).or_default().push(r);
     }
 
     let outcome_count = wins + losses + timeouts;
@@ -685,6 +713,8 @@ pub fn summarize(events: &[TriggerEvent]) -> TriggerSummary {
         by_session: build_buckets(session_map),
         by_ai_confidence: build_buckets(ai_map),
         by_confirmation: build_buckets(confirmation_map),
+        by_confirmation_type: build_buckets(confirmation_type_map),
+        by_score: build_buckets(score_map),
         strategist_views,
         strategist_models: build_counts(strategist_models),
         strategist_primaries: build_counts(strategist_primaries),
@@ -705,6 +735,17 @@ fn ai_confidence_bucket(confidence: f64) -> String {
         "0.80-0.90".to_string()
     } else {
         ">=0.90".to_string()
+    }
+}
+
+fn score_bucket(score: u8) -> String {
+    match score {
+        0..=49 => "<50".to_string(),
+        50..=59 => "50-59".to_string(),
+        60..=69 => "60-69".to_string(),
+        70..=79 => "70-79".to_string(),
+        80..=89 => "80-89".to_string(),
+        _ => "90+".to_string(),
     }
 }
 
@@ -824,6 +865,8 @@ mod tests {
         event.take_profit_1 = Some(tp);
         event.candle_timestamp = Some(0);
         event.confirmation_pass = Some(true);
+        event.confirmation_type = Some("DIRECTIONAL_CLOSE".to_string());
+        event.score_total = Some(80);
         event
     }
 
@@ -1022,6 +1065,10 @@ mod tests {
         assert!((summary.profit_factor.unwrap() - 2.0).abs() < 1e-9);
         assert_eq!(summary.by_scenario.len(), 1);
         assert_eq!(summary.by_regime.len(), 3);
+        assert_eq!(summary.by_confirmation_type.len(), 1);
+        assert_eq!(summary.by_confirmation_type[0].key, "DIRECTIONAL_CLOSE");
+        assert_eq!(summary.by_score.len(), 1);
+        assert_eq!(summary.by_score[0].key, "80-89");
         assert_eq!(summary.strategist_views, 1);
         assert_eq!(summary.strategist_models[0].key, "gemini-4-argon");
         assert_eq!(summary.strategist_primaries[0].key, "bearish_breakdown");

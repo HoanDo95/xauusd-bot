@@ -1,5 +1,6 @@
 use crate::analyzer::GoldMarketAnalyzer;
 use crate::models::{Candle, EntryType, Signal, SignalStatus, SignalType};
+use crate::rsi::{rsi_cross_sma, RsiCross};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
@@ -51,16 +52,38 @@ impl Default for PendingConfirmation {
 /// Đây là lớp bảo vệ chống tín hiệu "stale" khi thị trường đã chạy khỏi trigger.
 const MAX_PENDING_DISTANCE_R: f64 = 1.5;
 
-/// Xác nhận nến trigger: volume mở rộng + close đúng hướng.
-pub(crate) fn pending_confirmation_ok(
+/// Which M15 confirmation actually passed the gate. Recorded in the trigger
+/// journal so the report can compare pinbar vs engulfing vs RSI cross vs a
+/// breakout directional close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ConfirmationType {
+    Pinbar,
+    Engulfing,
+    RsiCross,
+    DirectionalClose,
+}
+
+impl ConfirmationType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pinbar => "PINBAR",
+            Self::Engulfing => "ENGULFING",
+            Self::RsiCross => "RSI_CROSS",
+            Self::DirectionalClose => "DIRECTIONAL_CLOSE",
+        }
+    }
+}
+
+/// Xác nhận nến trigger: volume mở rộng + một loại confirmation hợp lệ.
+/// Breakout dùng close đúng hướng; Limit dùng pinbar/engulfing hoặc RSI cross.
+pub(crate) fn pending_confirmation(
     signal: &Signal,
     candles: &[Candle],
     index: usize,
     volume_ratio: f64,
-) -> bool {
-    let Some(candle) = candles.get(index) else {
-        return false;
-    };
+) -> Option<ConfirmationType> {
+    let candle = candles.get(index)?;
 
     let period = 20;
     let start = index.saturating_sub(period);
@@ -72,7 +95,7 @@ pub(crate) fn pending_confirmation_ok(
     };
     let volume_ok = average_volume > 0.0 && candle.volume >= average_volume * volume_ratio.max(1.0);
     if !volume_ok {
-        return false;
+        return None;
     }
 
     let previous = index
@@ -80,27 +103,58 @@ pub(crate) fn pending_confirmation_ok(
         .and_then(|previous| candles.get(previous));
     match signal.entry_type {
         EntryType::Breakout => match signal.signal_type {
-            SignalType::Buy => candle.close > signal.entry_price && candle.close > candle.open,
-            SignalType::Sell => candle.close < signal.entry_price && candle.close < candle.open,
-        },
-        EntryType::Limit => match signal.signal_type {
-            SignalType::Buy => {
-                let (bullish_pinbar, _) = GoldMarketAnalyzer::check_pinbar_rejection(candle, 2.0);
-                let (bullish_engulfing, _) = previous
-                    .map(|previous| GoldMarketAnalyzer::check_engulfing(previous, candle))
-                    .unwrap_or((false, false));
-                bullish_pinbar || bullish_engulfing
+            SignalType::Buy if candle.close > signal.entry_price && candle.close > candle.open => {
+                Some(ConfirmationType::DirectionalClose)
             }
-            SignalType::Sell => {
-                let (_, bearish_pinbar) = GoldMarketAnalyzer::check_pinbar_rejection(candle, 2.0);
-                let (_, bearish_engulfing) = previous
-                    .map(|previous| GoldMarketAnalyzer::check_engulfing(previous, candle))
-                    .unwrap_or((false, false));
-                bearish_pinbar || bearish_engulfing
+            SignalType::Sell if candle.close < signal.entry_price && candle.close < candle.open => {
+                Some(ConfirmationType::DirectionalClose)
             }
+            _ => None,
         },
-        EntryType::Market => true,
+        EntryType::Limit => {
+            let (bullish_pinbar, bearish_pinbar) =
+                GoldMarketAnalyzer::check_pinbar_rejection(candle, 2.0);
+            let (bullish_engulfing, bearish_engulfing) = previous
+                .map(|previous| GoldMarketAnalyzer::check_engulfing(previous, candle))
+                .unwrap_or((false, false));
+            let cross = rsi_cross_sma(&candles[..=index], 14, 14);
+            match signal.signal_type {
+                SignalType::Buy => {
+                    if bullish_pinbar {
+                        Some(ConfirmationType::Pinbar)
+                    } else if bullish_engulfing {
+                        Some(ConfirmationType::Engulfing)
+                    } else if cross == RsiCross::Bullish {
+                        Some(ConfirmationType::RsiCross)
+                    } else {
+                        None
+                    }
+                }
+                SignalType::Sell => {
+                    if bearish_pinbar {
+                        Some(ConfirmationType::Pinbar)
+                    } else if bearish_engulfing {
+                        Some(ConfirmationType::Engulfing)
+                    } else if cross == RsiCross::Bearish {
+                        Some(ConfirmationType::RsiCross)
+                    } else {
+                        None
+                    }
+                }
+            }
+        }
+        EntryType::Market => Some(ConfirmationType::DirectionalClose),
     }
+}
+
+/// Backward-compatible boolean wrapper used by the tracker.
+pub(crate) fn pending_confirmation_ok(
+    signal: &Signal,
+    candles: &[Candle],
+    index: usize,
+    volume_ratio: f64,
+) -> bool {
+    pending_confirmation(signal, candles, index, volume_ratio).is_some()
 }
 
 /// Theo dõi các tín hiệu đang mở và cập nhật TP1/TP2/SL từ nến ĐÃ ĐÓNG CỬA.

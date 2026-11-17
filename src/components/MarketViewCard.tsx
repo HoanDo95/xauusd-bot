@@ -213,6 +213,35 @@ export const MarketViewCard: React.FC<Props> = ({ data, onRefreshStrategist }) =
 
       <p className="text-xs text-neutral-200 leading-relaxed">{data.market_view}</p>
 
+      {data.score ? (
+        <div className="rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 flex flex-col gap-1.5">
+          <div className="flex items-center justify-between text-[10px] font-mono">
+            <span className="uppercase tracking-wider text-neutral-500">Score 60/30/10</span>
+            <span className="font-black text-white">{data.score.total}/100</span>
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-[10px] text-neutral-400">
+            <span>
+              Structure{' '}
+              <span className="font-mono text-neutral-200">{data.score.structure}/60</span>
+            </span>
+            <span>
+              Trigger{' '}
+              <span className="font-mono text-neutral-200">{data.score.trigger}/30</span>
+            </span>
+            <span>
+              Macro{' '}
+              <span className="font-mono text-neutral-200">{data.score.macro_score}/10</span>
+            </span>
+          </div>
+          <div className="h-1.5 w-full rounded bg-neutral-800 overflow-hidden">
+            <div
+              className="h-1.5 rounded bg-emerald-500"
+              style={{ width: `${Math.min(100, Math.max(0, data.score.total))}%` }}
+            />
+          </div>
+        </div>
+      ) : null}
+
       {data.strategist ? (
         <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/5 px-3 py-2 flex flex-col gap-2">
           <div className="flex flex-wrap items-center justify-between gap-2">

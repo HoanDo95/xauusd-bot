@@ -347,6 +347,15 @@ export interface StrategistView {
   risk_notes: string[];
 }
 
+/** Deterministic 60/30/10 score for the PRIMARY scenario. */
+export interface MarketScore {
+  structure: number;
+  trigger: number;
+  macro_score: number;
+  total: number;
+  notes: string[];
+}
+
 export interface MarketOutlook {
   bot_state: BotState;
   generated_at: string;
@@ -366,6 +375,8 @@ export interface MarketOutlook {
   h4_atr: number | null;
   /** Optional AI Market Strategist narrative. Levels remain deterministic. */
   strategist?: StrategistView | null;
+  /** Deterministic 60/30/10 score for the PRIMARY scenario. */
+  score?: MarketScore | null;
 }
 
 /** Aggressive taker flow of the latest M15 candle + CVD over the lookback window. */

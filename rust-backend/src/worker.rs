@@ -12,6 +12,7 @@ use crate::market_feed::{
     volume_source_has_buy_sell_delta, MarketDataFeed, MarketFeedSnapshot,
     SOURCE_TWELVEDATA_YAHOO_VOLUME,
 };
+use crate::market_view::{score_market, score_scenario, MarketScore};
 use crate::models::{BotConfig, Candle, Signal, Timeframe};
 use crate::news_filter::ImpactLevel;
 use crate::risk_guardrails::{
@@ -31,7 +32,9 @@ use crate::session_alerts::evaluate_and_dispatch;
 use crate::signal_review::{review_blocks_signal, review_signal};
 use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
 use crate::storage::PersistentStore;
-use crate::tracker::{evaluate_active_signals, pending_confirmation_ok, PendingConfirmation};
+use crate::tracker::{
+    evaluate_active_signals, pending_confirmation, ConfirmationType, PendingConfirmation,
+};
 use crate::trigger_journal::{record, regime_label, TriggerEvent};
 use crate::volume_delta::{compute_delta, delta_allows_signal};
 use chrono::{DateTime, Utc};
@@ -255,7 +258,7 @@ fn confirmed_signal_with_gates(
     live_price: Option<f64>,
     rsi_value: Option<f64>,
     now: DateTime<Utc>,
-) -> (Option<Signal>, String) {
+) -> (Option<Signal>, String, Option<ConfirmationType>) {
     if rsi_extreme_blocks_confirmed(
         &scenario.bias,
         rsi_value,
@@ -267,31 +270,39 @@ fn confirmed_signal_with_gates(
             scenario.id,
             rsi_value.unwrap_or_default()
         );
-        return (None, "rsi_extreme".to_string());
+        return (None, "rsi_extreme".to_string(), None);
     }
 
-    let Some(signal) = confirmed_signal_from_scenario(scenario, config, candles, live_price, now)
+    let Some(mut signal) =
+        confirmed_signal_from_scenario(scenario, config, candles, live_price, now)
     else {
         info!(
             "⏳ [Confirmed Signal] {} levels không hợp lệ hoặc giá đã đi quá xa entry — bỏ qua.",
             scenario.id
         );
-        return (None, "invalid_levels".to_string());
+        return (None, "invalid_levels".to_string(), None);
     };
     let last_index = candles.len().saturating_sub(1);
-    if config.quantum_trigger_confirmation_enabled
-        && !pending_confirmation_ok(
+    let mut confirmation_type = None;
+    if config.quantum_trigger_confirmation_enabled {
+        match pending_confirmation(
             &signal,
             candles,
             last_index,
             config.quantum_volume_confirm_ratio,
-        )
-    {
-        info!(
-            "⏳ [Confirmed Signal] {} trigger chưa xác nhận volume/pattern — chờ nến sau.",
-            scenario.id
-        );
-        return (None, "confirmation_failed".to_string());
+        ) {
+            Some(kind) => {
+                signal.management_note = Some(format!("M15 confirmation: {}", kind.as_str()));
+                confirmation_type = Some(kind);
+            }
+            None => {
+                info!(
+                    "⏳ [Confirmed Signal] {} trigger chưa xác nhận volume/pattern — chờ nến sau.",
+                    scenario.id
+                );
+                return (None, "confirmation_failed".to_string(), None);
+            }
+        }
     }
 
     info!(
@@ -302,7 +313,7 @@ fn confirmed_signal_with_gates(
         signal.entry_price,
         candles.last().map(|candle| candle.close).unwrap_or_default()
     );
-    (Some(signal), "confirmed".to_string())
+    (Some(signal), "confirmed".to_string(), confirmation_type)
 }
 
 async fn clear_active_watch_setup(state: &AppState) {
@@ -344,6 +355,8 @@ fn record_trigger_event(
     scenario: &Scenario,
     signal: Option<&Signal>,
     confirmation_reason: &str,
+    confirmation_type: Option<&str>,
+    score: Option<&MarketScore>,
     last_candle: &Candle,
     now: DateTime<Utc>,
     source: &str,
@@ -395,6 +408,13 @@ fn record_trigger_event(
         .map(|fill| (fill - last_candle.close).abs());
     event.confirmation_pass = Some(signal.is_some());
     event.confirmation_reason = Some(confirmation_reason.to_string());
+    event.confirmation_type = confirmation_type.map(str::to_string);
+    if let Some(score) = score {
+        event.score_total = Some(score.total);
+        event.score_structure = Some(score.structure);
+        event.score_trigger = Some(score.trigger);
+        event.score_macro = Some(score.macro_score);
+    }
     record(
         &state.trigger_journal,
         config.trigger_journal_enabled,
@@ -505,7 +525,7 @@ async fn build_confirmed_scenario_signal(
     let active_setup = state.active_watch_setup.read().await.clone();
     if let Some(setup) = active_setup {
         if setup.is_triggered(last_candle) {
-            let (signal, reason) = confirmed_signal_with_gates(
+            let (signal, reason, confirmation_type) = confirmed_signal_with_gates(
                 &setup.scenario,
                 config,
                 candles,
@@ -514,6 +534,8 @@ async fn build_confirmed_scenario_signal(
                 now,
             );
             let setup_id = setup.effective_setup_id();
+            let volume_ratio = crate::market_strategist::volume_surge_ratio(candles, 20);
+            let score = score_scenario(&setup.scenario, context.as_ref(), volume_ratio);
             record_trigger_event(
                 state,
                 config,
@@ -521,6 +543,8 @@ async fn build_confirmed_scenario_signal(
                 &setup.scenario,
                 signal.as_ref(),
                 &reason,
+                confirmation_type.map(|kind| kind.as_str()),
+                Some(&score),
                 last_candle,
                 now,
                 "watching_setup",
@@ -571,8 +595,10 @@ async fn build_confirmed_scenario_signal(
     );
     let scenario = best_confirmed_scenario(&scenarios, last_candle)?;
     let setup_id = format!("SETUP-{}-{}", last_candle.timestamp, scenario.id);
-    let (signal, reason) =
+    let (signal, reason, confirmation_type) =
         confirmed_signal_with_gates(scenario, config, candles, live_price, rsi_value, now);
+    let volume_ratio = crate::market_strategist::volume_surge_ratio(candles, 20);
+    let score = score_market(&scenarios, context.as_ref(), volume_ratio);
     record_trigger_event(
         state,
         config,
@@ -580,6 +606,8 @@ async fn build_confirmed_scenario_signal(
         scenario,
         signal.as_ref(),
         &reason,
+        confirmation_type.map(|kind| kind.as_str()),
+        score.as_ref(),
         last_candle,
         now,
         "scanner_confirmed",

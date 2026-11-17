@@ -6,6 +6,7 @@
 //! Officer / AI Decision prompt remains separate and unchanged.
 
 use crate::market_context::MarketContext;
+use crate::market_view::MarketScore;
 use crate::models::Candle;
 use crate::scenarios::{Scenario, ScenarioResponse};
 use crate::signal_review::{
@@ -52,6 +53,7 @@ TRẢ VỀ JSON THUẦN (không markdown, không giải thích ngoài JSON):\n\
 {\"market_view\":\"2-3 câu\",\"structure\":\"TREND_BULL|TREND_BEAR|TECHNICAL_PULLBACK|RANGE|REVERSAL_WATCH|MIXED\",\"primary_scenario_id\":\"id hoặc null\",\"primary_action\":\"WATCH_SELL|WATCH_BUY|STAND_ASIDE\",\"alternative_scenario_id\":\"id hoặc null\",\"risk_notes\":[\"tối đa 3 ghi chú ngắn\"]}";
 
 /// Build the strategist user brief. Pure and testable.
+#[allow(clippy::too_many_arguments)]
 pub fn build_strategist_prompt(
     scenarios: &ScenarioResponse,
     context: Option<&MarketContext>,
@@ -60,6 +62,7 @@ pub fn build_strategist_prompt(
     session_in: bool,
     volume_source: &str,
     volume_ratio: Option<f64>,
+    score: Option<&MarketScore>,
 ) -> String {
     let price = scenarios
         .price
@@ -120,12 +123,21 @@ pub fn build_strategist_prompt(
     let volume_text = volume_ratio
         .map(|ratio| format!("{ratio:.2}× MA20"))
         .unwrap_or_else(|| "n/a".to_string());
+    let score_text = score
+        .map(|score| {
+            format!(
+                "structure {}/60 · trigger {}/30 · macro {}/10 · total {}/100",
+                score.structure, score.trigger, score.macro_score, score.total
+            )
+        })
+        .unwrap_or_else(|| "n/a".to_string());
 
     format!(
         "Current price: {price}\n\
          D1/H4/H1: {d1}/{h4}/{h1} · H4 ATR: {h4_atr} · H4 support: {support} · H4 resistance: {resistance}\n\
          RSI M15: {rsi_m15} · RSI H1: {rsi_h1}\n\
          Volume M15: {volume_text} · source={volume_source}\n\
+         Deterministic 60/30/10 score: {score_text}\n\
          Session 13:00-23:00 VN: {}\n\
          NO_TRADE hard reason: {}\n\
          Upcoming red news: {news}\n\
@@ -309,6 +321,7 @@ fn valid_scenario_id(scenarios: &ScenarioResponse, candidate: Option<&str>) -> O
 
 /// Call the AI strategist. Returns None on any provider/parse failure so the
 /// deterministic Market View remains available.
+#[allow(clippy::too_many_arguments)]
 pub async fn review_market_strategist(
     scenarios: &ScenarioResponse,
     context: Option<&MarketContext>,
@@ -317,6 +330,7 @@ pub async fn review_market_strategist(
     session_in: bool,
     volume_source: &str,
     volume_ratio: Option<f64>,
+    score: Option<&MarketScore>,
 ) -> Option<StrategistView> {
     let settings = resolve_review_settings(
         &std::env::var("OPENCODE_GO_API_KEY").unwrap_or_default(),
@@ -331,6 +345,7 @@ pub async fn review_market_strategist(
         session_in,
         volume_source,
         volume_ratio,
+        score,
     );
     let (content, model_used) = post_ai_chat_completion(
         &settings,
@@ -440,6 +455,7 @@ mod tests {
             true,
             "TEST_PROXY",
             Some(1.2),
+            None,
         );
         assert!(prompt.contains("id=primary"));
         assert!(prompt.contains("id=alt"));

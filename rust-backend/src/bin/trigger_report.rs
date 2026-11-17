@@ -70,6 +70,14 @@ fn format_report(path: &str, lines: usize, summary: &TriggerSummary) -> String {
         "By Confirmation",
         &summary.by_confirmation,
     ));
+    out.push_str(&format_bucket_table(
+        "By Confirmation Type",
+        &summary.by_confirmation_type,
+    ));
+    out.push_str(&format_bucket_table(
+        "By Score (60/30/10)",
+        &summary.by_score,
+    ));
     out.push_str(&format_count_table(
         "Strategist Models",
         &summary.strategist_models,

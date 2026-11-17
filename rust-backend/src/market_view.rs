@@ -46,6 +46,19 @@ pub struct OutlookScenario {
     pub invalidation: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MarketScore {
+    /// 0..=60 — D1/H4/H1 alignment with the PRIMARY bias.
+    pub structure: u8,
+    /// 0..=30 — RSI/volume/trigger-distance quality.
+    pub trigger: u8,
+    /// 0..=10 — macro alignment.
+    pub macro_score: u8,
+    /// 0..=100.
+    pub total: u8,
+    pub notes: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketOutlook {
     pub bot_state: BotState,
@@ -68,6 +81,8 @@ pub struct MarketOutlook {
     pub h4_atr: Option<f64>,
     /// Optional AI strategist narrative. Levels remain deterministic.
     pub strategist: Option<StrategistView>,
+    /// Deterministic 60/30/10 score for the PRIMARY scenario.
+    pub score: Option<MarketScore>,
 }
 
 pub struct OutlookInput<'a> {
@@ -80,6 +95,7 @@ pub struct OutlookInput<'a> {
     pub spread_proxy_atr: Option<f64>,
     pub active_sniper: bool,
     pub strategist: Option<StrategistView>,
+    pub score: Option<MarketScore>,
 }
 
 pub fn build_outlook(input: OutlookInput<'_>) -> MarketOutlook {
@@ -151,6 +167,104 @@ pub fn build_outlook(input: OutlookInput<'_>) -> MarketOutlook {
         price,
         h4_atr,
         strategist: input.strategist,
+        score: input.score,
+    }
+}
+
+/// Deterministic 60/30/10 score for the PRIMARY scenario.
+pub fn score_market(
+    scenarios: &ScenarioResponse,
+    context: Option<&MarketContext>,
+    volume_ratio: Option<f64>,
+) -> Option<MarketScore> {
+    let primary = pick_primary(scenarios)?;
+    Some(score_scenario(primary, context, volume_ratio))
+}
+
+pub fn score_scenario(
+    scenario: &Scenario,
+    context: Option<&MarketContext>,
+    volume_ratio: Option<f64>,
+) -> MarketScore {
+    let bias = scenario.bias.trim().to_uppercase();
+    let mut notes = Vec::new();
+    let mut structure = 0u8;
+
+    if let Some(context) = context {
+        for (label, timeframe) in [
+            ("D1", &context.d1),
+            ("H4", &context.h4),
+            ("H1", &context.h1),
+        ] {
+            let timeframe_bias = timeframe.bias.trim().to_uppercase();
+            if timeframe_bias == bias {
+                structure += 20;
+            } else if timeframe_bias == "NEUTRAL" {
+                structure += 10;
+            }
+            notes.push(format!("{label} bias: {timeframe_bias}."));
+        }
+    } else {
+        notes.push("Structure: missing HTF context.".to_string());
+    }
+
+    let mut trigger = 0u8;
+    let rsi = context
+        .and_then(|context| context.rsi_m15.as_ref())
+        .and_then(|rsi| rsi.value);
+    match rsi {
+        Some(value) if (30.0..=70.0).contains(&value) => {
+            trigger += 10;
+            notes.push(format!("RSI M15 {value:.1}: healthy."));
+        }
+        Some(value) => {
+            trigger += 5;
+            notes.push(format!("RSI M15 {value:.1}: extreme."));
+        }
+        None => notes.push("RSI M15: missing.".to_string()),
+    }
+    match volume_ratio {
+        Some(ratio) if ratio >= 1.2 => {
+            trigger += 10;
+            notes.push(format!("Volume {ratio:.2}× MA20: expansion."));
+        }
+        Some(ratio) if ratio >= 1.0 => {
+            trigger += 5;
+            notes.push(format!("Volume {ratio:.2}× MA20: normal."));
+        }
+        Some(ratio) => notes.push(format!("Volume {ratio:.2}× MA20: low.")),
+        None => notes.push("Volume: missing.".to_string()),
+    }
+    if let (Some(trigger_price), Some(context)) = (scenario.trigger_price, context) {
+        let atr = context.h4.atr14.max(1.0);
+        let distance = (context.h1.close - trigger_price).abs() / atr;
+        if distance <= 0.5 {
+            trigger += 10;
+            notes.push(format!("Distance {distance:.2}×ATR: at trigger."));
+        } else if distance <= 1.5 {
+            trigger += 5;
+            notes.push(format!("Distance {distance:.2}×ATR: near."));
+        } else {
+            notes.push(format!("Distance {distance:.2}×ATR: far."));
+        }
+    }
+
+    let macro_score: u8 = match scenario.macro_alignment.trim().to_uppercase().as_str() {
+        "ALIGNED" => 10,
+        "MIXED" => 5,
+        "COUNTER" => 0,
+        _ => 3,
+    };
+    notes.push(format!("Macro: {}.", scenario.macro_alignment));
+    let structure = structure.min(60);
+    let trigger = trigger.min(30);
+    let total = (structure + trigger + macro_score).min(100);
+    MarketScore {
+        structure,
+        trigger,
+        macro_score,
+        total,
+        notes,
     }
 }
 
@@ -474,6 +588,17 @@ mod tests {
     }
 
     #[test]
+    fn score_components_follow_60_30_10() {
+        let response = response();
+        let context = context("BEARISH", "BEARISH", "BEARISH");
+        let score = score_market(&response, Some(&context), Some(1.3)).expect("score");
+        assert_eq!(score.structure, 60);
+        assert_eq!(score.trigger, 30);
+        assert_eq!(score.macro_score, 10);
+        assert_eq!(score.total, 100);
+    }
+
+    #[test]
     fn builds_market_view_with_primary_and_alternative_zones() {
         let response = response();
         let context = context("BEARISH", "BEARISH", "BEARISH");
@@ -487,6 +612,7 @@ mod tests {
             spread_proxy_atr: Some(0.2),
             active_sniper: false,
             strategist: None,
+            score: None,
         });
         assert_eq!(outlook.bot_state, BotState::MarketView);
         assert_eq!(outlook.structure, "TREND_BEAR");
@@ -514,6 +640,7 @@ mod tests {
             spread_proxy_atr: Some(1.2),
             active_sniper: false,
             strategist: None,
+            score: None,
         });
         assert_eq!(no_trade.bot_state, BotState::NoTrade);
         assert!(no_trade.no_trade_reason.is_some());
@@ -528,6 +655,7 @@ mod tests {
             spread_proxy_atr: Some(0.2),
             active_sniper: true,
             strategist: None,
+            score: None,
         });
         assert_eq!(sniper.bot_state, BotState::SniperTrigger);
     }

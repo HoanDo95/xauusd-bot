@@ -6,7 +6,7 @@
 
 use super::{current_scenarios, AppState};
 use crate::market_strategist::{review_market_strategist, volume_surge_ratio, StrategistView};
-use crate::market_view::{build_outlook, MarketOutlook, OutlookInput};
+use crate::market_view::{build_outlook, score_market, MarketOutlook, OutlookInput};
 use crate::models::{BotConfig, Candle, SignalStatus};
 use crate::news_filter::ImpactLevel;
 use crate::rsi::rsi_snapshot;
@@ -24,6 +24,9 @@ pub async fn compute_market_outlook(state: &AppState) -> MarketOutlook {
     let context = state.market_context.read().await.clone();
     let session_in = PersistentStore::is_within_golden_session(now, config.session_filter_enabled);
     let last_candle = state.candles.read().await.last().cloned();
+    let candles = state.candles.read().await.clone();
+    let volume_ratio = volume_surge_ratio(&candles, 20);
+    let score = score_market(&scenarios, context.as_ref(), volume_ratio);
     let spread = match last_candle.as_ref() {
         Some(candle) => spread_proxy_atr(state, candle).await,
         None => None,
@@ -47,6 +50,7 @@ pub async fn compute_market_outlook(state: &AppState) -> MarketOutlook {
         spread_proxy_atr: spread,
         active_sniper,
         strategist,
+        score,
     })
 }
 
@@ -100,6 +104,7 @@ pub(crate) async fn refresh_market_strategist(
         outlook.session == "IN",
         &volume_source,
         volume_ratio,
+        outlook.score.as_ref(),
     )
     .await;
     *state.market_strategist_view.write().await = view.clone();

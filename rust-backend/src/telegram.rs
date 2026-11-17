@@ -563,6 +563,12 @@ impl TelegramNotifier {
             format_level(outlook.price),
             format_level(outlook.h4_atr)
         ));
+        if let Some(score) = outlook.score.as_ref() {
+            lines.push(format!(
+                "Score 60/30/10: {}/100 · Structure {}/60 · Trigger {}/30 · Macro {}/10",
+                score.total, score.structure, score.trigger, score.macro_score
+            ));
+        }
         lines.push(Self::escape_html(&outlook.market_view));
         lines.push(String::new());
         match outlook.primary.as_ref() {
@@ -2049,7 +2055,7 @@ fn truncate_chars(input: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::api::EntryPlan;
-    use crate::market_view::{BotState, MarketOutlook, OutlookScenario};
+    use crate::market_view::{BotState, MarketOutlook, MarketScore, OutlookScenario};
     use crate::models::{EconomicEvent, EntryType, MacroBias, SignalStatus, Timeframe, ZoneType};
     use crate::news_filter::ImpactLevel;
     use crate::scenarios::ScenarioMarket;
@@ -2535,6 +2541,13 @@ mod tests {
             price: Some(3864.0),
             h4_atr: Some(12.0),
             strategist: None,
+            score: Some(MarketScore {
+                structure: 40,
+                trigger: 28,
+                macro_score: 10,
+                total: 78,
+                notes: vec![],
+            }),
         };
         let message = TelegramNotifier::format_market_view_message(&outlook);
         assert!(message.contains("MARKET VIEW"));
@@ -2542,6 +2555,7 @@ mod tests {
         assert!(message.contains("ALTERNATIVE"));
         assert!(message.contains("3872.00"));
         assert!(message.contains("CHƯA PHẢI ENTRY"));
+        assert!(message.contains("Score 60/30/10: 78/100"));
         assert!(!message.contains("Lot "));
     }
 

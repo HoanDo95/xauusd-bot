@@ -14,6 +14,7 @@
 //! 8 M15 bars. Alerts only run inside the 13:00–23:00 GMT+7 session.
 
 use crate::api::{current_scenarios, persist_state, AppState};
+use crate::market_view::MarketScore;
 use crate::models::{Candle, Timeframe};
 use crate::scenarios::{
     scenario_triggered, Scenario, ScenarioMarket, WatchedSetup, WATCH_SETUP_MAX_BARS,
@@ -184,6 +185,13 @@ pub fn spawn_action_trigger_worker(state: AppState) {
                 .find(|scenario| scenario.role.eq_ignore_ascii_case("PRIMARY"));
             let in_session =
                 PersistentStore::is_within_golden_session(now, config.session_filter_enabled);
+            let volume_ratio = {
+                let candles = state.candles.read().await;
+                crate::market_strategist::volume_surge_ratio(&candles, 20)
+            };
+            let context = state.market_context.read().await.clone();
+            let score =
+                crate::market_view::score_market(&scenarios, context.as_ref(), volume_ratio);
 
             // One raw scenario observation per M15 close, including outside the
             // session, so the journal can measure trigger frequency/evolution.
@@ -195,6 +203,7 @@ pub fn spawn_action_trigger_worker(state: AppState) {
                         &candle,
                         now,
                         in_session,
+                        score.as_ref(),
                     );
                     record(&state.trigger_journal, true, &event);
                     last_observed_candle = Some(candle.timestamp);
@@ -332,6 +341,7 @@ pub fn spawn_action_trigger_worker(state: AppState) {
                         now,
                         distance,
                         watch_distance,
+                        score.as_ref(),
                     );
                     record(
                         &state.trigger_journal,
@@ -399,12 +409,14 @@ fn observation_event(
     candle: &Candle,
     now: DateTime<Utc>,
     in_session: bool,
+    score: Option<&MarketScore>,
 ) -> TriggerEvent {
     let mut event = TriggerEvent::new("scenario_observed");
     event.created_at = Some(now);
     event.candle_timestamp = Some(candle.timestamp);
     event.source = Some("scenario_observe".to_string());
     fill_scenario_fields(&mut event, scenario, market, candle, in_session);
+    fill_score(&mut event, score);
     event
 }
 
@@ -415,6 +427,7 @@ fn setup_created_event(
     now: DateTime<Utc>,
     distance: f64,
     watch_distance: f64,
+    score: Option<&MarketScore>,
 ) -> TriggerEvent {
     let mut event = TriggerEvent::new("setup_created");
     event.created_at = Some(now);
@@ -424,7 +437,17 @@ fn setup_created_event(
     fill_scenario_fields(&mut event, &setup.scenario, market, candle, true);
     event.distance = Some(distance);
     event.watch_distance = Some(watch_distance);
+    fill_score(&mut event, score);
     event
+}
+
+fn fill_score(event: &mut TriggerEvent, score: Option<&MarketScore>) {
+    if let Some(score) = score {
+        event.score_total = Some(score.total);
+        event.score_structure = Some(score.structure);
+        event.score_trigger = Some(score.trigger);
+        event.score_macro = Some(score.macro_score);
+    }
 }
 
 fn setup_closed_event(
@@ -524,6 +547,7 @@ mod tests {
             &candle(BASE_TS, 2705.0, 2695.0, 2700.0),
             fixed_now(),
             false,
+            None,
         );
         assert_eq!(event.event, "scenario_observed");
         assert_eq!(event.scenario_id.as_deref(), Some("bullish_breakout"));
@@ -549,6 +573,7 @@ mod tests {
             fixed_now(),
             4.0,
             10.0,
+            None,
         );
         assert_eq!(event.event, "setup_created");
         assert_eq!(event.setup_id.as_deref(), Some("SETUP-1"));
