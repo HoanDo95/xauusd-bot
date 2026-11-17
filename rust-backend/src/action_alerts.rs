@@ -1,17 +1,21 @@
 //! Read-only SETUP WATCHING alerts for the PRIMARY reference scenario.
 //!
-//! The worker watches the latest closed M15 candle and sends one Telegram alert
-//! when price is close to the PRIMARY scenario's structured trigger but the
-//! candle has NOT confirmed it. The message contains only the zone, trigger and
-//! distance — never Entry/SL/TP/Lot. The confirmed full signal is owned by the
-//! scanner. This worker is intentionally independent from the trade-signal
-//! pipeline: it never inserts a signal, consumes the daily Sniper quota,
-//! persists trade state, calls the AI review or places an order. Dedup/cooldown
-//! state is kept in memory only.
+//! The worker watches the latest closed M15 candle and sends **one** Telegram
+//! alert when price is close to the PRIMARY scenario's structured trigger but
+//! the candle has NOT confirmed it. The message contains only the zone, trigger
+//! and distance — never Entry/SL/TP/Lot. The confirmed full signal is owned by
+//! the scanner. This worker is intentionally independent from the trade-signal
+//! pipeline: it never inserts a signal, consumes the daily Sniper quota, calls
+//! the AI review or places an order.
+//!
+//! Anti-spam rule: once an alert is sent, the setup is stored in
+//! `bot_state.json` and the worker stays silent until the setup triggers (the
+//! scanner owns the GOLD SIGNAL), reaches its structural stop, or expires after
+//! 8 M15 bars. Alerts only run inside the 13:00–23:00 GMT+7 session.
 
-use crate::api::{current_scenarios, AppState};
+use crate::api::{current_scenarios, persist_state, AppState};
 use crate::models::{Candle, Timeframe};
-use crate::scenarios::{scenario_triggered, Scenario};
+use crate::scenarios::{scenario_triggered, Scenario, WatchedSetup, WATCH_SETUP_MAX_BARS};
 use crate::storage::PersistentStore;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -20,7 +24,7 @@ use tracing::{info, warn};
 
 /// Worker polling cadence.
 const ACTION_TRIGGER_INTERVAL_SECS: u64 = 30;
-/// Maximum number of in-memory cooldown entries kept.
+/// Maximum number of persisted zone-cooldown entries kept.
 const MAX_ACTION_TRIGGER_DEDUP: usize = 50;
 /// Cooldowns below 5 minutes are treated as 5 minutes to avoid Telegram spam.
 const MIN_ACTION_TRIGGER_COOLDOWN_MINUTES: i64 = 5;
@@ -54,13 +58,19 @@ pub fn should_send_trigger_alert(
     }
 }
 
-/// Dedup key: scenario id + direction + trigger price at 2 decimals.
-pub fn trigger_dedup_key(scenario: &Scenario, trigger_price: f64) -> String {
+/// Zone key: scenario id + direction + trigger rounded to a zone bucket.
+///
+/// Using the exact trigger price caused spam because the scenario builder moved
+/// the trigger by a few points on almost every M15 rebuild. A bucket (half of
+/// H4 ATR, minimum 5 points) treats those as the same support/resistance zone.
+pub fn watch_zone_key(scenario: &Scenario, trigger_price: f64, zone_size: f64) -> String {
+    let zone_size = zone_size.max(1.0);
+    let bucket = (trigger_price / zone_size).round() * zone_size;
     format!(
         "{}:{}:{:.2}",
         scenario.id,
         scenario.trigger_direction.trim(),
-        trigger_price
+        bucket
     )
 }
 
@@ -143,12 +153,37 @@ pub fn spawn_action_trigger_worker(state: AppState) {
             };
 
             let now = Utc::now();
+            if !PersistentStore::is_within_golden_session(now, config.session_filter_enabled) {
+                continue;
+            }
             if !candle_is_closed_and_fresh(
                 &candle,
                 now.timestamp_millis(),
                 config.max_candle_age_secs,
             ) {
                 continue;
+            }
+
+            // One watching alert per setup lifecycle. While a setup is active,
+            // stay silent: the scanner owns the confirmed GOLD SIGNAL.
+            let active_setup = state.active_watch_setup.read().await.clone();
+            if let Some(setup) = active_setup {
+                if setup.is_triggered(&candle) {
+                    continue;
+                }
+                if setup.is_expired(now, WATCH_SETUP_MAX_BARS)
+                    || setup.is_invalidated(&candle, None)
+                {
+                    *state.active_watch_setup.write().await = None;
+                    if let Err(err) = persist_state(&state).await {
+                        warn!(
+                            "⚠️ [Setup Watching] Không lưu được trạng thái clear setup: {}",
+                            err
+                        );
+                    }
+                } else {
+                    continue;
+                }
             }
 
             let scenarios = current_scenarios(&state).await;
@@ -165,22 +200,10 @@ pub fn spawn_action_trigger_worker(state: AppState) {
                 continue;
             };
 
-            let key = trigger_dedup_key(primary, trigger_price);
-            let last_sent = state
-                .action_trigger_last_sent
-                .read()
-                .await
-                .get(&key)
-                .copied();
-
-            if !should_send_trigger_alert(
-                config.action_trigger_alert_enabled,
-                primary.valid,
-                primary.trigger_price,
-                last_sent,
-                config.action_trigger_cooldown_minutes,
-                now,
-            ) {
+            if !primary.valid
+                || primary.macro_alignment.eq_ignore_ascii_case("COUNTER")
+                || primary.confidence < config.action_watch_min_confidence
+            {
                 continue;
             }
 
@@ -194,8 +217,39 @@ pub fn spawn_action_trigger_worker(state: AppState) {
                 continue;
             };
             let distance = (candle.close - trigger_price).abs();
-            let watch_distance = market.h4_atr.max(1.0) * config.action_watch_distance_atr;
+            let watch_distance = (market.h4_atr.max(1.0) * config.action_watch_distance_atr)
+                .min(config.action_watch_max_distance_points);
             if distance > watch_distance {
+                continue;
+            }
+
+            let direction = primary.trigger_direction.trim().to_uppercase();
+            let approaching = match direction.as_str() {
+                "BELOW" => candle.close > trigger_price,
+                "ABOVE" => candle.close < trigger_price,
+                "TOUCH" => true,
+                _ => false,
+            };
+            if !approaching {
+                continue;
+            }
+
+            let zone_size = (market.h4_atr * 0.5).max(5.0);
+            let key = watch_zone_key(primary, trigger_price, zone_size);
+            let last_sent = state
+                .action_trigger_last_sent
+                .read()
+                .await
+                .get(&key)
+                .copied();
+            if !should_send_trigger_alert(
+                config.action_trigger_alert_enabled,
+                primary.valid,
+                primary.trigger_price,
+                last_sent,
+                config.action_trigger_cooldown_minutes,
+                now,
+            ) {
                 continue;
             }
 
@@ -209,9 +263,23 @@ pub fn spawn_action_trigger_worker(state: AppState) {
                         "👀 [Setup Watching] {} {} · M15 close {:.2} · trigger {:.2} · distance {:.2} · msg_id={}",
                         primary.id, primary.trigger_direction, candle.close, trigger_price, distance, msg_id
                     );
-                    let mut last_sent = state.action_trigger_last_sent.write().await;
-                    last_sent.insert(key, now);
-                    prune_last_sent(&mut last_sent, MAX_ACTION_TRIGGER_DEDUP);
+                    *state.active_watch_setup.write().await = Some(WatchedSetup {
+                        scenario: primary.clone(),
+                        created_at: now,
+                        created_candle_timestamp: candle.timestamp,
+                        alerted_price: candle.close,
+                    });
+                    {
+                        let mut last_sent = state.action_trigger_last_sent.write().await;
+                        last_sent.insert(key, now);
+                        prune_last_sent(&mut last_sent, MAX_ACTION_TRIGGER_DEDUP);
+                    }
+                    if let Err(err) = persist_state(&state).await {
+                        warn!(
+                            "⚠️ [Setup Watching] Không lưu được trạng thái setup: {}",
+                            err
+                        );
+                    }
                 }
                 Err(err) => {
                     warn!(
@@ -387,12 +455,26 @@ mod tests {
     }
 
     #[test]
-    fn trigger_dedup_key_includes_id_direction_and_price() {
+    fn watch_zone_key_includes_id_direction_and_bucket() {
         let scenario = scenario(true, Some(2701.0), "ABOVE");
 
         assert_eq!(
-            trigger_dedup_key(&scenario, 2701.0),
-            "bullish_breakout:ABOVE:2701.00"
+            watch_zone_key(&scenario, 2701.0, 10.0),
+            "bullish_breakout:ABOVE:2700.00"
+        );
+    }
+
+    #[test]
+    fn watch_zone_key_keeps_nearby_triggers_in_same_bucket() {
+        let scenario = scenario(true, Some(2701.0), "ABOVE");
+
+        assert_eq!(
+            watch_zone_key(&scenario, 2701.0, 10.0),
+            watch_zone_key(&scenario, 2702.0, 10.0)
+        );
+        assert_ne!(
+            watch_zone_key(&scenario, 2701.0, 10.0),
+            watch_zone_key(&scenario, 2710.0, 10.0)
         );
     }
 
@@ -432,12 +514,14 @@ mod tests {
     }
 
     #[test]
-    fn dedup_key_changes_when_the_trigger_level_moves() {
+    fn watch_zone_key_changes_for_a_different_direction() {
         let scenario = scenario(true, Some(2701.0), "ABOVE");
+        let mut opposite = scenario.clone();
+        opposite.trigger_direction = "BELOW".to_string();
 
         assert_ne!(
-            trigger_dedup_key(&scenario, 2701.0),
-            trigger_dedup_key(&scenario, 2702.0)
+            watch_zone_key(&scenario, 2701.0, 10.0),
+            watch_zone_key(&opposite, 2701.0, 10.0)
         );
     }
 }

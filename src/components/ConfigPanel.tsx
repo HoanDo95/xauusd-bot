@@ -1406,9 +1406,10 @@ export const ConfigPanel: React.FC<Props> = ({
                   👀 SETUP WATCHING — cảnh báo vùng theo dõi, không phải entry
                 </div>
                 <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
-                  Gửi Telegram khi giá tiến gần trigger của kịch bản PRIMARY. Chỉ báo vùng theo
-                  dõi + trigger, tuyệt đối không có Entry/SL/TP/Lot. Tín hiệu chính thức chỉ được
-                  gửi khi nến M15 đã đóng cửa xác nhận.
+                  Gửi Telegram đúng <strong className="text-neutral-200">1 lần</strong> khi giá tiến
+                  gần trigger của kịch bản PRIMARY. Sau đó bot im lặng cho đến khi setup trigger
+                  (GOLD SIGNAL) hoặc invalid (SL / quá 8 nến M15). Chỉ báo vùng theo dõi + trigger,
+                  tuyệt đối không có Entry/SL/TP/Lot.
                 </p>
               </div>
               <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
@@ -1438,13 +1439,13 @@ export const ConfigPanel: React.FC<Props> = ({
                     max="1440"
                     step="5"
                     disabled={!(formData.action_trigger_alert_enabled ?? true)}
-                    value={formData.action_trigger_cooldown_minutes ?? 30}
+                    value={formData.action_trigger_cooldown_minutes ?? 120}
                     onChange={(e) =>
                       setFormData({
                         ...formData,
                         action_trigger_cooldown_minutes: Math.min(
                           1440,
-                          Math.max(5, parseInt(e.target.value) || 30)
+                          Math.max(5, parseInt(e.target.value) || 120)
                         ),
                       })
                     }
@@ -1455,7 +1456,7 @@ export const ConfigPanel: React.FC<Props> = ({
                   </span>
                 </div>
                 <span className="text-[11px] text-neutral-500">
-                  5–1440 phút, mặc định 30. Dedup theo scenario + hướng + mức trigger.
+                  5–1440 phút, mặc định 120. Backstop theo scenario + hướng + vùng trigger.
                 </span>
               </div>
               <div className="flex flex-col gap-1.5">
@@ -1465,23 +1466,75 @@ export const ConfigPanel: React.FC<Props> = ({
                 <input
                   type="number"
                   min="0.5"
-                  max="3"
+                  max="2"
                   step="0.25"
                   disabled={!(formData.action_trigger_alert_enabled ?? true)}
-                  value={formData.action_watch_distance_atr ?? 1.5}
+                  value={formData.action_watch_distance_atr ?? 1.0}
                   onChange={(e) =>
                     setFormData({
                       ...formData,
                       action_watch_distance_atr: Math.max(
                         0.5,
-                        Math.min(3, parseFloat(e.target.value) || 1.5)
+                        Math.min(2, parseFloat(e.target.value) || 1.0)
                       ),
                     })
                   }
                   className="w-full bg-neutral-950 border border-neutral-800 focus:border-sky-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
                 />
                 <span className="text-[11px] text-neutral-500">
-                  0.5–3.0, mặc định 1.5. Chỉ cảnh báo khi giá cách trigger trong khoảng này.
+                  0.5–2.0, mặc định 1.0. Chỉ cảnh báo khi giá cách trigger trong khoảng này.
+                </span>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">
+                  Max distance (points)
+                </label>
+                <input
+                  type="number"
+                  min="5"
+                  max="50"
+                  step="1"
+                  disabled={!(formData.action_trigger_alert_enabled ?? true)}
+                  value={formData.action_watch_max_distance_points ?? 15}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      action_watch_max_distance_points: Math.max(
+                        5,
+                        Math.min(50, parseFloat(e.target.value) || 15)
+                      ),
+                    })
+                  }
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-sky-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                />
+                <span className="text-[11px] text-neutral-500">
+                  5–50 điểm, mặc định 15. Trần tuyệt đối khi ATR H4 tăng mạnh.
+                </span>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">
+                  Min confidence PRIMARY
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="5"
+                  disabled={!(formData.action_trigger_alert_enabled ?? true)}
+                  value={formData.action_watch_min_confidence ?? 60}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      action_watch_min_confidence: Math.max(
+                        0,
+                        Math.min(100, parseInt(e.target.value) || 60)
+                      ),
+                    })
+                  }
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-sky-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                />
+                <span className="text-[11px] text-neutral-500">
+                  0–100, mặc định 60. Chỉ cảnh báo khi PRIMARY đủ mạnh.
                 </span>
               </div>
             </div>

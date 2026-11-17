@@ -32,6 +32,9 @@ const ATR_PERIOD: usize = 14;
 /// Confidence ceiling for reference scenarios.
 const MAX_CONFIDENCE: i32 = 95;
 
+/// A watched setup expires after this many M15 bars (8 bars = 2 hours).
+pub const WATCH_SETUP_MAX_BARS: i64 = 8;
+
 /// One read-only reference scenario. Never an executable signal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scenario {
@@ -80,6 +83,47 @@ fn default_trigger_direction() -> String {
 
 fn default_trigger_timeframe() -> String {
     "M15".to_string()
+}
+
+/// A setup that already produced one SETUP WATCHING alert.
+///
+/// Persisted in `bot_state.json` so restarts/deploys do not re-send the same
+/// warning. The watched levels are frozen: the scenario trigger must not drift
+/// with every M15 rebuild, otherwise the user sees repeated warnings and the
+/// price can never close through a moving trigger.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchedSetup {
+    pub scenario: Scenario,
+    pub created_at: DateTime<Utc>,
+    pub created_candle_timestamp: i64,
+    pub alerted_price: f64,
+}
+
+impl WatchedSetup {
+    /// Expire after `max_bars` M15 candles (8 bars = 2 hours by default).
+    pub fn is_expired(&self, now: DateTime<Utc>, max_bars: i64) -> bool {
+        (now - self.created_at).num_minutes() >= max_bars.max(1) * 15
+    }
+
+    /// A setup is invalid once price reaches its structural stop. The stored
+    /// stop is the invalidation level the scenario was built around.
+    pub fn is_invalidated(&self, candle: &Candle, live_price: Option<f64>) -> bool {
+        let Some(stop_loss) = self.scenario.stop_loss else {
+            return true;
+        };
+        let price = live_price
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(candle.close);
+        match self.scenario.bias.trim().to_uppercase().as_str() {
+            "BEARISH" => price >= stop_loss,
+            "BULLISH" => price <= stop_loss,
+            _ => true,
+        }
+    }
+
+    pub fn is_triggered(&self, candle: &Candle) -> bool {
+        scenario_triggered(&self.scenario, candle)
+    }
 }
 
 /// Evaluate a scenario trigger against one closed candle.
@@ -2855,6 +2899,60 @@ mod tests {
             &scenario,
             &candle(BASE_TS, 2665.0, 2669.99, 2662.0, 2668.0)
         ));
+    }
+
+    fn watched_setup(scenario: Scenario, created_at: DateTime<Utc>) -> WatchedSetup {
+        WatchedSetup {
+            scenario,
+            created_at,
+            created_candle_timestamp: BASE_TS,
+            alerted_price: 2705.0,
+        }
+    }
+
+    #[test]
+    fn watched_setup_expires_after_eight_m15_bars() {
+        let now = Utc::now();
+        let setup = watched_setup(trigger_scenario("ABOVE", Some(2700.0)), now);
+
+        assert!(!setup.is_expired(now + chrono::Duration::minutes(119), WATCH_SETUP_MAX_BARS));
+        assert!(setup.is_expired(now + chrono::Duration::minutes(120), WATCH_SETUP_MAX_BARS));
+    }
+
+    #[test]
+    fn watched_setup_invalidates_at_structural_stop() {
+        let now = Utc::now();
+        let mut scenario = trigger_scenario("ABOVE", Some(2700.0));
+        scenario.bias = "BULLISH".to_string();
+        scenario.stop_loss = Some(2691.0);
+        let setup = watched_setup(scenario, now);
+
+        assert!(!setup.is_invalidated(
+            &candle(BASE_TS, 2700.0, 2705.0, 2695.0, 2700.0),
+            Some(2695.0)
+        ));
+        assert!(setup.is_invalidated(
+            &candle(BASE_TS, 2700.0, 2705.0, 2689.0, 2690.0),
+            Some(2690.0)
+        ));
+
+        let mut bearish = trigger_scenario("BELOW", Some(2700.0));
+        bearish.bias = "BEARISH".to_string();
+        bearish.stop_loss = Some(2711.0);
+        let setup = watched_setup(bearish, now);
+        assert!(setup.is_invalidated(
+            &candle(BASE_TS, 2705.0, 2712.0, 2704.0, 2711.0),
+            Some(2711.0)
+        ));
+    }
+
+    #[test]
+    fn watched_setup_triggers_on_closed_candle() {
+        let now = Utc::now();
+        let setup = watched_setup(trigger_scenario("BELOW", Some(2700.0)), now);
+
+        assert!(setup.is_triggered(&candle(BASE_TS, 2705.0, 2706.0, 2698.0, 2699.99)));
+        assert!(!setup.is_triggered(&candle(BASE_TS, 2705.0, 2706.0, 2700.0, 2700.0)));
     }
 
     #[test]

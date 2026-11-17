@@ -1,6 +1,8 @@
 use crate::models::{BotConfig, DailyMacroReport, Signal};
+use crate::scenarios::WatchedSetup;
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc, Weekday};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
@@ -17,6 +19,13 @@ pub struct PersistentState {
     /// Dedup keys của các briefing trước phiên đã gửi (mới nhất ở cuối).
     #[serde(default)]
     pub sent_session_alerts: Vec<String>,
+    /// Setup đang được theo dõi. Mỗi setup chỉ gửi 1 SETUP WATCHING cho đến khi
+    /// trigger hoặc invalid; lưu bền vững để restart/deploy không spam lại.
+    #[serde(default)]
+    pub active_watch_setup: Option<WatchedSetup>,
+    /// Backstop cooldown theo vùng trigger (scenario + direction + zone bucket).
+    #[serde(default)]
+    pub action_watch_last_sent: HashMap<String, DateTime<Utc>>,
 }
 
 /// Bộ lưu trữ JSON nguyên tử (atomic write) cho server chạy 24/7.

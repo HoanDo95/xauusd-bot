@@ -481,6 +481,7 @@ impl TelegramNotifier {
              XAU/USD · giá <code>{price:.2}</code> · cách trigger <code>{distance:.2}</code> điểm\n\
              {trigger}\n\
              ⏳ Chờ nến M15 đóng cửa xác nhận. <b>CHƯA phải entry</b> — chỉ là vùng theo dõi.\n\
+             🔒 Setup này chỉ báo 1 lần; bot im lặng đến khi trigger hoặc invalid.\n\
              Macro/Flow: {alignment}"
         )
     }
@@ -2332,6 +2333,7 @@ mod tests {
         assert!(message.contains("SETUP WATCHING"));
         assert!(message.contains("3853.27"));
         assert!(message.contains("CHƯA phải entry"));
+        assert!(message.contains("chỉ báo 1 lần"));
         assert!(!message.contains("Entry "));
         assert!(!message.contains("SL "));
         assert!(!message.contains("TP1"));

@@ -232,11 +232,7 @@ async fn handle_update(
                 }
                 Err(err) => {
                     warn!("⚠️ Telegram /start-entry không khả dụng: {}", err);
-                    if let Err(send_err) = notifier
-                        .send_html_message(
-                            "⚠️ AI Entry Check không khả dụng. Kiểm tra AI Decision Mode/API key rồi thử lại.",
-                        )
-                        .await
+                    if let Err(send_err) = notifier.send_html_message(&format!("⚠️ {err}")).await
                     {
                         warn!("⚠️ Telegram /start-entry reply lỗi: {}", send_err);
                     }

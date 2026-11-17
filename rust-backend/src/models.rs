@@ -486,14 +486,22 @@ pub struct BotConfig {
     /// không Entry/SL/TP/Lot. Mặc định true.
     #[serde(default = "default_true")]
     pub action_trigger_alert_enabled: bool,
-    /// Số phút tối thiểu giữa hai cảnh báo cùng scenario + hướng + mức trigger
-    /// (5..=1440, mặc định 30).
+    /// Số phút tối thiểu giữa hai cảnh báo cùng scenario + hướng + vùng trigger
+    /// (5..=1440, mặc định 120). Đây là backstop; mỗi setup chỉ gửi 1 lần.
     #[serde(default = "default_action_trigger_cooldown")]
     pub action_trigger_cooldown_minutes: i64,
     /// Khoảng cách tối đa từ giá tới trigger để gửi SETUP WATCHING,
-    /// tính theo ATR H4 (0.5..=3.0, mặc định 1.5).
+    /// tính theo ATR H4 (0.5..=2.0, mặc định 1.0).
     #[serde(default = "default_action_watch_distance_atr")]
     pub action_watch_distance_atr: f64,
+    /// Trần khoảng cách tuyệt đối (points) để tránh cảnh báo quá xa khi ATR H4
+    /// tăng mạnh (5..=50, mặc định 15).
+    #[serde(default = "default_action_watch_max_distance_points")]
+    pub action_watch_max_distance_points: f64,
+    /// Confidence tối thiểu của PRIMARY scenario để gửi SETUP WATCHING
+    /// (0..=100, mặc định 60).
+    #[serde(default = "default_action_watch_min_confidence")]
+    pub action_watch_min_confidence: u8,
     /// Bật dashboard Macro & Flow read-only (FRED/Yahoo/CFTC). Mặc định true.
     #[serde(default = "default_true")]
     pub macro_flow_enabled: bool,
@@ -643,11 +651,19 @@ fn default_divergence_alert_cooldown() -> i64 {
 }
 
 fn default_action_trigger_cooldown() -> i64 {
-    30
+    120
 }
 
 fn default_action_watch_distance_atr() -> f64 {
-    1.5
+    1.0
+}
+
+fn default_action_watch_max_distance_points() -> f64 {
+    15.0
+}
+
+fn default_action_watch_min_confidence() -> u8 {
+    60
 }
 
 impl Default for BotConfig {
@@ -731,6 +747,8 @@ impl Default for BotConfig {
             action_trigger_alert_enabled: true,
             action_trigger_cooldown_minutes: default_action_trigger_cooldown(),
             action_watch_distance_atr: default_action_watch_distance_atr(),
+            action_watch_max_distance_points: default_action_watch_max_distance_points(),
+            action_watch_min_confidence: default_action_watch_min_confidence(),
             macro_flow_enabled: true,
             daily_plan_enabled: true,
             weekend_brief_enabled: true,
@@ -846,7 +864,10 @@ impl BotConfig {
             self.divergence_alert_cooldown_minutes.clamp(5, 1440);
         self.action_trigger_cooldown_minutes = self.action_trigger_cooldown_minutes.clamp(5, 1440);
         self.action_watch_distance_atr =
-            finite_or(self.action_watch_distance_atr, 1.5).clamp(0.5, 3.0);
+            finite_or(self.action_watch_distance_atr, 1.0).clamp(0.5, 2.0);
+        self.action_watch_max_distance_points =
+            finite_or(self.action_watch_max_distance_points, 15.0).clamp(5.0, 50.0);
+        self.action_watch_min_confidence = self.action_watch_min_confidence.min(100);
 
         self.telegram_bot_token = self.telegram_bot_token.trim().to_string();
         self.telegram_chat_id = self.telegram_chat_id.trim().to_string();
@@ -1617,22 +1638,28 @@ mod tests {
     fn action_trigger_alert_defaults_true_and_is_backward_compatible() {
         let defaults = BotConfig::default();
         assert!(defaults.action_trigger_alert_enabled);
-        assert_eq!(defaults.action_trigger_cooldown_minutes, 30);
-        assert_eq!(defaults.action_watch_distance_atr, 1.5);
+        assert_eq!(defaults.action_trigger_cooldown_minutes, 120);
+        assert_eq!(defaults.action_watch_distance_atr, 1.0);
+        assert_eq!(defaults.action_watch_max_distance_points, 15.0);
+        assert_eq!(defaults.action_watch_min_confidence, 60);
 
         let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
         let object = value.as_object_mut().expect("config object");
         object.remove("action_trigger_alert_enabled");
         object.remove("action_trigger_cooldown_minutes");
         object.remove("action_watch_distance_atr");
+        object.remove("action_watch_max_distance_points");
+        object.remove("action_watch_min_confidence");
 
         let config: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
         assert!(
             config.action_trigger_alert_enabled,
             "alerts must default ON"
         );
-        assert_eq!(config.action_trigger_cooldown_minutes, 30);
-        assert_eq!(config.action_watch_distance_atr, 1.5);
+        assert_eq!(config.action_trigger_cooldown_minutes, 120);
+        assert_eq!(config.action_watch_distance_atr, 1.0);
+        assert_eq!(config.action_watch_max_distance_points, 15.0);
+        assert_eq!(config.action_watch_min_confidence, 60);
 
         let disabled = BotConfig {
             action_trigger_alert_enabled: false,
@@ -1640,6 +1667,20 @@ mod tests {
         }
         .sanitized();
         assert!(!disabled.action_trigger_alert_enabled);
+    }
+
+    #[test]
+    fn sanitize_watch_band_and_confidence_clamps() {
+        let clamped = BotConfig {
+            action_watch_distance_atr: 9.0,
+            action_watch_max_distance_points: 1.0,
+            action_watch_min_confidence: 200,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(clamped.action_watch_distance_atr, 2.0);
+        assert_eq!(clamped.action_watch_max_distance_points, 5.0);
+        assert_eq!(clamped.action_watch_min_confidence, 100);
     }
 
     #[test]

@@ -707,7 +707,17 @@ pub(crate) async fn post_ai_chat_completion(
                         log_label,
                         err.without_url()
                     );
-                    return None;
+                    if attempt < AI_MAX_RATE_LIMIT_RETRIES {
+                        let delay = retry_after_delay(None, attempt);
+                        warn!(
+                            "⏳ [{}] Lỗi mạng AI — thử lại sau {}s.",
+                            log_label,
+                            delay.as_secs()
+                        );
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    break;
                 }
             };
 
@@ -749,10 +759,14 @@ pub(crate) async fn post_ai_chat_completion(
                 body_snippet
             );
 
-            if status.as_u16() == 429 && attempt < AI_MAX_RATE_LIMIT_RETRIES {
+            // 429 and 5xx are retryable provider failures. Other 4xx responses
+            // (bad key, unknown model, bad request) are configuration errors:
+            // retrying or switching model will not help.
+            let retryable = status.as_u16() == 429 || status.is_server_error();
+            if retryable && attempt < AI_MAX_RATE_LIMIT_RETRIES {
                 let delay = retry_after_delay(retry_after.as_deref(), attempt);
                 warn!(
-                    "⏳ [{}] AI bị giới hạn tần suất — thử lại sau {}s.",
+                    "⏳ [{}] AI provider tạm thời không khả dụng — thử lại sau {}s.",
                     log_label,
                     delay.as_secs()
                 );
@@ -760,7 +774,7 @@ pub(crate) async fn post_ai_chat_completion(
                 continue;
             }
 
-            if status.as_u16() == 429 {
+            if retryable {
                 break;
             }
 
@@ -769,7 +783,7 @@ pub(crate) async fn post_ai_chat_completion(
 
         if model_index + 1 < models.len() {
             warn!(
-                "🔁 [{}] {} bị 429 — chuyển sang model dự phòng {}.",
+                "🔁 [{}] {} không khả dụng — chuyển sang model dự phòng {}.",
                 log_label,
                 model,
                 models[model_index + 1]

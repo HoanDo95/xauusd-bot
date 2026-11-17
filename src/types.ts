@@ -648,10 +648,14 @@ export interface BotConfig {
   divergence_alert_cooldown_minutes?: number;
   /** Telegram alert when the PRIMARY scenario trigger is hit on a closed M15 candle. Default true. */
   action_trigger_alert_enabled?: boolean;
-  /** Minimum minutes between alerts for the same scenario + direction + trigger (5–1440, default 30). */
+  /** Minimum minutes between alerts for the same scenario + direction + zone (5–1440, default 120). */
   action_trigger_cooldown_minutes?: number;
-  /** Max distance from price to trigger for SETUP WATCHING, in H4 ATR. Default 1.5. */
+  /** Max distance from price to trigger for SETUP WATCHING, in H4 ATR. Default 1.0. */
   action_watch_distance_atr?: number;
+  /** Absolute distance cap (points) for SETUP WATCHING. Default 15. */
+  action_watch_max_distance_points?: number;
+  /** Minimum PRIMARY confidence for SETUP WATCHING. Default 60. */
+  action_watch_min_confidence?: number;
   /** Read-only Macro & Flow dashboard (FRED/Yahoo/CFTC). Default true; never affects signals. */
   macro_flow_enabled?: boolean;
   /** Send the read-only 07:00 daily plan to Telegram. Default true; no quota impact. */

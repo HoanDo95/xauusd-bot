@@ -22,7 +22,8 @@ use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot};
 use crate::scenario_signal::{
     best_confirmed_scenario, confirmed_signal_from_scenario, rsi_extreme_blocks_confirmed,
 };
-use crate::scenarios::{anti_chase_blocks_breakout, build_scenarios, ScenarioResponse};
+use crate::scenarios::WATCH_SETUP_MAX_BARS;
+use crate::scenarios::{anti_chase_blocks_breakout, build_scenarios, Scenario, ScenarioResponse};
 use crate::scheduler::DailyScheduler;
 use crate::session_alerts::evaluate_and_dispatch;
 use crate::signal_review::{review_blocks_signal, review_signal};
@@ -30,7 +31,7 @@ use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
 use crate::storage::PersistentStore;
 use crate::tracker::{evaluate_active_signals, pending_confirmation_ok, PendingConfirmation};
 use crate::volume_delta::{compute_delta, delta_allows_signal};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -233,6 +234,90 @@ fn validate_ai_hard_risk(signal: &Signal, config: &BotConfig) -> Result<(), Stri
     validate_risk_budget(config, &sizing)
 }
 
+/// Run the deterministic confirmation gates for one scenario and build the
+/// filled MARKET signal. Shared by the stored active setup and the normal
+/// pre-close scenario path.
+fn confirmed_signal_with_gates(
+    scenario: &Scenario,
+    config: &BotConfig,
+    candles: &[Candle],
+    live_price: Option<f64>,
+    rsi_value: Option<f64>,
+    now: DateTime<Utc>,
+) -> Option<Signal> {
+    if rsi_extreme_blocks_confirmed(
+        &scenario.bias,
+        rsi_value,
+        config.rsi_oversold,
+        config.rsi_overbought,
+    ) {
+        info!(
+            "⏳ [Confirmed Signal] {} bị chặn: RSI M15 {:.1} đã quá bán/quá mua — chờ hồi, không đuổi.",
+            scenario.id,
+            rsi_value.unwrap_or_default()
+        );
+        return None;
+    }
+
+    let signal = confirmed_signal_from_scenario(scenario, config, candles, live_price, now)?;
+    let last_index = candles.len().saturating_sub(1);
+    if config.quantum_trigger_confirmation_enabled
+        && !pending_confirmation_ok(
+            &signal,
+            candles,
+            last_index,
+            config.quantum_volume_confirm_ratio,
+        )
+    {
+        info!(
+            "⏳ [Confirmed Signal] {} trigger chưa xác nhận volume/pattern — chờ nến sau.",
+            scenario.id
+        );
+        return None;
+    }
+
+    info!(
+        "🚨 [Confirmed Signal] Scenario {} ({}) confidence {}% — entry {:.2} MARKET sau M15 close {:.2}.",
+        scenario.role,
+        scenario.id,
+        scenario.confidence,
+        signal.entry_price,
+        candles.last().map(|candle| candle.close).unwrap_or_default()
+    );
+    Some(signal)
+}
+
+async fn clear_active_watch_setup(state: &AppState) {
+    let had_setup = state.active_watch_setup.write().await.take().is_some();
+    if had_setup {
+        if let Err(err) = persist_state(state).await {
+            warn!(
+                "⚠️ [Setup Watching] Không lưu được trạng thái clear setup: {}",
+                err
+            );
+        }
+    }
+}
+
+fn single_scenario_response(
+    scenario: &Scenario,
+    last_candle: &Candle,
+    source: &str,
+    volume_source: &str,
+    now: DateTime<Utc>,
+) -> ScenarioResponse {
+    ScenarioResponse {
+        status: "active_watch".to_string(),
+        generated_at: now.to_rfc3339(),
+        price: Some(last_candle.close),
+        source: source.to_string(),
+        volume_source: volume_source.to_string(),
+        market: None,
+        scenarios: vec![scenario.clone()],
+        warnings: vec![],
+    }
+}
+
 /// Build a **confirmed** signal from a valid scenario when the last closed M15
 /// candle has already triggered it. This is the only path that may send a full
 /// Entry/SL/TP/Lot alert; the pre-trigger early-entry full signal is removed.
@@ -274,6 +359,36 @@ async fn build_confirmed_scenario_signal(
     let active_data_source = state.active_data_source.read().await.clone();
     let active_volume_source = state.active_volume_source.read().await.clone();
 
+    // If a SETUP WATCHING alert is active, its frozen levels own the next
+    // confirmed signal. Do not rebuild a different scenario while it is valid.
+    let active_setup = state.active_watch_setup.read().await.clone();
+    if let Some(setup) = active_setup {
+        if setup.is_triggered(last_candle) {
+            let signal = confirmed_signal_with_gates(
+                &setup.scenario,
+                config,
+                candles,
+                live_price,
+                rsi_value,
+                now,
+            );
+            clear_active_watch_setup(state).await;
+            let scenarios = single_scenario_response(
+                &setup.scenario,
+                last_candle,
+                &active_data_source,
+                &active_volume_source,
+                now,
+            );
+            return signal.map(|signal| (signal, scenarios));
+        }
+        if setup.is_expired(now, WATCH_SETUP_MAX_BARS) || setup.is_invalidated(last_candle, None) {
+            clear_active_watch_setup(state).await;
+        } else {
+            return None;
+        }
+    }
+
     // Build the setup from the candles *before* the confirming candle. Using
     // the confirming candle would move the trigger to the next support and the
     // breakout we just saw would never match its own scenario.
@@ -290,44 +405,8 @@ async fn build_confirmed_scenario_signal(
         now.timestamp_millis(),
     );
     let scenario = best_confirmed_scenario(&scenarios, last_candle)?;
-    if rsi_extreme_blocks_confirmed(
-        &scenario.bias,
-        rsi_value,
-        config.rsi_oversold,
-        config.rsi_overbought,
-    ) {
-        info!(
-            "⏳ [Confirmed Signal] {} bị chặn: RSI M15 {:.1} đã quá bán/quá mua — chờ hồi, không đuổi.",
-            scenario.id,
-            rsi_value.unwrap_or_default()
-        );
-        return None;
-    }
-    let signal = confirmed_signal_from_scenario(scenario, config, candles, live_price, now)?;
-
-    if config.quantum_trigger_confirmation_enabled
-        && !pending_confirmation_ok(
-            &signal,
-            candles,
-            candles.len() - 1,
-            config.quantum_volume_confirm_ratio,
-        )
-    {
-        info!(
-            "⏳ [Confirmed Signal] {} trigger chưa xác nhận volume/pattern — chờ nến sau.",
-            scenario.id
-        );
-        return None;
-    }
-
-    info!(
-        "🚨 [Confirmed Signal] Scenario {} ({}) confidence {}% — entry {:.2} MARKET sau M15 close {:.2}.",
-        scenario.role,
-        scenario.id,
-        scenario.confidence,
-        signal.entry_price,
-        last_candle.close
-    );
+    let signal =
+        confirmed_signal_with_gates(scenario, config, candles, live_price, rsi_value, now)?;
     Some((signal, scenarios))
 }
 
@@ -507,12 +586,28 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
             } else {
                 config.clone()
             };
-            let mut candidate = GoldMarketAnalyzer::analyze_market_with_live_price(
-                &candles,
-                &candidate_config,
-                live_price,
-                Utc::now().timestamp_millis(),
-            );
+            // A persisted SETUP WATCHING owns the next signal until it triggers
+            // or invalidates. Skip the pinbar analyzer so a different candidate
+            // cannot fire while the user is watching a frozen setup.
+            let setup_owns_signal = {
+                let active = state.active_watch_setup.read().await;
+                active.as_ref().is_some_and(|setup| {
+                    candles.last().is_some_and(|candle| {
+                        !setup.is_expired(now, WATCH_SETUP_MAX_BARS)
+                            && !setup.is_invalidated(candle, None)
+                    })
+                })
+            };
+            let mut candidate = if setup_owns_signal {
+                None
+            } else {
+                GoldMarketAnalyzer::analyze_market_with_live_price(
+                    &candles,
+                    &candidate_config,
+                    live_price,
+                    Utc::now().timestamp_millis(),
+                )
+            };
             let mut confirmed_scenarios: Option<ScenarioResponse> = None;
             if candidate.is_none() && decision_mode {
                 if let Some((signal, scenarios)) =

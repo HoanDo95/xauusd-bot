@@ -6,6 +6,7 @@ use crate::market_feed::MarketDataFeed;
 use crate::models::{BotConfig, Candle, DailyMacroReport, Signal};
 use crate::news_filter::NewsFilterService;
 use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot, RsiSnapshot};
+use crate::scenarios::WatchedSetup;
 use crate::signal_review::{review_blocks_signal, review_signal};
 use crate::storage::{PersistentState, PersistentStore};
 use crate::telegram::TelegramNotifier;
@@ -110,9 +111,11 @@ pub struct AppState {
     pub divergence_alerts: Arc<RwLock<Vec<DivergenceAlert>>>,
     /// Cooldown gửi cảnh báo theo khóa "{timeframe}:{direction}" (chỉ trong RAM).
     pub divergence_last_sent: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
-    /// Cooldown cảnh báo trigger kịch bản theo khóa
-    /// "{scenario_id}:{direction}:{trigger_price}" (chỉ trong RAM).
+    /// Cooldown cảnh báo SETUP WATCHING theo vùng trigger
+    /// "{scenario_id}:{direction}:{zone_bucket}". Lưu bền vững trong bot_state.
     pub action_trigger_last_sent: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
+    /// Setup đang theo dõi (đã gửi 1 watching alert). None = chưa có setup.
+    pub active_watch_setup: Arc<RwLock<Option<WatchedSetup>>>,
     /// Snapshot Macro & Flow read-only (FRED/Yahoo/CFTC), không tham gia tín hiệu.
     pub macro_flow: Arc<RwLock<Option<MacroFlowSnapshot>>>,
     /// Thời điểm snapshot Macro & Flow được làm mới gần nhất.
@@ -134,6 +137,8 @@ pub async fn persist_state(state: &AppState) -> Result<(), String> {
         signals: state.signals.read().await.clone(),
         daily_report: state.daily_report.read().await.clone(),
         sent_session_alerts: state.sent_session_alerts.read().await.clone(),
+        active_watch_setup: state.active_watch_setup.read().await.clone(),
+        action_watch_last_sent: state.action_trigger_last_sent.read().await.clone(),
     };
     let store = state.store.clone();
 
