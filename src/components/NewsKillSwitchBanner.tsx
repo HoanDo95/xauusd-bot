@@ -92,6 +92,22 @@ export const NewsKillSwitchBanner: React.FC<Props> = ({
             </span>
           </div>
 
+          {newsData.nextHighImpactEvent ? (
+            <div className="text-[11px] text-amber-300">
+              Tin đỏ tiếp theo: <span className="font-bold">{newsData.nextHighImpactEvent.title}</span>{' '}
+              ·{' '}
+              {new Date(newsData.nextHighImpactEvent.scheduled_time).toLocaleString([], {
+                month: 'numeric',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+              {typeof newsData.nextHighImpactInMinutes === 'number'
+                ? ` (sau ${newsData.nextHighImpactInMinutes} phút)`
+                : ''}
+            </div>
+          ) : null}
+
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead>
@@ -107,12 +123,22 @@ export const NewsKillSwitchBanner: React.FC<Props> = ({
                 {newsData.events.map((ev) => {
                   const evDate = new Date(ev.scheduled_time);
                   const isHigh = ev.impact === 'High';
+                  const isPast = ev.status === 'PAST';
+                  const isActive = ev.status === 'ACTIVE';
                   return (
-                    <tr key={ev.id} className="text-neutral-300">
+                    <tr
+                      key={ev.id}
+                      className={`text-neutral-300 ${isPast ? 'opacity-50' : ''}`}
+                    >
                       <td className="py-2 font-medium text-white">{ev.title}</td>
                       <td className="py-2 text-neutral-400">
                         {evDate.toLocaleDateString([], { month: 'numeric', day: 'numeric' })}{' '}
                         {evDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        {isPast ? (
+                          <span className="text-neutral-600"> · đã qua</span>
+                        ) : isActive ? (
+                          <span className="text-rose-400"> · đang chặn</span>
+                        ) : null}
                       </td>
                       <td className="py-2">
                         <span

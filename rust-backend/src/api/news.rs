@@ -1,10 +1,41 @@
 use super::{current_live_view, current_scenarios, persist_state, AppState};
-use crate::news_filter::ImpactLevel;
+use crate::news_filter::{EconomicEvent, ImpactLevel};
 use crate::scheduler::DailyScheduler;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
-use chrono::Utc;
-use serde_json::json;
+use chrono::{Duration, Utc};
+use serde_json::{json, Value};
 use tracing::{info, warn};
+
+fn event_status(
+    event: &EconomicEvent,
+    now: chrono::DateTime<Utc>,
+    pre: i64,
+    post: i64,
+) -> &'static str {
+    let start = event.scheduled_time - Duration::minutes(pre.max(0));
+    let end = event.scheduled_time + Duration::minutes(post.max(0));
+    if now >= start && now <= end {
+        "ACTIVE"
+    } else if end < now {
+        "PAST"
+    } else {
+        "UPCOMING"
+    }
+}
+
+fn next_high_impact_event(
+    events: &[EconomicEvent],
+    now: chrono::DateTime<Utc>,
+) -> Option<&EconomicEvent> {
+    events
+        .iter()
+        .filter(|event| {
+            event.impact == ImpactLevel::High
+                && event.currency.eq_ignore_ascii_case("USD")
+                && event.scheduled_time > now
+        })
+        .min_by_key(|event| event.scheduled_time)
+}
 
 /// Lịch tin kinh tế + trạng thái Kill Switch đồng bộ với Frontend.
 pub(super) async fn get_news_calendar(State(state): State<AppState>) -> impl IntoResponse {
@@ -17,13 +48,33 @@ pub(super) async fn get_news_calendar(State(state): State<AppState>) -> impl Int
         (nf.calendar_events.clone(), active, active_event, reason)
     };
 
+    let pre = config.pre_news_buffer_minutes;
+    let post = config.post_news_buffer_minutes;
+    let event_views: Vec<Value> = events
+        .iter()
+        .map(|event| {
+            let mut value = serde_json::to_value(event).unwrap_or_else(|_| json!({}));
+            value["status"] = json!(event_status(event, now, pre, post));
+            value["minutesUntil"] = json!((event.scheduled_time - now).num_minutes());
+            value
+        })
+        .collect();
+    let next_high = next_high_impact_event(&events, now);
+    let next_high_view = next_high.map(|event| {
+        let mut value = serde_json::to_value(event).unwrap_or_else(|_| json!({}));
+        value["minutesUntil"] = json!((event.scheduled_time - now).num_minutes());
+        value
+    });
+
     Json(json!({
-        "events": events,
+        "events": event_views,
         "isKillSwitchActive": active,
         "activeEvent": active_event,
         "killSwitchReason": reason,
         "killSwitchEnabled": config.kill_switch_enabled,
-        "macroBias": config.macro_bias
+        "macroBias": config.macro_bias,
+        "nextHighImpactEvent": next_high_view,
+        "nextHighImpactInMinutes": next_high.map(|event| (event.scheduled_time - now).num_minutes()),
     }))
 }
 
@@ -156,5 +207,60 @@ pub(super) async fn send_daily_plan_telegram(State(state): State<AppState>) -> i
                 })),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn at(hour: u32, minute: u32) -> chrono::DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 11, 17, hour, minute, 0)
+            .single()
+            .expect("valid datetime")
+    }
+
+    fn event(
+        title: &str,
+        currency: &str,
+        impact: ImpactLevel,
+        scheduled_time: chrono::DateTime<Utc>,
+    ) -> EconomicEvent {
+        EconomicEvent {
+            id: title.to_string(),
+            title: title.to_string(),
+            currency: currency.to_string(),
+            impact,
+            scheduled_time,
+            forecast: None,
+            previous: None,
+            actual: None,
+        }
+    }
+
+    #[test]
+    fn event_status_marks_past_active_upcoming() {
+        let now = at(12, 0);
+        let active = event("Active", "USD", ImpactLevel::High, at(12, 10));
+        let past = event("Past", "USD", ImpactLevel::High, at(10, 0));
+        let upcoming = event("Upcoming", "USD", ImpactLevel::High, at(13, 0));
+
+        assert_eq!(event_status(&active, now, 30, 30), "ACTIVE");
+        assert_eq!(event_status(&past, now, 30, 30), "PAST");
+        assert_eq!(event_status(&upcoming, now, 30, 30), "UPCOMING");
+    }
+
+    #[test]
+    fn next_high_impact_skips_past_and_non_usd() {
+        let now = at(12, 0);
+        let events = vec![
+            event("Past High", "USD", ImpactLevel::High, at(10, 0)),
+            event("Future Medium", "USD", ImpactLevel::Medium, at(13, 0)),
+            event("Future EUR High", "EUR", ImpactLevel::High, at(13, 30)),
+            event("Future USD High", "USD", ImpactLevel::High, at(14, 0)),
+        ];
+        let next = next_high_impact_event(&events, now).expect("next high");
+        assert_eq!(next.title, "Future USD High");
     }
 }

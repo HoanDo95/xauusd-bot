@@ -565,6 +565,9 @@ export interface EconomicEvent {
   forecast?: string;
   previous?: string;
   actual?: string;
+  /** Server-computed relative to the kill-switch window. */
+  status?: 'PAST' | 'ACTIVE' | 'UPCOMING' | string;
+  minutesUntil?: number;
 }
 
 export interface NewsCalendarData {
@@ -574,6 +577,9 @@ export interface NewsCalendarData {
   killSwitchReason: string;
   killSwitchEnabled: boolean;
   macroBias: MacroBias;
+  /** Next future High-Impact USD event, for the news banner. */
+  nextHighImpactEvent?: EconomicEvent | null;
+  nextHighImpactInMinutes?: number | null;
   effectiveBias?: TrendBias;
   ema50?: number;
   trendBias?: TrendBias;
