@@ -5,10 +5,11 @@
 //! view. This endpoint never sends Telegram, inserts a signal or consumes quota.
 
 use super::{current_scenarios, AppState};
-use crate::market_strategist::{review_market_strategist, StrategistView};
+use crate::market_strategist::{review_market_strategist, volume_surge_ratio, StrategistView};
 use crate::market_view::{build_outlook, MarketOutlook, OutlookInput};
 use crate::models::{BotConfig, Candle, SignalStatus};
 use crate::news_filter::ImpactLevel;
+use crate::rsi::rsi_snapshot;
 use crate::storage::PersistentStore;
 use crate::trigger_journal::{record, TriggerEvent};
 use axum::{extract::State, response::IntoResponse, Json};
@@ -69,7 +70,22 @@ pub(crate) async fn refresh_market_strategist(
     config: &BotConfig,
 ) -> Option<StrategistView> {
     let scenarios = current_scenarios(state).await;
-    let context = state.market_context.read().await.clone();
+    let candles = state.candles.read().await.clone();
+    let volume_source = state.active_volume_source.read().await.clone();
+    let volume_ratio = volume_surge_ratio(&candles, 20);
+    let mut context = state.market_context.read().await.clone();
+    if let Some(context) = context.as_mut() {
+        if context.rsi_m15.is_none() {
+            context.rsi_m15 = Some(rsi_snapshot(
+                &candles,
+                config.rsi_period,
+                config.rsi_overbought,
+                config.rsi_oversold,
+                config.rsi_divergence_lookback,
+                config.rsi_pivot_k,
+            ));
+        }
+    }
     let news_notes: Vec<String> = outlook
         .risk_notes
         .iter()
@@ -82,6 +98,8 @@ pub(crate) async fn refresh_market_strategist(
         &news_notes,
         outlook.no_trade_reason.as_deref(),
         outlook.session == "IN",
+        &volume_source,
+        volume_ratio,
     )
     .await;
     *state.market_strategist_view.write().await = view.clone();

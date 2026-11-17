@@ -576,9 +576,10 @@ impl TelegramNotifier {
         if let Some(strategist) = outlook.strategist.as_ref() {
             lines.push(String::new());
             lines.push(format!(
-                "🧠 <b>AI Strategist</b> — {} · {}",
+                "🧠 <b>AI Strategist</b> — {} · {} · {}",
                 Self::escape_html(&strategist.model),
-                Self::escape_html(&strategist.prompt_version)
+                Self::escape_html(&strategist.prompt_version),
+                Self::escape_html(&strategist.structure)
             ));
             lines.push(Self::escape_html(&strategist.market_view));
             if let Some(primary_id) = strategist.primary_scenario_id.as_ref() {

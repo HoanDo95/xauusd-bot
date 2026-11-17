@@ -6,6 +6,7 @@
 //! Officer / AI Decision prompt remains separate and unchanged.
 
 use crate::market_context::MarketContext;
+use crate::models::Candle;
 use crate::scenarios::{Scenario, ScenarioResponse};
 use crate::signal_review::{
     normalize_json_content, post_ai_chat_completion, resolve_review_settings, review_session_id,
@@ -57,6 +58,8 @@ pub fn build_strategist_prompt(
     news_notes: &[String],
     no_trade_reason: Option<&str>,
     session_in: bool,
+    volume_source: &str,
+    volume_ratio: Option<f64>,
 ) -> String {
     let price = scenarios
         .price
@@ -114,11 +117,15 @@ pub fn build_strategist_prompt(
     } else {
         news_notes.join(" | ")
     };
+    let volume_text = volume_ratio
+        .map(|ratio| format!("{ratio:.2}× MA20"))
+        .unwrap_or_else(|| "n/a".to_string());
 
     format!(
         "Current price: {price}\n\
          D1/H4/H1: {d1}/{h4}/{h1} · H4 ATR: {h4_atr} · H4 support: {support} · H4 resistance: {resistance}\n\
          RSI M15: {rsi_m15} · RSI H1: {rsi_h1}\n\
+         Volume M15: {volume_text} · source={volume_source}\n\
          Session 13:00-23:00 VN: {}\n\
          NO_TRADE hard reason: {}\n\
          Upcoming red news: {news}\n\
@@ -153,6 +160,21 @@ fn format_optional(value: Option<f64>) -> String {
     value
         .map(|value| format!("{value:.2}"))
         .unwrap_or_else(|| "n/a".to_string())
+}
+
+/// Latest M15 volume divided by the average of the previous `period` candles.
+pub fn volume_surge_ratio(candles: &[Candle], period: usize) -> Option<f64> {
+    let period = period.max(1);
+    if candles.len() <= period {
+        return None;
+    }
+    let last = candles.last()?.volume;
+    let window = &candles[candles.len() - 1 - period..candles.len() - 1];
+    let average = window.iter().map(|candle| candle.volume).sum::<f64>() / period as f64;
+    if !average.is_finite() || average <= 0.0 {
+        return None;
+    }
+    Some((last / average).max(0.0))
 }
 
 /// Parse and validate the strategist JSON. Unknown scenario ids are rejected
@@ -293,14 +315,23 @@ pub async fn review_market_strategist(
     news_notes: &[String],
     no_trade_reason: Option<&str>,
     session_in: bool,
+    volume_source: &str,
+    volume_ratio: Option<f64>,
 ) -> Option<StrategistView> {
     let settings = resolve_review_settings(
         &std::env::var("OPENCODE_GO_API_KEY").unwrap_or_default(),
         &std::env::var("OPENCODE_GO_BASE_URL").unwrap_or_default(),
         &std::env::var("AI_SIGNAL_REVIEW_MODEL").unwrap_or_default(),
     )?;
-    let prompt =
-        build_strategist_prompt(scenarios, context, news_notes, no_trade_reason, session_in);
+    let prompt = build_strategist_prompt(
+        scenarios,
+        context,
+        news_notes,
+        no_trade_reason,
+        session_in,
+        volume_source,
+        volume_ratio,
+    );
     let (content, model_used) = post_ai_chat_completion(
         &settings,
         STRATEGIST_SYSTEM_PROMPT,
@@ -320,7 +351,21 @@ pub async fn review_market_strategist(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::Timeframe;
     use crate::scenarios::ScenarioMarket;
+
+    fn candle(volume: f64) -> Candle {
+        Candle {
+            timestamp: 0,
+            open: 1.0,
+            high: 1.0,
+            low: 1.0,
+            close: 1.0,
+            volume,
+            taker_buy_volume: 0.0,
+            timeframe: Timeframe::M15,
+        }
+    }
 
     fn scenario(id: &str, role: &str, bias: &str, entry: f64) -> Scenario {
         Scenario {
@@ -379,6 +424,13 @@ mod tests {
     }
 
     #[test]
+    fn volume_surge_ratio_uses_previous_average() {
+        let candles = vec![candle(100.0), candle(100.0), candle(200.0)];
+        assert_eq!(volume_surge_ratio(&candles, 2), Some(2.0));
+        assert!(volume_surge_ratio(&candles, 3).is_none());
+    }
+
+    #[test]
     fn prompt_contains_scenarios_weights_and_json_schema() {
         let prompt = build_strategist_prompt(
             &response(),
@@ -386,9 +438,13 @@ mod tests {
             &["Tin đỏ USD 21:30".to_string()],
             None,
             true,
+            "TEST_PROXY",
+            Some(1.2),
         );
         assert!(prompt.contains("id=primary"));
         assert!(prompt.contains("id=alt"));
+        assert!(prompt.contains("Volume M15: 1.20× MA20"));
+        assert!(prompt.contains("source=TEST_PROXY"));
         assert!(prompt.contains("Tin đỏ USD 21:30"));
         assert!(prompt.contains("Current price: 2700.00"));
         assert!(prompt.contains("Session 13:00-23:00 VN: IN"));

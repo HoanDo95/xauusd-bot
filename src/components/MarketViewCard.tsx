@@ -220,7 +220,8 @@ export const MarketViewCard: React.FC<Props> = ({ data, onRefreshStrategist }) =
               🧠 AI Strategist
             </span>
             <span className="text-[10px] text-neutral-500 font-mono">
-              {data.strategist.model} · {data.strategist.prompt_version}
+              {data.strategist.model} · {data.strategist.prompt_version} ·{' '}
+              {data.strategist.structure}
             </span>
           </div>
           <p className="text-[11px] text-neutral-200 leading-relaxed">
