@@ -594,13 +594,24 @@ on from the dashboard or `POST /api/config` only for an explicit A/B run.
 
 ### Two-level notification pipeline
 
-- **SETUP WATCHING** — sent when price approaches a valid PRIMARY trigger
-  (`action_watch_distance_atr`, default `1.5× H4 ATR`). It contains the zone,
-  trigger, current price and distance only. It must not contain Entry/SL/TP/Lot
-  and explicitly says `CHƯA phải entry`.
-- **GOLD SIGNAL ALERT** — sent only after a closed M15 candle triggers a valid
-  scenario, the confirmation gate passes, and AI + hard risk approve. Only this
-  alert contains Entry/SL/TP/Lot.
+- **SETUP WATCHING** — sent **once per setup** when price approaches a valid
+  PRIMARY trigger (`action_watch_distance_atr`, default `1.0× H4 ATR`, capped at
+  `action_watch_max_distance_points`, default 15 points; min PRIMARY confidence
+  `action_watch_min_confidence`, default 60). It contains the zone, trigger,
+  current price and distance only. It must not contain Entry/SL/TP/Lot and
+  explicitly says `CHƯA phải entry`.
+- **One-shot lifecycle** — the setup (scenario + frozen trigger/SL/TP +
+  `created_at`) is persisted in `bot_state.json`. After one alert the worker
+  stays silent until the setup triggers (scanner sends GOLD SIGNAL), reaches its
+  structural stop, or expires after 8 M15 bars. The zone-bucket cooldown
+  (`action_trigger_cooldown_minutes`, default 120) is a backstop. Watching
+  alerts only run in the 13:00–23:00 GMT+7 session.
+- **GOLD SIGNAL ALERT** — sent only after a closed M15 candle triggers the
+  frozen watched setup, the confirmation gate passes, and AI + hard risk
+  approve. Only this alert contains Entry/SL/TP/Lot.
+- **AI prompt alignment** — when `early_entry_enabled=false`, the AI is told
+  that pre-trigger early entry is disabled and a closed M15 trigger is the entry
+  gate; scenario confidence is context, not a 90% permission threshold.
 - **Fresh-candle rule** — the confirming M15 candle must be within
   `max_candle_age_secs` (180s in production) of its close. The setup scenario is
   built from the candles *before* the confirming candle; the same setup is
