@@ -592,6 +592,21 @@ M15. A/B at 0.05R cost:
 The result is mixed, so the flag stays off until forward-test/approval. Turn it
 on from the dashboard or `POST /api/config` only for an explicit A/B run.
 
+### AI Market Strategist (Phase 2)
+
+- `market_strategist_enabled` (default **false**) enables an advisory H1 AI
+  narrative and scenario selection. It is **not** the Risk Officer and never
+  approves a sniper signal.
+- The H1 worker calls the strategist once per H1 close during the session,
+  caches the view, records a `strategist_view` journal event, and includes the
+  narrative in the Market View API/dashboard/Telegram. On AI failure the
+  deterministic view remains.
+- The AI may only select `scenario_id` values from the deterministic builder;
+  Entry/SL/TP always come from the scenario. Unknown ids are rejected.
+- The existing AI Decision / Risk Officer prompt for sniper approval is
+  unchanged. This keeps the strategist narrative and the risk veto separate.
+- `/start-entry` includes the cached strategist view when enabled (advisory).
+
 ### Trigger journal (analysis-only)
 
 Every setup, trigger, AI review and hypothetical outcome is appended to

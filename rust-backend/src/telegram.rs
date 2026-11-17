@@ -573,6 +573,31 @@ impl TelegramNotifier {
             lines.push(String::new());
             lines.push(Self::format_outlook_scenario("🔄 ALTERNATIVE", alternative));
         }
+        if let Some(strategist) = outlook.strategist.as_ref() {
+            lines.push(String::new());
+            lines.push(format!(
+                "🧠 <b>AI Strategist</b> — {} · {}",
+                Self::escape_html(&strategist.model),
+                Self::escape_html(&strategist.prompt_version)
+            ));
+            lines.push(Self::escape_html(&strategist.market_view));
+            if let Some(primary_id) = strategist.primary_scenario_id.as_ref() {
+                lines.push(format!(
+                    "Chọn PRIMARY: {} · {}",
+                    Self::escape_html(primary_id),
+                    Self::escape_html(strategist.primary_action.as_deref().unwrap_or("—"))
+                ));
+            }
+            if let Some(alternative_id) = strategist.alternative_scenario_id.as_ref() {
+                lines.push(format!(
+                    "Chọn ALTERNATIVE: {}",
+                    Self::escape_html(alternative_id)
+                ));
+            }
+            for note in &strategist.risk_notes {
+                lines.push(format!("• {}", Self::escape_html(note)));
+            }
+        }
         lines.push(String::new());
         lines.push("⚠️ <b>Risk</b>".to_string());
         for note in &outlook.risk_notes {
@@ -1467,6 +1492,38 @@ impl TelegramNotifier {
             }
         };
 
+        let strategist_block = match result.market_strategist.as_ref() {
+            Some(view) => {
+                let mut block = format!(
+                    "🧠 AI Strategist (advisory) — {} · {}\n{}",
+                    Self::escape_html(&truncate_chars(&view.model, 40)),
+                    Self::escape_html(&truncate_chars(&view.prompt_version, 40)),
+                    Self::escape_html(&truncate_chars(&view.market_view, 600))
+                );
+                if let Some(primary_id) = view.primary_scenario_id.as_ref() {
+                    block.push_str(&format!(
+                        "\nChọn PRIMARY: {} · {}",
+                        Self::escape_html(&truncate_chars(primary_id, 40)),
+                        Self::escape_html(view.primary_action.as_deref().unwrap_or("—"))
+                    ));
+                }
+                if let Some(alternative_id) = view.alternative_scenario_id.as_ref() {
+                    block.push_str(&format!(
+                        "\nChọn ALTERNATIVE: {}",
+                        Self::escape_html(&truncate_chars(alternative_id, 40))
+                    ));
+                }
+                for note in &view.risk_notes {
+                    block.push_str(&format!(
+                        "\n• {}",
+                        Self::escape_html(&truncate_chars(note, 180))
+                    ));
+                }
+                block
+            }
+            None => String::new(),
+        };
+
         format!(
             "🧠 <b>AI ENTRY CHECK</b> — {}\n\
              Action: <b>{action}</b> · confidence {confidence}%\n\
@@ -1475,6 +1532,7 @@ impl TelegramNotifier {
              {plan_block}\n\
              {macro_line}\n\
              {volume_line}\n\
+             {strategist_block}\n\
              Đây là check thủ công, KHÔNG phải trade signal tự động.",
             Self::escape_html(&truncate_chars(symbol, 40)),
             Self::escape_html(&truncate_chars(selected, 24))
@@ -2475,6 +2533,7 @@ mod tests {
             h1_bias: "BEARISH".to_string(),
             price: Some(3864.0),
             h4_atr: Some(12.0),
+            strategist: None,
         };
         let message = TelegramNotifier::format_market_view_message(&outlook);
         assert!(message.contains("MARKET VIEW"));
@@ -2727,6 +2786,7 @@ mod tests {
                 note: "Kế hoạch tham khảo từ kịch bản PRIMARY.".to_string(),
             }),
             generated_at: "2026-11-12T00:00:00Z".to_string(),
+            market_strategist: None,
         }
     }
 

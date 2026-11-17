@@ -1582,6 +1582,22 @@ export const ConfigPanel: React.FC<Props> = ({
               />
               <span className="font-semibold text-white">Bật MARKET VIEW Telegram</span>
             </label>
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+              <input
+                type="checkbox"
+                checked={formData.market_strategist_enabled ?? false}
+                onChange={(e) =>
+                  setFormData({ ...formData, market_strategist_enabled: e.target.checked })
+                }
+                className="accent-emerald-500 w-4 h-4 rounded cursor-pointer"
+              />
+              <span className="font-semibold text-white">
+                Bật AI Market Strategist (advisory, không thay Risk Officer)
+              </span>
+            </label>
+            <span className="text-[11px] text-neutral-500">
+              AI chỉ chọn/giải thích scenario_id từ builder; không bịa Entry/SL/TP. Mặc định tắt để A/B.
+            </span>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-neutral-300">

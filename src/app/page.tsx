@@ -31,6 +31,7 @@ import {
   fetchNewsCalendar,
   fetchScenarios,
   fetchSignals,
+  refreshMarketStrategist,
   saveConfig,
   sendScenariosTelegram,
   sendSignalTelegram,
@@ -142,6 +143,7 @@ const DEFAULT_CONFIG: BotConfig = {
   action_watch_min_confidence: 60,
   trigger_journal_enabled: true,
   market_view_telegram_enabled: true,
+  market_strategist_enabled: false,
   market_view_cooldown_minutes: 120,
   max_spread_proxy_atr: 1.0,
   macro_flow_enabled: true,
@@ -344,6 +346,11 @@ export default function DashboardPage() {
       console.error('Lỗi tải market view:', err);
     }
   }, []);
+
+  const handleRefreshStrategist = useCallback(async () => {
+    await refreshMarketStrategist();
+    await loadMarketView();
+  }, [loadMarketView]);
 
   // Fetch the read-only macro/flow snapshot (FRED/Yahoo/CFTC; no quota impact).
   const loadMacroFlow = useCallback(async () => {
@@ -632,7 +639,7 @@ export default function DashboardPage() {
         {currentTab === 'monitor' && (
           <div className="flex flex-col gap-6">
             {/* Always-on H1 Market View — structure + primary/alternative zones */}
-            <MarketViewCard data={marketView} />
+            <MarketViewCard data={marketView} onRefreshStrategist={handleRefreshStrategist} />
 
             {/* Top-level "Should I enter now?" verdict (read-only, no quota) */}
             <ActionCard data={actionView} aiDecision={actionView?.aiDecision ?? aiDecision} />

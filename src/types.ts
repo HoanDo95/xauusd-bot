@@ -335,6 +335,18 @@ export interface OutlookScenario {
  * GET /api/market-view — always-available H1 Market Outlook.
  * Deterministic levels from the scenario builder; never an automatic order.
  */
+export interface StrategistView {
+  generated_at: string;
+  model: string;
+  prompt_version: string;
+  market_view: string;
+  structure: string;
+  primary_scenario_id: string | null;
+  primary_action: string | null;
+  alternative_scenario_id: string | null;
+  risk_notes: string[];
+}
+
 export interface MarketOutlook {
   bot_state: BotState;
   generated_at: string;
@@ -352,6 +364,8 @@ export interface MarketOutlook {
   h1_bias: string;
   price: number | null;
   h4_atr: number | null;
+  /** Optional AI Market Strategist narrative. Levels remain deterministic. */
+  strategist?: StrategistView | null;
 }
 
 /** Aggressive taker flow of the latest M15 candle + CVD over the lookback window. */
@@ -496,6 +510,8 @@ export interface EntryCheckResult {
   scenarios: ScenarioResponse;
   entry_plan: EntryPlan | null;
   generated_at: string;
+  /** Cached H1 AI Market Strategist view (advisory; never an entry/signal). */
+  market_strategist?: StrategistView | null;
 }
 
 /** AI Chief Risk Officer review — veto-only, never live SL/TP. */
@@ -701,6 +717,8 @@ export interface BotConfig {
   trigger_journal_enabled?: boolean;
   /** Send MARKET VIEW to Telegram on H1 close during the session. Default true. */
   market_view_telegram_enabled?: boolean;
+  /** Enable the AI Market Strategist for the H1 Market View. Default false (A/B). */
+  market_strategist_enabled?: boolean;
   /** Minimum minutes between MARKET VIEW Telegram messages (15–1440, default 120). */
   market_view_cooldown_minutes?: number;
   /** Spread proxy threshold (|live − M15 close| / H4 ATR) for NO_TRADE. Default 1.0. */

@@ -186,6 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         divergence_last_sent: Arc::new(RwLock::new(std::collections::HashMap::new())),
         action_trigger_last_sent: Arc::new(RwLock::new(persisted.action_watch_last_sent)),
         active_watch_setup: Arc::new(RwLock::new(persisted.active_watch_setup)),
+        market_strategist_view: Arc::new(RwLock::new(None)),
         trigger_journal: Arc::new(TriggerJournal::new(journal_path)),
         macro_flow: Arc::new(RwLock::new(None)),
         macro_flow_updated_at: Arc::new(RwLock::new(None)),

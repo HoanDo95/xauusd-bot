@@ -28,7 +28,10 @@ pub fn spawn_market_view_worker(state: AppState) {
         loop {
             interval.tick().await;
             let config = state.config.read().await.clone();
-            if !config.is_active || !config.market_view_telegram_enabled {
+            if !config.is_active {
+                continue;
+            }
+            if !config.market_view_telegram_enabled && !config.market_strategist_enabled {
                 continue;
             }
             let h1_timestamp = {
@@ -48,7 +51,17 @@ pub fn spawn_market_view_worker(state: AppState) {
                 continue;
             }
 
-            let outlook = compute_market_outlook(&state).await;
+            let mut outlook = compute_market_outlook(&state).await;
+            let strategist = if config.market_strategist_enabled {
+                crate::api::refresh_market_strategist(&state, &outlook, &config).await
+            } else {
+                *state.market_strategist_view.write().await = None;
+                None
+            };
+            outlook.strategist = strategist;
+            if !config.market_view_telegram_enabled {
+                continue;
+            }
             let key = outlook_key(&outlook);
             let cooldown = Duration::minutes(config.market_view_cooldown_minutes.max(15));
             let cooldown_elapsed = match last_sent {
@@ -93,14 +106,27 @@ fn outlook_key(outlook: &MarketOutlook) -> String {
         .as_ref()
         .map(|alternative| alternative.invalidation.clone())
         .unwrap_or_default();
+    let strategist = outlook
+        .strategist
+        .as_ref()
+        .map(|view| {
+            format!(
+                "{}:{}:{}",
+                view.primary_scenario_id.as_deref().unwrap_or(""),
+                view.primary_action.as_deref().unwrap_or(""),
+                view.market_view
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}",
         outlook.bot_state.as_str(),
         outlook.structure,
         primary,
         alternative,
         outlook.no_trade_reason.clone().unwrap_or_default(),
         outlook.d1_bias,
-        outlook.h4_bias
+        outlook.h4_bias,
+        strategist
     )
 }

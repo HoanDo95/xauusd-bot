@@ -1,10 +1,12 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { MarketOutlook, OutlookScenario } from '../types';
 
 interface Props {
   data: MarketOutlook | null;
+  /** Manual read-only AI strategist refresh (no Telegram/signal/quota). */
+  onRefreshStrategist?: () => Promise<void>;
 }
 
 function price(value: number | null | undefined): string {
@@ -123,7 +125,19 @@ function ScenarioBlock({
  * Always-available H1 Market View. Read-only: never an entry, never a signal.
  * The primary/alternative zones come from the deterministic scenario builder.
  */
-export const MarketViewCard: React.FC<Props> = ({ data }) => {
+export const MarketViewCard: React.FC<Props> = ({ data, onRefreshStrategist }) => {
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    if (!onRefreshStrategist || refreshing) return;
+    setRefreshing(true);
+    try {
+      await onRefreshStrategist();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   if (!data) {
     return (
       <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-4 flex flex-col gap-2">
@@ -157,6 +171,14 @@ export const MarketViewCard: React.FC<Props> = ({ data }) => {
           <span className="text-[10px] text-neutral-500 font-mono">
             {timeLabel(data.generated_at)} → {timeLabel(data.valid_until)}
           </span>
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={refreshing || !onRefreshStrategist}
+            className="px-2.5 py-1 rounded-md border border-indigo-500/40 bg-indigo-500/10 text-[10px] font-mono font-bold uppercase tracking-wider text-indigo-200 hover:bg-indigo-500/20 disabled:cursor-wait disabled:opacity-60 transition-colors"
+          >
+            {refreshing ? 'AI đang phân tích…' : 'AI Strategist'}
+          </button>
         </div>
       </div>
 
@@ -190,6 +212,54 @@ export const MarketViewCard: React.FC<Props> = ({ data }) => {
       </div>
 
       <p className="text-xs text-neutral-200 leading-relaxed">{data.market_view}</p>
+
+      {data.strategist ? (
+        <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/5 px-3 py-2 flex flex-col gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-indigo-300">
+              🧠 AI Strategist
+            </span>
+            <span className="text-[10px] text-neutral-500 font-mono">
+              {data.strategist.model} · {data.strategist.prompt_version}
+            </span>
+          </div>
+          <p className="text-[11px] text-neutral-200 leading-relaxed">
+            {data.strategist.market_view}
+          </p>
+          <div className="flex flex-wrap gap-2 text-[10px] font-mono text-neutral-400">
+            {data.strategist.primary_scenario_id ? (
+              <span>
+                Chọn PRIMARY:{' '}
+                <span className="text-indigo-200">{data.strategist.primary_scenario_id}</span>
+                {data.strategist.primary_action
+                  ? ` · ${data.strategist.primary_action}`
+                  : ''}
+              </span>
+            ) : null}
+            {data.strategist.alternative_scenario_id ? (
+              <span>
+                Chọn ALTERNATIVE:{' '}
+                <span className="text-indigo-200">
+                  {data.strategist.alternative_scenario_id}
+                </span>
+              </span>
+            ) : null}
+          </div>
+          {data.strategist.risk_notes.length > 0 ? (
+            <ul className="flex flex-col gap-1">
+              {data.strategist.risk_notes.map((note, index) => (
+                <li key={`${index}-${note}`} className="text-[10px] text-neutral-400">
+                  • {note}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : (
+        <div className="text-[10px] text-neutral-600 font-mono">
+          AI Strategist: chưa có (deterministic view).
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         {data.primary ? (

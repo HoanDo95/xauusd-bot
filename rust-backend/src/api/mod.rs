@@ -3,6 +3,7 @@ use crate::divergence_alerts::DivergenceAlert;
 use crate::macro_flow::{align_signal_with_macro_flow, MacroFlowSnapshot};
 use crate::market_context::{htf_allows_signal, MarketContext};
 use crate::market_feed::MarketDataFeed;
+use crate::market_strategist::StrategistView;
 use crate::models::{BotConfig, Candle, DailyMacroReport, Signal};
 use crate::news_filter::NewsFilterService;
 use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot, RsiSnapshot};
@@ -66,6 +67,7 @@ pub(crate) use entry_check::run_entry_check;
 pub use entry_check::{EntryCheckResult, EntryPlan};
 pub(crate) use live::current_live_view;
 pub(crate) use market_view::compute_market_outlook;
+pub(crate) use market_view::refresh_market_strategist;
 pub(crate) use market_view::spread_proxy_atr;
 pub(crate) use scanner::{start_scanner_inner, stop_scanner_inner};
 pub(crate) use scenarios::current_scenarios;
@@ -121,6 +123,8 @@ pub struct AppState {
     pub action_trigger_last_sent: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
     /// Setup đang theo dõi (đã gửi 1 watching alert). None = chưa có setup.
     pub active_watch_setup: Arc<RwLock<Option<WatchedSetup>>>,
+    /// AI Market Strategist cache cho H1 Market View (advisory, không phải signal).
+    pub market_strategist_view: Arc<RwLock<Option<StrategistView>>>,
     /// Append-only trigger journal (analysis log, not live trade state).
     pub trigger_journal: Arc<TriggerJournal>,
     /// Snapshot Macro & Flow read-only (FRED/Yahoo/CFTC), không tham gia tín hiệu.
@@ -171,6 +175,10 @@ pub fn create_router(state: AppState) -> Router {
             get(journal::get_trigger_journal_summary),
         )
         .route("/api/market-view", get(market_view::get_market_view))
+        .route(
+            "/api/market-view/strategist",
+            post(market_view::refresh_market_strategist_view),
+        )
         // Bối cảnh đa khung D1/H4/H1 (read-only, 204 khi chưa sẵn sàng)
         .route("/api/context", get(get_market_context))
         // Nến H4/D1 đã đóng cho chart "view toàn cảnh" (read-only)

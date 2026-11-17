@@ -104,6 +104,10 @@ pub struct TriggerEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub market_view: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub r_multiple: Option<f64>,
@@ -484,6 +488,15 @@ pub struct TriggerSummary {
     pub by_session: Vec<BucketSummary>,
     pub by_ai_confidence: Vec<BucketSummary>,
     pub by_confirmation: Vec<BucketSummary>,
+    pub strategist_views: usize,
+    pub strategist_models: Vec<CountBucket>,
+    pub strategist_primaries: Vec<CountBucket>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CountBucket {
+    pub key: String,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -505,8 +518,25 @@ pub fn summarize(events: &[TriggerEvent]) -> TriggerSummary {
     let mut setup_meta: HashMap<String, &TriggerEvent> = HashMap::new();
     let mut ai_reviews: HashMap<String, &TriggerEvent> = HashMap::new();
     let mut outcomes: Vec<&TriggerEvent> = Vec::new();
+    let mut strategist_views = 0usize;
+    let mut strategist_models: HashMap<String, usize> = HashMap::new();
+    let mut strategist_primaries: HashMap<String, usize> = HashMap::new();
 
     for event in events {
+        if event.event == "strategist_view" {
+            strategist_views += 1;
+            let model = event
+                .ai_model
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+            *strategist_models.entry(model).or_default() += 1;
+            let primary = event
+                .scenario_id
+                .clone()
+                .unwrap_or_else(|| "none".to_string());
+            *strategist_primaries.entry(primary).or_default() += 1;
+            continue;
+        }
         let Some(setup_id) = event.setup_id.as_ref() else {
             continue;
         };
@@ -655,6 +685,9 @@ pub fn summarize(events: &[TriggerEvent]) -> TriggerSummary {
         by_session: build_buckets(session_map),
         by_ai_confidence: build_buckets(ai_map),
         by_confirmation: build_buckets(confirmation_map),
+        strategist_views,
+        strategist_models: build_counts(strategist_models),
+        strategist_primaries: build_counts(strategist_primaries),
     }
 }
 
@@ -686,6 +719,15 @@ fn max_drawdown(values: &mut [(DateTime<Utc>, f64)]) -> f64 {
         max_dd = max_dd.max(peak - equity);
     }
     max_dd
+}
+
+fn build_counts(groups: HashMap<String, usize>) -> Vec<CountBucket> {
+    let mut buckets: Vec<CountBucket> = groups
+        .into_iter()
+        .map(|(key, count)| CountBucket { key, count })
+        .collect();
+    buckets.sort_by(|a, b| a.key.cmp(&b.key));
+    buckets
 }
 
 fn build_buckets(groups: HashMap<String, Vec<f64>>) -> Vec<BucketSummary> {
@@ -953,7 +995,7 @@ mod tests {
 
     #[test]
     fn summary_computes_trigger_rate_expectancy_and_buckets() {
-        let events = vec![
+        let mut events = vec![
             setup_event("S1", "bearish_breakdown", "TREND_BEAR", "IN"),
             setup_event("S2", "bearish_breakdown", "RANGE", "IN"),
             triggered_event("S1", "BEARISH", 100.0, 105.0, 90.0),
@@ -963,6 +1005,10 @@ mod tests {
             outcome_event("S2", "SL", -1.0),
             outcome_event("S3", "TIMEOUT", 0.0),
         ];
+        let mut strategist = TriggerEvent::new("strategist_view");
+        strategist.ai_model = Some("gemini-4-argon".to_string());
+        strategist.scenario_id = Some("bearish_breakdown".to_string());
+        events.push(strategist);
         let summary = summarize(&events);
         assert_eq!(summary.watching_setups, 2);
         assert_eq!(summary.watching_triggered, 2);
@@ -976,5 +1022,8 @@ mod tests {
         assert!((summary.profit_factor.unwrap() - 2.0).abs() < 1e-9);
         assert_eq!(summary.by_scenario.len(), 1);
         assert_eq!(summary.by_regime.len(), 3);
+        assert_eq!(summary.strategist_views, 1);
+        assert_eq!(summary.strategist_models[0].key, "gemini-4-argon");
+        assert_eq!(summary.strategist_primaries[0].key, "bearish_breakdown");
     }
 }

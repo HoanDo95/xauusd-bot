@@ -29,6 +29,9 @@ Telegram, inserts a signal, consumes quota or places an order.
 | `triggered` | M15 close crossed the frozen trigger | setup_id, signal_id, close, fill, confirmation_pass/reason |
 | `ai_review` | AI Decision returned or was unavailable | setup_id, ai_action, ai_confidence, ai_model, ai_blocked, ai_reason |
 | `outcome` | Hypothetical TP1/SL/TIMEOUT completed | setup_id, outcome, r_multiple, MFE/MAE at 1/4/8/24 bars |
+| `strategist_view` | AI Market Strategist H1 view generated (advisory) | prompt_version, ai_model, market_view, scenario_id (primary), ai_action, session, regime |
+
+`strategist_view` is advisory and does not produce an outcome by itself; the report counts views by model and selected primary scenario. The deterministic `triggered`/`outcome` events remain the source of truth for expectancy.
 
 `triggered` is recorded **even when confirmation fails or AI returns STANDBY**.
 That is the point: the raw trigger must be measurable.

@@ -5,7 +5,9 @@
 //!
 //! The report is analysis-only. It never sends Telegram or changes a signal.
 
-use gold_signal_bot::trigger_journal::{summarize, BucketSummary, TriggerJournal, TriggerSummary};
+use gold_signal_bot::trigger_journal::{
+    summarize, BucketSummary, CountBucket, TriggerJournal, TriggerSummary,
+};
 use std::fmt::Write;
 
 fn main() {
@@ -47,6 +49,7 @@ fn format_report(path: &str, lines: usize, summary: &TriggerSummary) -> String {
     let _ = writeln!(out, "- Avg R / expectancy: {:+.2}R", summary.avg_r);
     let _ = writeln!(out, "- Profit factor: {}", format_pf(summary.profit_factor));
     let _ = writeln!(out, "- Max drawdown: {:.2}R", summary.max_drawdown_r);
+    let _ = writeln!(out, "- Strategist views: {}", summary.strategist_views);
     let _ = writeln!(out);
 
     if summary.outcomes == 0 {
@@ -66,6 +69,14 @@ fn format_report(path: &str, lines: usize, summary: &TriggerSummary) -> String {
     out.push_str(&format_bucket_table(
         "By Confirmation",
         &summary.by_confirmation,
+    ));
+    out.push_str(&format_count_table(
+        "Strategist Models",
+        &summary.strategist_models,
+    ));
+    out.push_str(&format_count_table(
+        "Strategist Primaries",
+        &summary.strategist_primaries,
     ));
 
     let _ = writeln!(out, "## Methodology\n");
@@ -116,6 +127,22 @@ fn format_bucket_table(title: &str, buckets: &[BucketSummary]) -> String {
             format_pf(bucket.profit_factor),
             bucket.expectancy
         );
+    }
+    let _ = writeln!(out);
+    out
+}
+
+fn format_count_table(title: &str, buckets: &[CountBucket]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "## {title}\n");
+    if buckets.is_empty() {
+        let _ = writeln!(out, "_No data._\n");
+        return out;
+    }
+    let _ = writeln!(out, "| Key | Count |");
+    let _ = writeln!(out, "|---|---:|");
+    for bucket in buckets {
+        let _ = writeln!(out, "| {} | {} |", bucket.key, bucket.count);
     }
     let _ = writeln!(out);
     out

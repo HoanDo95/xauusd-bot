@@ -5,10 +5,12 @@
 //! view. This endpoint never sends Telegram, inserts a signal or consumes quota.
 
 use super::{current_scenarios, AppState};
+use crate::market_strategist::{review_market_strategist, StrategistView};
 use crate::market_view::{build_outlook, MarketOutlook, OutlookInput};
 use crate::models::{BotConfig, Candle, SignalStatus};
 use crate::news_filter::ImpactLevel;
 use crate::storage::PersistentStore;
+use crate::trigger_journal::{record, TriggerEvent};
 use axum::{extract::State, response::IntoResponse, Json};
 use chrono::{DateTime, Utc};
 
@@ -28,6 +30,11 @@ pub async fn compute_market_outlook(state: &AppState) -> MarketOutlook {
     let no_trade_reason = no_trade_reason(state, &config, now, last_candle.as_ref(), spread).await;
     let news_notes = upcoming_news_notes(state, now).await;
     let active_sniper = active_sniper(state).await;
+    let strategist = if config.market_strategist_enabled {
+        state.market_strategist_view.read().await.clone()
+    } else {
+        None
+    };
 
     build_outlook(OutlookInput {
         scenarios: &scenarios,
@@ -38,11 +45,82 @@ pub async fn compute_market_outlook(state: &AppState) -> MarketOutlook {
         news_notes,
         spread_proxy_atr: spread,
         active_sniper,
+        strategist,
     })
 }
 
 pub async fn get_market_view(State(state): State<AppState>) -> impl IntoResponse {
     Json(compute_market_outlook(&state).await)
+}
+
+/// Manual, read-only AI strategist refresh for testing/A-B. No Telegram, no
+/// signal, no quota. The H1 worker calls the same function automatically.
+pub async fn refresh_market_strategist_view(State(state): State<AppState>) -> impl IntoResponse {
+    let config = state.config.read().await.clone();
+    let outlook = compute_market_outlook(&state).await;
+    Json(refresh_market_strategist(&state, &outlook, &config).await)
+}
+
+/// Call the strategist, cache the view and journal it. Shared by the H1 worker
+/// and the manual refresh endpoint.
+pub(crate) async fn refresh_market_strategist(
+    state: &AppState,
+    outlook: &MarketOutlook,
+    config: &BotConfig,
+) -> Option<StrategistView> {
+    let scenarios = current_scenarios(state).await;
+    let context = state.market_context.read().await.clone();
+    let news_notes: Vec<String> = outlook
+        .risk_notes
+        .iter()
+        .filter(|note| note.starts_with("Tin đỏ"))
+        .cloned()
+        .collect();
+    let view = review_market_strategist(
+        &scenarios,
+        context.as_ref(),
+        &news_notes,
+        outlook.no_trade_reason.as_deref(),
+        outlook.session == "IN",
+    )
+    .await;
+    *state.market_strategist_view.write().await = view.clone();
+    record_strategist_event(state, config, outlook, view.as_ref());
+    view
+}
+
+fn record_strategist_event(
+    state: &AppState,
+    config: &BotConfig,
+    outlook: &MarketOutlook,
+    view: Option<&StrategistView>,
+) {
+    let mut event = TriggerEvent::new("strategist_view");
+    event.created_at = Some(Utc::now());
+    event.source = Some("market_strategist".to_string());
+    event.regime = Some(outlook.structure.clone());
+    event.session = Some(outlook.session.clone());
+    event.ai_model = Some(
+        view.map(|view| view.model.clone())
+            .unwrap_or_else(|| "unavailable".to_string()),
+    );
+    event.prompt_version = Some(
+        view.map(|view| view.prompt_version.clone())
+            .unwrap_or_else(|| "strategist_v1".to_string()),
+    );
+    event.market_view = view.map(|view| view.market_view.clone());
+    event.scenario_id = view.and_then(|view| view.primary_scenario_id.clone());
+    event.ai_action = view.and_then(|view| view.primary_action.clone());
+    event.reason = if view.is_none() {
+        Some("strategist_unavailable".to_string())
+    } else {
+        None
+    };
+    record(
+        &state.trigger_journal,
+        config.trigger_journal_enabled,
+        &event,
+    );
 }
 
 /// Hard gates only. RSI/EMA/macro are scoring inputs, never NO_TRADE reasons.

@@ -6,6 +6,7 @@
 //! without changing these levels.
 
 use crate::market_context::MarketContext;
+use crate::market_strategist::StrategistView;
 use crate::scenarios::{Scenario, ScenarioResponse};
 use chrono::{DateTime, Duration, Timelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -65,6 +66,8 @@ pub struct MarketOutlook {
     pub h1_bias: String,
     pub price: Option<f64>,
     pub h4_atr: Option<f64>,
+    /// Optional AI strategist narrative. Levels remain deterministic.
+    pub strategist: Option<StrategistView>,
 }
 
 pub struct OutlookInput<'a> {
@@ -76,6 +79,7 @@ pub struct OutlookInput<'a> {
     pub news_notes: Vec<String>,
     pub spread_proxy_atr: Option<f64>,
     pub active_sniper: bool,
+    pub strategist: Option<StrategistView>,
 }
 
 pub fn build_outlook(input: OutlookInput<'_>) -> MarketOutlook {
@@ -146,6 +150,7 @@ pub fn build_outlook(input: OutlookInput<'_>) -> MarketOutlook {
         h1_bias,
         price,
         h4_atr,
+        strategist: input.strategist,
     }
 }
 
@@ -481,6 +486,7 @@ mod tests {
             news_notes: vec![],
             spread_proxy_atr: Some(0.2),
             active_sniper: false,
+            strategist: None,
         });
         assert_eq!(outlook.bot_state, BotState::MarketView);
         assert_eq!(outlook.structure, "TREND_BEAR");
@@ -507,6 +513,7 @@ mod tests {
             news_notes: vec![],
             spread_proxy_atr: Some(1.2),
             active_sniper: false,
+            strategist: None,
         });
         assert_eq!(no_trade.bot_state, BotState::NoTrade);
         assert!(no_trade.no_trade_reason.is_some());
@@ -520,6 +527,7 @@ mod tests {
             news_notes: vec![],
             spread_proxy_atr: Some(0.2),
             active_sniper: true,
+            strategist: None,
         });
         assert_eq!(sniper.bot_state, BotState::SniperTrigger);
     }

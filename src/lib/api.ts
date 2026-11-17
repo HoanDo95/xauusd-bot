@@ -17,6 +17,7 @@ import type {
   NewsCalendarData,
   ScenarioResponse,
   Signal,
+  StrategistView,
   TrendBias,
   TradingViewWebhookPayload,
 } from '../types';
@@ -350,6 +351,20 @@ export async function fetchMarketView(): Promise<MarketOutlook | null> {
     const contentType = res.headers.get('content-type') || '';
     if (!contentType.includes('application/json')) return null;
     return (await res.json()) as MarketOutlook;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * POST /api/market-view/strategist — manual read-only AI strategist refresh.
+ * No Telegram, signal or quota. Returns the cached/parsed view or null.
+ */
+export async function refreshMarketStrategist(): Promise<StrategistView | null> {
+  try {
+    const res = await fetch('/api/market-view/strategist', { method: 'POST' });
+    if (!res.ok) return null;
+    return (await res.json()) as StrategistView | null;
   } catch {
     return null;
   }

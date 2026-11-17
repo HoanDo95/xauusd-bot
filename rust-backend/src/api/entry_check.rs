@@ -12,6 +12,7 @@ use crate::ai_decision::{
     ai_decision_enabled, relaxed_candidate_config, review_market_decision, AiDecision,
 };
 use crate::analyzer::GoldMarketAnalyzer;
+use crate::market_strategist::StrategistView;
 use crate::models::{BotConfig, Signal, SignalType};
 use crate::risk_manager::PositionSizer;
 use crate::rsi::rsi_snapshot;
@@ -63,6 +64,9 @@ pub struct EntryCheckResult {
     pub scenarios: ScenarioResponse,
     pub entry_plan: Option<EntryPlan>,
     pub generated_at: String,
+    /// Cached H1 AI Market Strategist view (advisory; never an entry/signal).
+    #[serde(default)]
+    pub market_strategist: Option<StrategistView>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -380,12 +384,18 @@ pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult
         }
     }
 
+    let market_strategist = if config.market_strategist_enabled {
+        state.market_strategist_view.read().await.clone()
+    } else {
+        None
+    };
     Ok(EntryCheckResult {
         decision,
         live_view,
         scenarios,
         entry_plan,
         generated_at: now.to_rfc3339(),
+        market_strategist,
     })
 }
 

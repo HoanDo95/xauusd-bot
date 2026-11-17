@@ -133,6 +133,7 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "actionTriggerCooldownMinutes": config.action_trigger_cooldown_minutes,
         "triggerJournalEnabled": config.trigger_journal_enabled,
         "marketViewTelegramEnabled": config.market_view_telegram_enabled,
+        "marketStrategistEnabled": config.market_strategist_enabled,
         "marketViewCooldownMinutes": config.market_view_cooldown_minutes,
         "maxSpreadProxyAtr": config.max_spread_proxy_atr,
         "dailyPlanEnabled": config.daily_plan_enabled,

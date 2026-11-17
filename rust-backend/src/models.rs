@@ -509,6 +509,10 @@ pub struct BotConfig {
     /// Gửi MARKET VIEW qua Telegram khi đóng nến H1 (trong phiên). Mặc định true.
     #[serde(default = "default_true")]
     pub market_view_telegram_enabled: bool,
+    /// Bật AI Market Strategist cho H1 Market View (advisory; KHÔNG thay Risk
+    /// Officer duyệt sniper). Mặc định false; bật để A/B.
+    #[serde(default)]
+    pub market_strategist_enabled: bool,
     /// Cooldown tối thiểu giữa hai MARKET VIEW Telegram (15..=1440, mặc định 120).
     #[serde(default = "default_market_view_cooldown")]
     pub market_view_cooldown_minutes: i64,
@@ -773,6 +777,7 @@ impl Default for BotConfig {
             action_watch_min_confidence: default_action_watch_min_confidence(),
             trigger_journal_enabled: true,
             market_view_telegram_enabled: true,
+            market_strategist_enabled: false,
             market_view_cooldown_minutes: default_market_view_cooldown(),
             max_spread_proxy_atr: default_max_spread_proxy_atr(),
             macro_flow_enabled: true,
