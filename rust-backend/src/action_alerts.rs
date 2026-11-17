@@ -15,8 +15,11 @@
 
 use crate::api::{current_scenarios, persist_state, AppState};
 use crate::models::{Candle, Timeframe};
-use crate::scenarios::{scenario_triggered, Scenario, WatchedSetup, WATCH_SETUP_MAX_BARS};
+use crate::scenarios::{
+    scenario_triggered, Scenario, ScenarioMarket, WatchedSetup, WATCH_SETUP_MAX_BARS,
+};
 use crate::storage::PersistentStore;
+use crate::trigger_journal::{record, regime_label, TriggerEvent};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -124,12 +127,13 @@ pub fn spawn_action_trigger_worker(state: AppState) {
             ACTION_TRIGGER_INTERVAL_SECS
         );
         let mut interval = tokio::time::interval(Duration::from_secs(ACTION_TRIGGER_INTERVAL_SECS));
+        let mut last_observed_candle: Option<i64> = None;
 
         loop {
             interval.tick().await;
 
             let config = state.config.read().await.clone();
-            if !config.action_trigger_alert_enabled || !config.is_active {
+            if !config.is_active {
                 continue;
             }
             if PersistentStore::is_market_closed_weekend(Utc::now()) {
@@ -153,9 +157,6 @@ pub fn spawn_action_trigger_worker(state: AppState) {
             };
 
             let now = Utc::now();
-            if !PersistentStore::is_within_golden_session(now, config.session_filter_enabled) {
-                continue;
-            }
             if !candle_is_closed_and_fresh(
                 &candle,
                 now.timestamp_millis(),
@@ -176,6 +177,34 @@ pub fn spawn_action_trigger_worker(state: AppState) {
                 continue;
             }
 
+            let scenarios = current_scenarios(&state).await;
+            let primary = scenarios
+                .scenarios
+                .iter()
+                .find(|scenario| scenario.role.eq_ignore_ascii_case("PRIMARY"));
+            let in_session =
+                PersistentStore::is_within_golden_session(now, config.session_filter_enabled);
+
+            // One raw scenario observation per M15 close, including outside the
+            // session, so the journal can measure trigger frequency/evolution.
+            if config.trigger_journal_enabled && last_observed_candle != Some(candle.timestamp) {
+                if let Some(primary) = primary {
+                    let event = observation_event(
+                        primary,
+                        scenarios.market.as_ref(),
+                        &candle,
+                        now,
+                        in_session,
+                    );
+                    record(&state.trigger_journal, true, &event);
+                    last_observed_candle = Some(candle.timestamp);
+                }
+            }
+
+            if !in_session {
+                continue;
+            }
+
             // One watching alert per setup lifecycle. While a setup is active,
             // stay silent: the scanner owns the confirmed GOLD SIGNAL.
             let active_setup = state.active_watch_setup.read().await.clone();
@@ -186,7 +215,18 @@ pub fn spawn_action_trigger_worker(state: AppState) {
                 if setup.is_expired(now, WATCH_SETUP_MAX_BARS)
                     || setup.is_invalidated(&candle, None)
                 {
+                    let reason = if setup.is_expired(now, WATCH_SETUP_MAX_BARS) {
+                        "expired"
+                    } else {
+                        "invalidated"
+                    };
+                    let event = setup_closed_event(&setup, &candle, now, reason);
                     *state.active_watch_setup.write().await = None;
+                    record(
+                        &state.trigger_journal,
+                        config.trigger_journal_enabled,
+                        &event,
+                    );
                     if let Err(err) = persist_state(&state).await {
                         warn!(
                             "⚠️ [Setup Watching] Không lưu được trạng thái clear setup: {}",
@@ -198,15 +238,9 @@ pub fn spawn_action_trigger_worker(state: AppState) {
                 }
             }
 
-            let scenarios = current_scenarios(&state).await;
-            let Some(primary) = scenarios
-                .scenarios
-                .iter()
-                .find(|scenario| scenario.role.eq_ignore_ascii_case("PRIMARY"))
-            else {
+            let Some(primary) = primary else {
                 continue;
             };
-
             let Some(trigger_price) = primary.trigger_price.filter(|value| value.is_finite())
             else {
                 continue;
@@ -275,12 +309,27 @@ pub fn spawn_action_trigger_worker(state: AppState) {
                         "👀 [Setup Watching] {} {} · M15 close {:.2} · trigger {:.2} · distance {:.2} · msg_id={}",
                         primary.id, primary.trigger_direction, candle.close, trigger_price, distance, msg_id
                     );
-                    *state.active_watch_setup.write().await = Some(WatchedSetup {
+                    let setup = WatchedSetup {
+                        setup_id: format!("SETUP-{}-{}", now.timestamp_millis(), primary.id),
                         scenario: primary.clone(),
                         created_at: now,
                         created_candle_timestamp: candle.timestamp,
                         alerted_price: candle.close,
-                    });
+                    };
+                    *state.active_watch_setup.write().await = Some(setup.clone());
+                    let event = setup_created_event(
+                        &setup,
+                        Some(market),
+                        &candle,
+                        now,
+                        distance,
+                        watch_distance,
+                    );
+                    record(
+                        &state.trigger_journal,
+                        config.trigger_journal_enabled,
+                        &event,
+                    );
                     {
                         let mut last_sent = state.action_trigger_last_sent.write().await;
                         last_sent.insert(key, now);
@@ -302,6 +351,90 @@ pub fn spawn_action_trigger_worker(state: AppState) {
             }
         }
     });
+}
+
+fn fill_scenario_fields(
+    event: &mut TriggerEvent,
+    scenario: &Scenario,
+    market: Option<&ScenarioMarket>,
+    candle: &Candle,
+    in_session: bool,
+) {
+    event.scenario_id = Some(scenario.id.clone());
+    event.scenario_name = Some(scenario.name.clone());
+    event.direction = Some(scenario.trigger_direction.clone());
+    event.bias = Some(scenario.bias.clone());
+    event.trigger = scenario.trigger_price;
+    event.entry = scenario.entry;
+    event.stop_loss = scenario.stop_loss;
+    event.take_profit_1 = scenario.take_profit_1;
+    event.take_profit_2 = scenario.take_profit_2;
+    event.risk_points = scenario
+        .entry
+        .zip(scenario.stop_loss)
+        .map(|(entry, stop)| (entry - stop).abs());
+    event.confidence = Some(scenario.confidence);
+    event.valid = Some(scenario.valid);
+    event.macro_alignment = Some(scenario.macro_alignment.clone());
+    event.session = Some(if in_session { "IN" } else { "OUT" }.to_string());
+    event.regime =
+        market.map(|market| regime_label(&market.d1_bias, &market.h4_bias, &market.h1_bias));
+    event.h4_atr = market.map(|market| market.h4_atr);
+    event.distance = scenario
+        .trigger_price
+        .map(|trigger| (candle.close - trigger).abs());
+}
+
+fn observation_event(
+    scenario: &Scenario,
+    market: Option<&ScenarioMarket>,
+    candle: &Candle,
+    now: DateTime<Utc>,
+    in_session: bool,
+) -> TriggerEvent {
+    let mut event = TriggerEvent::new("scenario_observed");
+    event.created_at = Some(now);
+    event.candle_timestamp = Some(candle.timestamp);
+    event.source = Some("scenario_observe".to_string());
+    fill_scenario_fields(&mut event, scenario, market, candle, in_session);
+    event
+}
+
+fn setup_created_event(
+    setup: &WatchedSetup,
+    market: Option<&ScenarioMarket>,
+    candle: &Candle,
+    now: DateTime<Utc>,
+    distance: f64,
+    watch_distance: f64,
+) -> TriggerEvent {
+    let mut event = TriggerEvent::new("setup_created");
+    event.created_at = Some(now);
+    event.setup_id = Some(setup.effective_setup_id());
+    event.candle_timestamp = Some(candle.timestamp);
+    event.source = Some("watching_alert".to_string());
+    fill_scenario_fields(&mut event, &setup.scenario, market, candle, true);
+    event.distance = Some(distance);
+    event.watch_distance = Some(watch_distance);
+    event
+}
+
+fn setup_closed_event(
+    setup: &WatchedSetup,
+    candle: &Candle,
+    now: DateTime<Utc>,
+    reason: &str,
+) -> TriggerEvent {
+    let mut event = TriggerEvent::new("setup_closed");
+    event.created_at = Some(now);
+    event.setup_id = Some(setup.effective_setup_id());
+    event.scenario_id = Some(setup.scenario.id.clone());
+    event.candle_timestamp = Some(candle.timestamp);
+    event.reason = Some(reason.to_string());
+    let bars = (candle.timestamp - setup.created_candle_timestamp) / (15 * 60 * 1000);
+    event.bars_open = Some(bars.max(0));
+    event.source = Some("watching_alert".to_string());
+    event
 }
 
 #[cfg(test)]

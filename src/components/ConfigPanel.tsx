@@ -1538,6 +1538,25 @@ export const ConfigPanel: React.FC<Props> = ({
                 </span>
               </div>
             </div>
+
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+              <input
+                type="checkbox"
+                checked={formData.trigger_journal_enabled ?? true}
+                onChange={(e) =>
+                  setFormData({ ...formData, trigger_journal_enabled: e.target.checked })
+                }
+                className="accent-sky-500 w-4 h-4 rounded cursor-pointer"
+              />
+              <span className="font-semibold text-white">
+                Bật trigger journal (đo hiệu quả trigger thô)
+              </span>
+            </label>
+            <span className="text-[11px] text-neutral-500">
+              Ghi mọi setup/trigger/confirmation/AI/outcome vào
+              <code className="mx-1 text-neutral-300">data/trigger_journal.jsonl</code>
+              để tính expectancy, PF, DD, MFE/MAE. Không ảnh hưởng tín hiệu.
+            </span>
           </div>
 
           {/* AI Decision Mode / legacy VETO_ONLY */}

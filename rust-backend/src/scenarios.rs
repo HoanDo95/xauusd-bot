@@ -93,6 +93,8 @@ fn default_trigger_timeframe() -> String {
 /// price can never close through a moving trigger.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WatchedSetup {
+    #[serde(default)]
+    pub setup_id: String,
     pub scenario: Scenario,
     pub created_at: DateTime<Utc>,
     pub created_candle_timestamp: i64,
@@ -100,6 +102,18 @@ pub struct WatchedSetup {
 }
 
 impl WatchedSetup {
+    /// Stable id for journaling; supports legacy persisted setups that predate
+    /// the `setup_id` field.
+    pub fn effective_setup_id(&self) -> String {
+        if self.setup_id.trim().is_empty() {
+            format!(
+                "SETUP-LEGACY-{}-{}",
+                self.created_candle_timestamp, self.scenario.id
+            )
+        } else {
+            self.setup_id.clone()
+        }
+    }
     /// Expire after `max_bars` M15 candles (8 bars = 2 hours by default).
     pub fn is_expired(&self, now: DateTime<Utc>, max_bars: i64) -> bool {
         (now - self.created_at).num_minutes() >= max_bars.max(1) * 15
@@ -2903,6 +2917,7 @@ mod tests {
 
     fn watched_setup(scenario: Scenario, created_at: DateTime<Utc>) -> WatchedSetup {
         WatchedSetup {
+            setup_id: "SETUP-TEST".to_string(),
             scenario,
             created_at,
             created_candle_timestamp: BASE_TS,

@@ -23,5 +23,7 @@ pub mod storage;
 pub mod telegram;
 pub mod telegram_commands;
 pub mod tracker;
+pub mod trigger_journal;
+pub mod trigger_journal_worker;
 pub mod volume_delta;
 pub mod worker;

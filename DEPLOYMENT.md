@@ -592,6 +592,19 @@ M15. A/B at 0.05R cost:
 The result is mixed, so the flag stays off until forward-test/approval. Turn it
 on from the dashboard or `POST /api/config` only for an explicit A/B run.
 
+### Trigger journal (analysis-only)
+
+Every setup, trigger, AI review and hypothetical outcome is appended to
+`data/trigger_journal.jsonl` (schema v1). It records triggers even when
+confirmation/AI/risk rejected the signal, so raw trigger expectancy can be
+measured without selection bias. Read-only endpoints:
+`GET /api/trigger-journal?limit=200` and `GET /api/trigger-journal/summary`.
+Run the report with
+`cargo run --bin trigger_report -- --path data/trigger_journal.jsonl`
+or, on the server, `docker compose exec api trigger_report --path data/trigger_journal.jsonl`.
+See [`TRIGGER_JOURNAL_SPEC.md`](TRIGGER_JOURNAL_SPEC.md) for the schema,
+outcome rules and pre-registered decision rule.
+
 ### Two-level notification pipeline
 
 - **SETUP WATCHING** — sent **once per setup** when price approaches a valid

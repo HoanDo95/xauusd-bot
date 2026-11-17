@@ -656,6 +656,8 @@ export interface BotConfig {
   action_watch_max_distance_points?: number;
   /** Minimum PRIMARY confidence for SETUP WATCHING. Default 60. */
   action_watch_min_confidence?: number;
+  /** Append-only trigger journal for raw trigger efficacy. Default true. */
+  trigger_journal_enabled?: boolean;
   /** Read-only Macro & Flow dashboard (FRED/Yahoo/CFTC). Default true; never affects signals. */
   macro_flow_enabled?: boolean;
   /** Send the read-only 07:00 daily plan to Telegram. Default true; no quota impact. */

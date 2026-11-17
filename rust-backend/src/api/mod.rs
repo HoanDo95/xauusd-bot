@@ -11,6 +11,7 @@ use crate::signal_review::{review_blocks_signal, review_signal};
 use crate::storage::{PersistentState, PersistentStore};
 use crate::telegram::TelegramNotifier;
 use crate::tracker::{evaluate_active_signals, PendingConfirmation};
+use crate::trigger_journal::TriggerJournal;
 use crate::volume_delta::delta_allows_signal;
 use axum::{
     routing::{get, post},
@@ -28,6 +29,7 @@ mod config;
 mod divergence;
 mod entry_check;
 mod health;
+mod journal;
 mod live;
 mod macro_flow;
 mod market;
@@ -116,6 +118,8 @@ pub struct AppState {
     pub action_trigger_last_sent: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
     /// Setup đang theo dõi (đã gửi 1 watching alert). None = chưa có setup.
     pub active_watch_setup: Arc<RwLock<Option<WatchedSetup>>>,
+    /// Append-only trigger journal (analysis log, not live trade state).
+    pub trigger_journal: Arc<TriggerJournal>,
     /// Snapshot Macro & Flow read-only (FRED/Yahoo/CFTC), không tham gia tín hiệu.
     pub macro_flow: Arc<RwLock<Option<MacroFlowSnapshot>>>,
     /// Thời điểm snapshot Macro & Flow được làm mới gần nhất.
@@ -157,6 +161,12 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/stats", get(get_stats))
         .route("/api/candles", get(get_recent_candles))
         .route("/api/candles/webhook", post(receive_candle_webhook))
+        // Trigger journal read-only (analysis log, never trade state)
+        .route("/api/trigger-journal", get(journal::get_trigger_journal))
+        .route(
+            "/api/trigger-journal/summary",
+            get(journal::get_trigger_journal_summary),
+        )
         // Bối cảnh đa khung D1/H4/H1 (read-only, 204 khi chưa sẵn sàng)
         .route("/api/context", get(get_market_context))
         // Nến H4/D1 đã đóng cho chart "view toàn cảnh" (read-only)

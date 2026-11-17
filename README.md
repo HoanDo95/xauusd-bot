@@ -797,3 +797,12 @@ systemctl --user enable --now xauusd-backup.timer
 ## License
 
 Proprietary — all rights reserved. See [LICENSE](LICENSE).
+
+
+## Trigger Journal (analysis)
+
+See [`TRIGGER_JOURNAL_SPEC.md`](TRIGGER_JOURNAL_SPEC.md) for the append-only
+`data/trigger_journal.jsonl` schema, outcome rules and the pre-registered
+decision rule. Read-only endpoints: `GET /api/trigger-journal` and
+`GET /api/trigger-journal/summary`. Report CLI:
+`cargo run --bin trigger_report -- --path data/trigger_journal.jsonl`.

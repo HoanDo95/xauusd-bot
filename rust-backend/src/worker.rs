@@ -23,13 +23,16 @@ use crate::scenario_signal::{
     best_confirmed_scenario, confirmed_signal_from_scenario, rsi_extreme_blocks_confirmed,
 };
 use crate::scenarios::WATCH_SETUP_MAX_BARS;
-use crate::scenarios::{anti_chase_blocks_breakout, build_scenarios, Scenario, ScenarioResponse};
+use crate::scenarios::{
+    anti_chase_blocks_breakout, build_scenarios, Scenario, ScenarioResponse, WatchedSetup,
+};
 use crate::scheduler::DailyScheduler;
 use crate::session_alerts::evaluate_and_dispatch;
 use crate::signal_review::{review_blocks_signal, review_signal};
 use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
 use crate::storage::PersistentStore;
 use crate::tracker::{evaluate_active_signals, pending_confirmation_ok, PendingConfirmation};
+use crate::trigger_journal::{record, regime_label, TriggerEvent};
 use crate::volume_delta::{compute_delta, delta_allows_signal};
 use chrono::{DateTime, Utc};
 use std::time::Instant;
@@ -234,9 +237,17 @@ fn validate_ai_hard_risk(signal: &Signal, config: &BotConfig) -> Result<(), Stri
     validate_risk_budget(config, &sizing)
 }
 
+/// A confirmed scenario candidate plus the setup id used by the trigger journal.
+struct ConfirmedCandidate {
+    signal: Signal,
+    scenarios: ScenarioResponse,
+    setup_id: String,
+}
+
 /// Run the deterministic confirmation gates for one scenario and build the
 /// filled MARKET signal. Shared by the stored active setup and the normal
-/// pre-close scenario path.
+/// pre-close scenario path. Returns `(signal, reason)` so the trigger journal
+/// can record rejected triggers too.
 fn confirmed_signal_with_gates(
     scenario: &Scenario,
     config: &BotConfig,
@@ -244,7 +255,7 @@ fn confirmed_signal_with_gates(
     live_price: Option<f64>,
     rsi_value: Option<f64>,
     now: DateTime<Utc>,
-) -> Option<Signal> {
+) -> (Option<Signal>, String) {
     if rsi_extreme_blocks_confirmed(
         &scenario.bias,
         rsi_value,
@@ -256,10 +267,17 @@ fn confirmed_signal_with_gates(
             scenario.id,
             rsi_value.unwrap_or_default()
         );
-        return None;
+        return (None, "rsi_extreme".to_string());
     }
 
-    let signal = confirmed_signal_from_scenario(scenario, config, candles, live_price, now)?;
+    let Some(signal) = confirmed_signal_from_scenario(scenario, config, candles, live_price, now)
+    else {
+        info!(
+            "⏳ [Confirmed Signal] {} levels không hợp lệ hoặc giá đã đi quá xa entry — bỏ qua.",
+            scenario.id
+        );
+        return (None, "invalid_levels".to_string());
+    };
     let last_index = candles.len().saturating_sub(1);
     if config.quantum_trigger_confirmation_enabled
         && !pending_confirmation_ok(
@@ -273,7 +291,7 @@ fn confirmed_signal_with_gates(
             "⏳ [Confirmed Signal] {} trigger chưa xác nhận volume/pattern — chờ nến sau.",
             scenario.id
         );
-        return None;
+        return (None, "confirmation_failed".to_string());
     }
 
     info!(
@@ -284,7 +302,7 @@ fn confirmed_signal_with_gates(
         signal.entry_price,
         candles.last().map(|candle| candle.close).unwrap_or_default()
     );
-    Some(signal)
+    (Some(signal), "confirmed".to_string())
 }
 
 async fn clear_active_watch_setup(state: &AppState) {
@@ -318,6 +336,129 @@ fn single_scenario_response(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn record_trigger_event(
+    state: &AppState,
+    config: &BotConfig,
+    setup_id: &str,
+    scenario: &Scenario,
+    signal: Option<&Signal>,
+    confirmation_reason: &str,
+    last_candle: &Candle,
+    now: DateTime<Utc>,
+    source: &str,
+    context: Option<&MarketContext>,
+) {
+    if !config.trigger_journal_enabled {
+        return;
+    }
+    if state.trigger_journal.has_triggered(setup_id) {
+        return;
+    }
+    let mut event = TriggerEvent::new("triggered");
+    event.setup_id = Some(setup_id.to_string());
+    event.signal_id = signal.map(|signal| signal.id.clone());
+    event.created_at = Some(now);
+    event.candle_timestamp = Some(last_candle.timestamp);
+    event.scenario_id = Some(scenario.id.clone());
+    event.scenario_name = Some(scenario.name.clone());
+    event.direction = Some(scenario.trigger_direction.clone());
+    event.bias = Some(scenario.bias.clone());
+    event.trigger = scenario.trigger_price;
+    event.entry = scenario.entry;
+    event.stop_loss = scenario.stop_loss;
+    event.take_profit_1 = scenario.take_profit_1;
+    event.take_profit_2 = scenario.take_profit_2;
+    event.risk_points = scenario
+        .entry
+        .zip(scenario.stop_loss)
+        .map(|(entry, stop)| (entry - stop).abs());
+    event.confidence = Some(scenario.confidence);
+    event.valid = Some(scenario.valid);
+    event.macro_alignment = Some(scenario.macro_alignment.clone());
+    event.session = Some(
+        if PersistentStore::is_within_golden_session(now, config.session_filter_enabled) {
+            "IN"
+        } else {
+            "OUT"
+        }
+        .to_string(),
+    );
+    event.regime =
+        context.map(|context| regime_label(&context.d1.bias, &context.h4.bias, &context.h1.bias));
+    event.h4_atr = context.map(|context| context.h4.atr14);
+    event.source = Some(source.to_string());
+    event.close = Some(last_candle.close);
+    event.fill_price = signal.map(|signal| signal.entry_price).or(scenario.entry);
+    event.fill_slippage = event
+        .fill_price
+        .map(|fill| (fill - last_candle.close).abs());
+    event.confirmation_pass = Some(signal.is_some());
+    event.confirmation_reason = Some(confirmation_reason.to_string());
+    record(
+        &state.trigger_journal,
+        config.trigger_journal_enabled,
+        &event,
+    );
+}
+
+fn record_setup_closed_event(
+    state: &AppState,
+    config: &BotConfig,
+    setup: &WatchedSetup,
+    last_candle: &Candle,
+    now: DateTime<Utc>,
+    reason: &str,
+) {
+    let mut event = TriggerEvent::new("setup_closed");
+    event.setup_id = Some(setup.effective_setup_id());
+    event.scenario_id = Some(setup.scenario.id.clone());
+    event.created_at = Some(now);
+    event.candle_timestamp = Some(last_candle.timestamp);
+    event.reason = Some(reason.to_string());
+    event.source = Some("watching_setup".to_string());
+    record(
+        &state.trigger_journal,
+        config.trigger_journal_enabled,
+        &event,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_ai_review_event(
+    state: &AppState,
+    config: &BotConfig,
+    setup_id: Option<&str>,
+    signal: &Signal,
+    action: &str,
+    confidence: f64,
+    model: &str,
+    blocked: bool,
+    reason: &str,
+) {
+    let Some(setup_id) = setup_id else {
+        return;
+    };
+    let mut event = TriggerEvent::new("ai_review");
+    event.setup_id = Some(setup_id.to_string());
+    event.signal_id = Some(signal.id.clone());
+    event.created_at = Some(Utc::now());
+    event.ai_action = Some(action.to_string());
+    event.ai_confidence = if action.eq_ignore_ascii_case("UNAVAILABLE") {
+        None
+    } else {
+        Some(confidence)
+    };
+    event.ai_model = Some(model.to_string());
+    event.ai_blocked = Some(blocked);
+    event.ai_reason = Some(reason.to_string());
+    record(
+        &state.trigger_journal,
+        config.trigger_journal_enabled,
+        &event,
+    );
+}
+
 /// Build a **confirmed** signal from a valid scenario when the last closed M15
 /// candle has already triggered it. This is the only path that may send a full
 /// Entry/SL/TP/Lot alert; the pre-trigger early-entry full signal is removed.
@@ -326,7 +467,7 @@ async fn build_confirmed_scenario_signal(
     candles: &[Candle],
     config: &BotConfig,
     live_price: Option<f64>,
-) -> Option<(Signal, ScenarioResponse)> {
+) -> Option<ConfirmedCandidate> {
     let last_candle = candles.last()?;
     let now = Utc::now();
 
@@ -364,7 +505,7 @@ async fn build_confirmed_scenario_signal(
     let active_setup = state.active_watch_setup.read().await.clone();
     if let Some(setup) = active_setup {
         if setup.is_triggered(last_candle) {
-            let signal = confirmed_signal_with_gates(
+            let (signal, reason) = confirmed_signal_with_gates(
                 &setup.scenario,
                 config,
                 candles,
@@ -372,6 +513,20 @@ async fn build_confirmed_scenario_signal(
                 rsi_value,
                 now,
             );
+            let setup_id = setup.effective_setup_id();
+            record_trigger_event(
+                state,
+                config,
+                &setup_id,
+                &setup.scenario,
+                signal.as_ref(),
+                &reason,
+                last_candle,
+                now,
+                "watching_setup",
+                context.as_ref(),
+            );
+            record_setup_closed_event(state, config, &setup, last_candle, now, "triggered");
             clear_active_watch_setup(state).await;
             let scenarios = single_scenario_response(
                 &setup.scenario,
@@ -380,9 +535,19 @@ async fn build_confirmed_scenario_signal(
                 &active_volume_source,
                 now,
             );
-            return signal.map(|signal| (signal, scenarios));
+            return signal.map(|signal| ConfirmedCandidate {
+                signal,
+                scenarios,
+                setup_id,
+            });
         }
         if setup.is_expired(now, WATCH_SETUP_MAX_BARS) || setup.is_invalidated(last_candle, None) {
+            let reason = if setup.is_expired(now, WATCH_SETUP_MAX_BARS) {
+                "expired"
+            } else {
+                "invalidated"
+            };
+            record_setup_closed_event(state, config, &setup, last_candle, now, reason);
             clear_active_watch_setup(state).await;
         } else {
             return None;
@@ -405,9 +570,26 @@ async fn build_confirmed_scenario_signal(
         now.timestamp_millis(),
     );
     let scenario = best_confirmed_scenario(&scenarios, last_candle)?;
-    let signal =
-        confirmed_signal_with_gates(scenario, config, candles, live_price, rsi_value, now)?;
-    Some((signal, scenarios))
+    let setup_id = format!("SETUP-{}-{}", last_candle.timestamp, scenario.id);
+    let (signal, reason) =
+        confirmed_signal_with_gates(scenario, config, candles, live_price, rsi_value, now);
+    record_trigger_event(
+        state,
+        config,
+        &setup_id,
+        scenario,
+        signal.as_ref(),
+        &reason,
+        last_candle,
+        now,
+        "scanner_confirmed",
+        context.as_ref(),
+    );
+    signal.map(|signal| ConfirmedCandidate {
+        signal,
+        scenarios,
+        setup_id,
+    })
 }
 
 /// Background Scanner 24/7 — quét mỗi 60 giây.
@@ -608,13 +790,13 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     Utc::now().timestamp_millis(),
                 )
             };
-            let mut confirmed_scenarios: Option<ScenarioResponse> = None;
+            let mut confirmed_candidate: Option<ConfirmedCandidate> = None;
             if candidate.is_none() && decision_mode {
-                if let Some((signal, scenarios)) =
+                if let Some(confirmed) =
                     build_confirmed_scenario_signal(&state, &candles, &config, live_price).await
                 {
-                    candidate = Some(signal);
-                    confirmed_scenarios = Some(scenarios);
+                    candidate = Some(confirmed.signal.clone());
+                    confirmed_candidate = Some(confirmed);
                 }
             }
 
@@ -647,8 +829,11 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     let macro_flow = state.macro_flow.read().await.clone();
                     let active_data_source = state.active_data_source.read().await.clone();
                     let delta = compute_delta(&candles, config.volume_delta_lookback);
-                    let scenarios = if let Some(scenarios) = confirmed_scenarios.take() {
-                        scenarios
+                    let confirmed_setup_id = confirmed_candidate
+                        .as_ref()
+                        .map(|confirmed| confirmed.setup_id.clone());
+                    let scenarios = if let Some(confirmed) = confirmed_candidate.take() {
+                        confirmed.scenarios
                     } else {
                         build_scenarios(
                             &candles,
@@ -687,6 +872,17 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                             "🛑 [AI Decision] Không có quyết định cho {} {} — fail-closed, bỏ qua tín hiệu.",
                             signal.signal_type, signal.symbol
                         );
+                        record_ai_review_event(
+                            &state,
+                            &config,
+                            confirmed_setup_id.as_deref(),
+                            &signal,
+                            "UNAVAILABLE",
+                            0.0,
+                            "unavailable",
+                            true,
+                            "ai_unavailable",
+                        );
                         continue;
                     };
                     *state.last_ai_decision.write().await = Some(decision.clone());
@@ -710,6 +906,17 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                         &signal,
                         &decision,
                         config.ai_signal_review_min_confidence,
+                    );
+                    record_ai_review_event(
+                        &state,
+                        &config,
+                        confirmed_setup_id.as_deref(),
+                        &signal,
+                        &decision.action,
+                        decision.confidence_score,
+                        &decision.model,
+                        blocked,
+                        &reason,
                     );
                     if blocked {
                         warn!(

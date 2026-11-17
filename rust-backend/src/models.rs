@@ -502,6 +502,10 @@ pub struct BotConfig {
     /// (0..=100, mặc định 60).
     #[serde(default = "default_action_watch_min_confidence")]
     pub action_watch_min_confidence: u8,
+    /// Bật trigger journal append-only để đo hiệu quả trigger thô
+    /// (setup/trigger/confirmation/AI/outcome). Mặc định true.
+    #[serde(default = "default_true")]
+    pub trigger_journal_enabled: bool,
     /// Bật dashboard Macro & Flow read-only (FRED/Yahoo/CFTC). Mặc định true.
     #[serde(default = "default_true")]
     pub macro_flow_enabled: bool,
@@ -749,6 +753,7 @@ impl Default for BotConfig {
             action_watch_distance_atr: default_action_watch_distance_atr(),
             action_watch_max_distance_points: default_action_watch_max_distance_points(),
             action_watch_min_confidence: default_action_watch_min_confidence(),
+            trigger_journal_enabled: true,
             macro_flow_enabled: true,
             daily_plan_enabled: true,
             weekend_brief_enabled: true,

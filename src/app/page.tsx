@@ -137,6 +137,7 @@ const DEFAULT_CONFIG: BotConfig = {
   action_watch_distance_atr: 1.0,
   action_watch_max_distance_points: 15,
   action_watch_min_confidence: 60,
+  trigger_journal_enabled: true,
   macro_flow_enabled: true,
   daily_plan_enabled: true,
   weekend_brief_enabled: true,

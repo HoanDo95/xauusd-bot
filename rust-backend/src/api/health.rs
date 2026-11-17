@@ -131,6 +131,7 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "actionWatchMaxDistancePoints": config.action_watch_max_distance_points,
         "actionWatchMinConfidence": config.action_watch_min_confidence,
         "actionTriggerCooldownMinutes": config.action_trigger_cooldown_minutes,
+        "triggerJournalEnabled": config.trigger_journal_enabled,
         "dailyPlanEnabled": config.daily_plan_enabled,
         "macroFlowEnabled": config.macro_flow_enabled,
         "macroFlowOk": macro_flow_ok,

@@ -6,6 +6,7 @@ use gold_signal_bot::news_filter::{NewsFilterConfig, NewsFilterService};
 use gold_signal_bot::scheduler::DailyScheduler;
 use gold_signal_bot::storage::PersistentStore;
 use gold_signal_bot::telegram::TelegramNotifier;
+use gold_signal_bot::trigger_journal::TriggerJournal;
 use gold_signal_bot::worker;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -42,6 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Nạp trạng thái bền vững từ data/bot_state.json
     let store = PersistentStore::new("data/bot_state.json");
+    let journal_path = store.path().with_file_name("trigger_journal.jsonl");
     let persisted = store.load();
     let mut config = persisted.config.sanitized();
     if config.telegram_bot_token.trim().is_empty() {
@@ -184,6 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         divergence_last_sent: Arc::new(RwLock::new(std::collections::HashMap::new())),
         action_trigger_last_sent: Arc::new(RwLock::new(persisted.action_watch_last_sent)),
         active_watch_setup: Arc::new(RwLock::new(persisted.active_watch_setup)),
+        trigger_journal: Arc::new(TriggerJournal::new(journal_path)),
         macro_flow: Arc::new(RwLock::new(None)),
         macro_flow_updated_at: Arc::new(RwLock::new(None)),
         last_ai_decision: Arc::new(RwLock::new(None)),
@@ -208,6 +211,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 8c. Action Trigger Worker — cảnh báo khi PRIMARY scenario chạm trigger trên
     // nến M15 đã đóng. Read-only: không quota, không chèn tín hiệu, không auto-trade.
     gold_signal_bot::action_alerts::spawn_action_trigger_worker(state.clone());
+
+    // 6e. Trigger journal outcome worker — hypothetical TP/SL/MFE/MAE for every
+    // trigger, including those blocked by confirmation/AI/risk.
+    gold_signal_bot::trigger_journal_worker::spawn_trigger_journal_worker(state.clone());
 
     // 8d. Macro & Flow Worker — FRED/Yahoo/CFTC read-only, refresh mỗi 15 phút.
     macro_flow::spawn_macro_flow_worker(state.clone());
