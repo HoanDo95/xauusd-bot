@@ -403,7 +403,18 @@ pub(crate) fn build_decision_prompt(
     let scenario_block = format_scenario_block(scenarios);
     let candidate_block = format_candidate_block(candidate);
     let events_text = format_upcoming_events(events, now);
-    let early_entry_min_confidence = config.early_entry_min_confidence;
+    let entry_rules = if config.early_entry_enabled {
+        format!(
+            "- A valid PRIMARY/ALTERNATE scenario with confidence >= {}% may be approved as an early entry even if its M15 trigger has not printed yet.\n\
+             - For an early entry, approve the scenario and use its provided entry/SL/TP levels; the entry is a pending order at the trigger, not a market chase.",
+            config.early_entry_min_confidence
+        )
+    } else {
+        "- Early entry before the M15 trigger is DISABLED. Do not approve an unconfirmed scenario as an entry just because its confidence is high.\n\
+         - The entry gate is a closed M15 candle that has already triggered the candidate/scenario. When the candidate is confirmed, approve BUY/SELL if structure, macro/HTF and R:R agree; use the provided entry/SL/TP levels.\n\
+         - Scenario confidence is a confluence/readiness score, not a win probability and not a 90% permission threshold for confirmed entries."
+            .to_string()
+    };
     let anti_chase_daily_change_pct = config.anti_chase_daily_change_pct;
     let anti_chase_rsi_h1 = config.anti_chase_rsi_h1;
     let anti_chase_bullish_change_pct = -config.anti_chase_daily_change_pct;
@@ -426,15 +437,14 @@ pub(crate) fn build_decision_prompt(
         Hard rules enforced by code (do not attempt to override):\n\
         - SL/TP ordering, minimum R:R, risk budget, daily quota, session window, news kill switch and dedup are validated in code.\n\
         - The AI never sets live SL/TP and must not invent prices. Choose a provided candidate/scenario or STANDBY.\n\
-        - A valid PRIMARY/ALTERNATE scenario with confidence >= {early_entry_min_confidence}% is actionable even if its M15 trigger has not printed yet. Do not demand 100% confirmation; 90% confluence is enough when the structure and macro/HTF context agree.\n\
-        - For an early entry, approve the scenario and use its provided entry/SL/TP levels. The entry is a pending order at the scenario trigger, not a market chase.\n\
+        {entry_rules}\n\
         - Anti-chase: if daily change <= {anti_chase_daily_change_pct:.2}% and (RSI H1 < {anti_chase_rsi_h1:.1} or M15 Bullish divergence), do not approve a bearish breakout/breakdown; prefer the pullback/rejection scenario or STANDBY. Mirror for bullish: daily change >= {anti_chase_bullish_change_pct:.2}% and (RSI H1 > {anti_chase_bullish_rsi_h1:.1} or M15 Bearish divergence).\n\
         - Confidence cap: a scenario may reach >=90% only when macro/D1/H4 agree, RSI H1 is 30-65, and there is no opposite M15 divergence. Otherwise treat the setup as 85/75/65 and do not claim 90%+.\n\
         - Pullback confirmation exception: bearish_rejection with RSI M15 >=70 at resistance (mirror: bullish_bounce with RSI M15 <=30 at support) may reach >=90% even with an opposite M15 divergence when macro/D1-H4 and RSI H1 agree. This exception never applies to breakout/breakdown.\n\
         - Scenario confidence is a confluence/readiness score, not a win probability. Do not describe it as a probability of profit.\n\
         - If the candidate and scenarios disagree, prefer STANDBY unless one setup clearly has better structure and R:R.\n\
         - If data is missing, contradictory, or the setup is counter-macro without exceptional confluence, prefer STANDBY.\n\
-        - STANDBY only when no valid scenario reaches the threshold, the setup is invalid, or a hard invalidation/conflicting event is present.\n\
+        - STANDBY when no valid candidate/scenario is actionable, the setup is invalid, data is missing/contradictory, or a hard invalidation/conflicting event is present.\n\
         - BUY/SELL means you approve using the provided candidate or selected scenario levels; execution still requires all hard checks to pass.\n\n\
         Return ONLY one valid JSON object with exactly these keys:\n\
         {{\"action\":\"BUY\"|\"SELL\"|\"STANDBY\",\"confidence_score\":0.0,\
@@ -914,8 +924,9 @@ mod tests {
         assert!(prompt.contains("US Core CPI m/m"));
         assert!(prompt.contains("IN golden session 13:00-23:00 VN"));
         assert!(prompt.contains("Hard rules enforced by code"));
-        assert!(prompt.contains("confidence >= 90%"));
-        assert!(prompt.contains("pending order"));
+        assert!(prompt.contains("Early entry before the M15 trigger is DISABLED"));
+        assert!(prompt.contains("entry gate is a closed M15 candle"));
+        assert!(prompt.contains("not a 90% permission threshold"));
         assert!(prompt.contains("Anti-chase"));
         assert!(prompt.contains("Confidence cap"));
         assert!(prompt.contains("Pullback confirmation exception"));
@@ -923,6 +934,40 @@ mod tests {
         assert!(prompt.contains("confluence/readiness score"));
         assert!(prompt.contains("\"selected_scenario\""));
         assert!(prompt.contains("\"macro_flow_alignment\""));
+    }
+
+    #[test]
+    fn decision_prompt_reflects_early_entry_flag() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 12, 12, 0, 0).unwrap();
+        let off = build_decision_prompt(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            now,
+            &BotConfig::default(),
+        );
+        assert!(off.contains("Early entry before the M15 trigger is DISABLED"));
+
+        let on = build_decision_prompt(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            now,
+            &BotConfig {
+                early_entry_enabled: true,
+                ..BotConfig::default()
+            },
+        );
+        assert!(on.contains("confidence >= 90%"));
+        assert!(on.contains("pending order"));
     }
 
     #[test]
