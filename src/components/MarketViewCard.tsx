@@ -55,6 +55,19 @@ function actionLabel(action: string): string {
   }
 }
 
+function h1StatusTone(status: string): string {
+  switch ((status || '').toUpperCase()) {
+    case 'CONFIRMED':
+      return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200';
+    case 'PENDING':
+      return 'border-amber-500/40 bg-amber-500/10 text-amber-200';
+    case 'INVALID':
+      return 'border-rose-500/40 bg-rose-500/10 text-rose-200';
+    default:
+      return 'border-neutral-700 bg-neutral-900 text-neutral-400';
+  }
+}
+
 function ScenarioBlock({
   label,
   scenario,
@@ -91,6 +104,43 @@ function ScenarioBlock({
         </span>
       </div>
       <p className="text-[11px] text-neutral-300 leading-relaxed">{scenario.trigger}</p>
+      {scenario.h1_confirmation ? (
+        <div
+          className={`rounded-lg border px-3 py-2 flex flex-col gap-1 ${h1StatusTone(
+            scenario.h1_confirmation.status
+          )}`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[9px] font-mono font-bold uppercase tracking-wider">
+              H1 confirmation
+            </span>
+            <span className="text-[10px] font-mono font-black">
+              {scenario.h1_confirmation.status}
+            </span>
+          </div>
+          <div className="text-[10px] font-mono opacity-90">
+            H1 bias {scenario.h1_confirmation.bias}
+            {' · '}
+            momentum{' '}
+            {typeof scenario.h1_confirmation.momentum_atr === 'number'
+              ? `${scenario.h1_confirmation.momentum_atr.toFixed(2)}×ATR`
+              : 'n/a'}
+          </div>
+          <div className="text-[10px] opacity-90">
+            M15 entry:{' '}
+            <span className="font-mono">
+              {level(scenario.h1_confirmation.m15_entry_zone_low)} –{' '}
+              {level(scenario.h1_confirmation.m15_entry_zone_high)}
+            </span>
+          </div>
+          <p className="text-[10px] leading-relaxed opacity-80">
+            {scenario.h1_confirmation.note}
+          </p>
+          <p className="text-[9px] leading-relaxed opacity-70">
+            {scenario.h1_confirmation.m15_entry_note}
+          </p>
+        </div>
+      ) : null}
       <div className="grid grid-cols-3 gap-2 text-[10px]">
         <div>
           <div className="text-neutral-500 uppercase tracking-wider">SL</div>

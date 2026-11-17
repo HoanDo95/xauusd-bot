@@ -30,6 +30,23 @@ impl BotState {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct H1Confirmation {
+    /// CONFIRMED | PENDING | INVALID | UNKNOWN
+    pub status: String,
+    pub bias: String,
+    pub close: Option<f64>,
+    pub trigger_price: Option<f64>,
+    pub atr14: Option<f64>,
+    /// |H1 close - previous H1 close| / H1 ATR14.
+    pub momentum_atr: Option<f64>,
+    pub note: String,
+    /// M15 retest zone for the advisory entry plan.
+    pub m15_entry_zone_low: Option<f64>,
+    pub m15_entry_zone_high: Option<f64>,
+    pub m15_entry_note: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutlookScenario {
     pub role: String,
@@ -44,6 +61,9 @@ pub struct OutlookScenario {
     pub take_profit_2: Option<f64>,
     pub confidence: u8,
     pub invalidation: String,
+    /// Advisory H1 confirmation + M15 retest plan. Never a signal by itself.
+    #[serde(default)]
+    pub h1_confirmation: Option<H1Confirmation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -115,10 +135,10 @@ pub fn build_outlook(input: OutlookInput<'_>) -> MarketOutlook {
         .price
         .or_else(|| context.map(|context| context.h1.close));
     let structure = classify_structure(context, input.scenarios);
-    let primary =
-        pick_primary(input.scenarios).and_then(|scenario| outlook_scenario(scenario, h4_atr));
-    let alternative =
-        pick_alternative(input.scenarios).and_then(|scenario| outlook_scenario(scenario, h4_atr));
+    let primary = pick_primary(input.scenarios)
+        .and_then(|scenario| outlook_scenario(scenario, h4_atr, context));
+    let alternative = pick_alternative(input.scenarios)
+        .and_then(|scenario| outlook_scenario(scenario, h4_atr, context));
     let bot_state = if input.no_trade_reason.is_some() {
         BotState::NoTrade
     } else if input.active_sniper {
@@ -339,7 +359,11 @@ fn pick_alternative(scenarios: &ScenarioResponse) -> Option<&Scenario> {
         })
 }
 
-fn outlook_scenario(scenario: &Scenario, h4_atr: Option<f64>) -> Option<OutlookScenario> {
+fn outlook_scenario(
+    scenario: &Scenario,
+    h4_atr: Option<f64>,
+    context: Option<&MarketContext>,
+) -> Option<OutlookScenario> {
     let anchor = scenario.entry.or(scenario.trigger_price)?;
     let buffer = (h4_atr.unwrap_or(10.0) * 0.10).max(1.5);
     let action = match scenario.bias.trim().to_uppercase().as_str() {
@@ -347,19 +371,138 @@ fn outlook_scenario(scenario: &Scenario, h4_atr: Option<f64>) -> Option<OutlookS
         "BULLISH" => "WATCH_BUY",
         _ => "STAND_ASIDE",
     };
+    let zone_low = round2(anchor - buffer);
+    let zone_high = round2(anchor + buffer);
     Some(OutlookScenario {
         role: scenario.role.trim().to_uppercase(),
         scenario_id: scenario.id.clone(),
         action: action.to_string(),
-        zone_low: round2(anchor - buffer),
-        zone_high: round2(anchor + buffer),
+        zone_low,
+        zone_high,
         trigger: scenario.trigger.clone(),
         stop_loss: scenario.stop_loss,
         take_profit_1: scenario.take_profit_1,
         take_profit_2: scenario.take_profit_2,
         confidence: scenario.confidence,
         invalidation: scenario.invalidation.clone(),
+        h1_confirmation: Some(h1_confirmation(scenario, context, zone_low, zone_high)),
     })
+}
+
+/// Advisory H1 confirmation for an M15 scenario.
+///
+/// The H1 gate is intentionally simple and transparent:
+/// - SELL breakdown: H1 close below trigger, H1 bias BEARISH, momentum >= 0.15 ATR.
+/// - BUY breakout: mirror.
+/// - TOUCH/limit: H1 confirmation is not applicable; wait for M15.
+///
+/// This never approves a signal; the live sniper still requires its M15 close +
+/// confirmation + AI/hard risk.
+fn h1_confirmation(
+    scenario: &Scenario,
+    context: Option<&MarketContext>,
+    zone_low: f64,
+    zone_high: f64,
+) -> H1Confirmation {
+    let Some(context) = context else {
+        return H1Confirmation {
+            status: "UNKNOWN".to_string(),
+            bias: "UNKNOWN".to_string(),
+            note: "Chưa có H1 context.".to_string(),
+            m15_entry_zone_low: Some(zone_low),
+            m15_entry_zone_high: Some(zone_high),
+            m15_entry_note: "Chờ M15 retest vùng và xác nhận.".to_string(),
+            ..H1Confirmation::default()
+        };
+    };
+    let h1 = &context.h1;
+    let h1_bias = h1.bias.trim().to_uppercase();
+    let scenario_bias = scenario.bias.trim().to_uppercase();
+    let direction = scenario.trigger_direction.trim().to_uppercase();
+    let trigger = scenario.trigger_price;
+    let atr = h1.atr14;
+    let momentum_atr = if h1.prev_close > 0.0 && atr > 0.0 {
+        Some((h1.close - h1.prev_close).abs() / atr)
+    } else {
+        None
+    };
+    let mut result = H1Confirmation {
+        status: "UNKNOWN".to_string(),
+        bias: h1_bias.clone(),
+        close: Some(h1.close),
+        trigger_price: trigger,
+        atr14: Some(atr),
+        momentum_atr,
+        note: String::new(),
+        m15_entry_zone_low: Some(zone_low),
+        m15_entry_zone_high: Some(zone_high),
+        m15_entry_note:
+            "Chờ M15 retest vùng này và đóng cửa xác nhận; nếu không retest trong 4–8 nến M15, bỏ."
+                .to_string(),
+    };
+
+    let Some(trigger) = trigger else {
+        result.note = "Scenario không có trigger giá.".to_string();
+        return result;
+    };
+    if scenario_bias == "BEARISH" && direction == "BELOW" {
+        if h1_bias == "BULLISH" {
+            result.status = "INVALID".to_string();
+            result.note = "H1 bias BULLISH ngược kịch bản SELL.".to_string();
+        } else if h1.close < trigger && h1_bias == "BEARISH" && momentum_atr.unwrap_or(0.0) >= 0.15
+        {
+            result.status = "CONFIRMED".to_string();
+            result.note = format!(
+                "H1 đóng {:.2} dưới trigger {:.2}, bias BEARISH, momentum {:.2}×ATR.",
+                h1.close,
+                trigger,
+                momentum_atr.unwrap_or(0.0)
+            );
+        } else {
+            result.status = "PENDING".to_string();
+            result.note = format!(
+                "H1 chưa xác nhận: close {:.2} vs trigger {:.2}, bias {}, momentum {}.",
+                h1.close,
+                trigger,
+                h1_bias,
+                momentum_atr
+                    .map(|value| format!("{value:.2}×ATR"))
+                    .unwrap_or_else(|| "n/a".to_string())
+            );
+        }
+    } else if scenario_bias == "BULLISH" && direction == "ABOVE" {
+        if h1_bias == "BEARISH" {
+            result.status = "INVALID".to_string();
+            result.note = "H1 bias BEARISH ngược kịch bản BUY.".to_string();
+        } else if h1.close > trigger && h1_bias == "BULLISH" && momentum_atr.unwrap_or(0.0) >= 0.15
+        {
+            result.status = "CONFIRMED".to_string();
+            result.note = format!(
+                "H1 đóng {:.2} trên trigger {:.2}, bias BULLISH, momentum {:.2}×ATR.",
+                h1.close,
+                trigger,
+                momentum_atr.unwrap_or(0.0)
+            );
+        } else {
+            result.status = "PENDING".to_string();
+            result.note = format!(
+                "H1 chưa xác nhận: close {:.2} vs trigger {:.2}, bias {}, momentum {}.",
+                h1.close,
+                trigger,
+                h1_bias,
+                momentum_atr
+                    .map(|value| format!("{value:.2}×ATR"))
+                    .unwrap_or_else(|| "n/a".to_string())
+            );
+        }
+    } else if direction == "TOUCH" {
+        result.status = "PENDING".to_string();
+        result.note =
+            "Limit/touch: H1 confirmation không áp dụng; dùng M15 retest/rejection.".to_string();
+    } else {
+        result.note = "Thiếu bias/trigger để xác nhận H1.".to_string();
+    }
+    result
 }
 
 fn build_narrative(
@@ -596,6 +739,50 @@ mod tests {
         assert_eq!(score.trigger, 30);
         assert_eq!(score.macro_score, 10);
         assert_eq!(score.total, 100);
+    }
+
+    #[test]
+    fn h1_confirmation_marks_sell_breakdown() {
+        let response = response();
+        let primary = response
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == "primary")
+            .expect("primary");
+
+        let mut confirmed_context = context("BEARISH", "BEARISH", "BEARISH");
+        confirmed_context.h1.close = 2695.0;
+        confirmed_context.h1.prev_close = 2705.0;
+        let confirmed = h1_confirmation(primary, Some(&confirmed_context), 2698.0, 2702.0);
+        assert_eq!(confirmed.status, "CONFIRMED");
+        assert!(confirmed.momentum_atr.unwrap() > 0.15);
+
+        let mut pending_context = context("BEARISH", "BEARISH", "BEARISH");
+        pending_context.h1.close = 2705.0;
+        pending_context.h1.prev_close = 2705.0;
+        let pending = h1_confirmation(primary, Some(&pending_context), 2698.0, 2702.0);
+        assert_eq!(pending.status, "PENDING");
+
+        let mut invalid_context = context("BEARISH", "BEARISH", "BULLISH");
+        invalid_context.h1.close = 2695.0;
+        invalid_context.h1.prev_close = 2705.0;
+        let invalid = h1_confirmation(primary, Some(&invalid_context), 2698.0, 2702.0);
+        assert_eq!(invalid.status, "INVALID");
+    }
+
+    #[test]
+    fn h1_confirmation_marks_buy_breakout() {
+        let response = response();
+        let alternative = response
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.id == "alt")
+            .expect("alternative");
+        let mut bullish_context = context("BULLISH", "BULLISH", "BULLISH");
+        bullish_context.h1.close = 2715.0;
+        bullish_context.h1.prev_close = 2705.0;
+        let confirmation = h1_confirmation(alternative, Some(&bullish_context), 2708.0, 2712.0);
+        assert_eq!(confirmation.status, "CONFIRMED");
     }
 
     #[test]

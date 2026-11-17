@@ -317,6 +317,19 @@ export interface ActionViewResponse {
 export type BotState = 'NO_TRADE' | 'MARKET_VIEW' | 'SNIPER_TRIGGER';
 
 /** Reference scenario inside the H1 Market View. Levels are a plan, not an entry. */
+export interface H1Confirmation {
+  status: 'CONFIRMED' | 'PENDING' | 'INVALID' | 'UNKNOWN' | string;
+  bias: string;
+  close?: number | null;
+  trigger_price?: number | null;
+  atr14?: number | null;
+  momentum_atr?: number | null;
+  note: string;
+  m15_entry_zone_low?: number | null;
+  m15_entry_zone_high?: number | null;
+  m15_entry_note: string;
+}
+
 export interface OutlookScenario {
   role: string;
   scenario_id: string;
@@ -329,6 +342,8 @@ export interface OutlookScenario {
   take_profit_2: number | null;
   confidence: number;
   invalidation: string;
+  /** Advisory H1 confirmation + M15 retest plan; never a signal by itself. */
+  h1_confirmation?: H1Confirmation | null;
 }
 
 /**

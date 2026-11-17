@@ -616,8 +616,30 @@ impl TelegramNotifier {
     }
 
     fn format_outlook_scenario(label: &str, scenario: &OutlookScenario) -> String {
+        let h1 = scenario
+            .h1_confirmation
+            .as_ref()
+            .map(|h1| {
+                let momentum = h1
+                    .momentum_atr
+                    .map(|value| format!("{value:.2}×ATR"))
+                    .unwrap_or_else(|| "n/a".to_string());
+                let zone = match (h1.m15_entry_zone_low, h1.m15_entry_zone_high) {
+                    (Some(low), Some(high)) => format!("{low:.2}–{high:.2}"),
+                    _ => "n/a".to_string(),
+                };
+                format!(
+                    "\nH1: <b>{}</b> · bias {} · momentum {}\nM15 entry: <code>{}</code>\n{}",
+                    Self::escape_html(&h1.status),
+                    Self::escape_html(&h1.bias),
+                    momentum,
+                    zone,
+                    Self::escape_html(&h1.note)
+                )
+            })
+            .unwrap_or_default();
         format!(
-            "{} — <b>{}</b>\nZone: <code>{:.2}–{:.2}</code>\nTrigger: {}\nSL {} · TP1 {} · TP2 {} · Conf {}%\nInvalidation: {}",
+            "{} — <b>{}</b>\nZone: <code>{:.2}–{:.2}</code>\nTrigger: {}\nSL {} · TP1 {} · TP2 {} · Conf {}%\nInvalidation: {}{}",
             label,
             Self::escape_html(&scenario.action),
             scenario.zone_low,
@@ -627,7 +649,8 @@ impl TelegramNotifier {
             format_level(scenario.take_profit_1),
             format_level(scenario.take_profit_2),
             scenario.confidence,
-            Self::escape_html(&scenario.invalidation)
+            Self::escape_html(&scenario.invalidation),
+            h1
         )
     }
 
@@ -2517,6 +2540,7 @@ mod tests {
                 take_profit_2: Some(3835.0),
                 confidence: 72,
                 invalidation: "H1 close trên 3884".to_string(),
+                h1_confirmation: None,
             }),
             alternative: Some(OutlookScenario {
                 role: "ALTERNATE".to_string(),
@@ -2530,6 +2554,7 @@ mod tests {
                 take_profit_2: Some(3892.0),
                 confidence: 65,
                 invalidation: "H1 close dưới 3852".to_string(),
+                h1_confirmation: None,
             }),
             risk_notes: vec!["Tin đỏ USD 21:30.".to_string()],
             no_trade_reason: None,
