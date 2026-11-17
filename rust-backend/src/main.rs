@@ -3,6 +3,7 @@ use gold_signal_bot::api::{create_router, AppState};
 use gold_signal_bot::macro_flow;
 use gold_signal_bot::market_feed::MarketDataFeed;
 use gold_signal_bot::news_filter::{NewsFilterConfig, NewsFilterService};
+use gold_signal_bot::news_impact::NewsImpactStore;
 use gold_signal_bot::scheduler::DailyScheduler;
 use gold_signal_bot::storage::PersistentStore;
 use gold_signal_bot::telegram::TelegramNotifier;
@@ -44,6 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Nạp trạng thái bền vững từ data/bot_state.json
     let store = PersistentStore::new("data/bot_state.json");
     let journal_path = store.path().with_file_name("trigger_journal.jsonl");
+    let news_impact_path = store.path().with_file_name("news_reactions.json");
+    let news_impact_store = NewsImpactStore::new(news_impact_path);
+    let initial_news_impact = news_impact_store.load();
     let persisted = store.load();
     let mut config = persisted.config.sanitized();
     if config.telegram_bot_token.trim().is_empty() {
@@ -191,6 +195,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         macro_flow: Arc::new(RwLock::new(None)),
         macro_flow_updated_at: Arc::new(RwLock::new(None)),
         last_ai_decision: Arc::new(RwLock::new(None)),
+        news_impact: Arc::new(RwLock::new(initial_news_impact)),
+        news_impact_store: Arc::new(news_impact_store),
     };
 
     // 6. Background Scanner 24/7 — quét mỗi 60 giây
@@ -223,6 +229,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 8d. Macro & Flow Worker — FRED/Yahoo/CFTC read-only, refresh mỗi 15 phút.
     macro_flow::spawn_macro_flow_worker(state.clone());
+
+    // 8d-2. News Impact Worker — phân loại tin + đo phản ứng vàng + AI analyst
+    // (advisory/measurement-only; không ảnh hưởng tín hiệu).
+    gold_signal_bot::news_impact_worker::spawn_news_impact_worker(state.clone());
 
     // 8e. Telegram command worker — /start, /stop, /view, /status, /help.
     // Chỉ admin chat được phép; không quota, không chèn tín hiệu.

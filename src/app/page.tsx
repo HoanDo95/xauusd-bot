@@ -12,6 +12,7 @@ import {
   MarketContext,
   MarketOutlook,
   NewsCalendarData,
+  NewsImpactResponse,
   Scenario,
   ScenarioResponse,
   Signal,
@@ -29,6 +30,7 @@ import {
   fetchMarketContext,
   fetchMarketView,
   fetchNewsCalendar,
+  fetchNewsImpact,
   fetchScenarios,
   fetchSignals,
   refreshMarketStrategist,
@@ -57,6 +59,7 @@ import { SignalCard } from '../components/SignalCard';
 import { SignalModal } from '../components/SignalModal';
 import { ConfigPanel } from '../components/ConfigPanel';
 import { NewsKillSwitchBanner } from '../components/NewsKillSwitchBanner';
+import { NewsImpactCard } from '../components/NewsImpactCard';
 import { PositionSizeWidget } from '../components/PositionSizeWidget';
 import { WebhookAndMacroHub } from '../components/WebhookAndMacroHub';
 
@@ -149,6 +152,10 @@ const DEFAULT_CONFIG: BotConfig = {
   macro_flow_enabled: true,
   daily_plan_enabled: true,
   weekend_brief_enabled: true,
+  news_reaction_enabled: true,
+  news_ai_analyst_enabled: true,
+  news_ai_daily_cap: 6,
+  news_reaction_horizon_minutes: 240,
 };
 
 function scenarioTriggerLabel(scenario: Scenario): string {
@@ -211,6 +218,7 @@ export default function DashboardPage() {
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>('M15');
   const [inspectingSignal, setInspectingSignal] = useState<Signal | null>(null);
   const [newsData, setNewsData] = useState<NewsCalendarData | null>(null);
+  const [newsImpact, setNewsImpact] = useState<NewsImpactResponse | null>(null);
   const [marketContext, setMarketContext] = useState<MarketContext | null>(null);
   const [volumeDelta, setVolumeDelta] = useState<VolumeDeltaSnapshot | null>(null);
   const [divergenceAlerts, setDivergenceAlerts] = useState<DivergenceAlertsResponse>({
@@ -297,9 +305,18 @@ export default function DashboardPage() {
     }
   }, []);
 
-  // Fetch read-only D1/H4/H1 context for the "view toàn cảnh" panel.
-  const loadMarketContext = useCallback(async () => {
+  // Fetch advisory news-impact/reaction records (no quota, no signal effect).
+  const loadNewsImpact = useCallback(async () => {
     try {
+      const data = await fetchNewsImpact(50);
+      setNewsImpact(data);
+    } catch (err) {
+      console.error('Lỗi tải News Impact:', err);
+    }
+  }, []);
+
+  // Fetch read-only D1/H4/H1 context for the "view toàn cảnh" panel.
+  const loadMarketContext = useCallback(async () => {    try {
       const data = await fetchMarketContext();
       setMarketContext(data);
     } catch (err) {
@@ -377,6 +394,7 @@ export default function DashboardPage() {
     void loadSignals();
     void loadConfig();
     void loadNewsCalendar();
+    void loadNewsImpact();
     void loadMarketContext();
 
     // Keep the desk in sync with the 60-second backend scanner.
@@ -384,11 +402,19 @@ export default function DashboardPage() {
       void loadCandles();
       void loadSignals();
       void loadNewsCalendar();
+      void loadNewsImpact();
       void loadMarketContext();
     }, 60_000);
 
     return () => clearInterval(timer);
-  }, [loadCandles, loadSignals, loadConfig, loadNewsCalendar, loadMarketContext]);
+  }, [
+    loadCandles,
+    loadSignals,
+    loadConfig,
+    loadNewsCalendar,
+    loadNewsImpact,
+    loadMarketContext,
+  ]);
 
   // Divergence alerts refresh every 30 seconds, independent of trade signals.
   useEffect(() => {
@@ -618,6 +644,9 @@ export default function DashboardPage() {
             handleSaveConfig({ ...config, kill_switch_enabled: !config.kill_switch_enabled })
           }
         />
+
+        {/* Advisory news-impact/reaction journal (no signal effect) */}
+        <NewsImpactCard data={newsImpact} />
 
         {/* KPI, Sniper Quota & Free Live Feed Bar */}
         <MetricCards

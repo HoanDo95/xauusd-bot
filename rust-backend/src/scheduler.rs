@@ -254,7 +254,7 @@ impl DailyScheduler {
         }
     }
 
-    /// 1. Đồng bộ lịch kinh tế tuần này từ ForexFactory Public JSON.
+    /// Đồng bộ lịch kinh tế tuần này từ ForexFactory Public JSON.
     ///
     /// Lọc USD + High/Medium impact; fallback an toàn khi offline.
     pub async fn fetch_daily_economic_events(&self) -> Vec<EconomicEvent> {
@@ -306,6 +306,28 @@ impl DailyScheduler {
                 );
                 Self::fallback_economic_events()
             }
+        }
+    }
+
+    /// Fetch this week's ForexFactory calendar without the offline fallback.
+    /// Returns `None` on network/HTTP/parse failure or an empty USD list, so the
+    /// news-impact worker never merges mock events into the real calendar.
+    pub async fn fetch_economic_events_strict(&self) -> Option<Vec<EconomicEvent>> {
+        let response = self
+            .http_client
+            .get(FOREX_FACTORY_CALENDAR_URL)
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let payload = response.json::<serde_json::Value>().await.ok()?;
+        let events = Self::parse_forexfactory_events(&payload);
+        if events.is_empty() {
+            None
+        } else {
+            Some(events)
         }
     }
 

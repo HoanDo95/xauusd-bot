@@ -936,6 +936,96 @@ export const ConfigPanel: React.FC<Props> = ({
             tham gia tạo tín hiệu, bộ lọc, quota hay Telegram.
           </p>
 
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 flex flex-col gap-3">
+            <div>
+              <div className="text-xs font-bold text-amber-300 uppercase tracking-wider">
+                📰 NEWS IMPACT — đo phản ứng vàng sau tin (advisory)
+              </div>
+              <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
+                Phân loại tin, tính surprise actual/forecast, đo +15m/+60m/+240m và volume. Không
+                ảnh hưởng tín hiệu, kill switch, score hay quota.
+              </p>
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+              <input
+                type="checkbox"
+                checked={formData.news_reaction_enabled ?? true}
+                onChange={(e) =>
+                  setFormData({ ...formData, news_reaction_enabled: e.target.checked })
+                }
+                className="accent-amber-500 w-4 h-4 rounded cursor-pointer"
+              />
+              <span className="font-semibold text-white">
+                Bật News Impact &amp; Reaction journal
+              </span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+              <input
+                type="checkbox"
+                checked={formData.news_ai_analyst_enabled ?? true}
+                onChange={(e) =>
+                  setFormData({ ...formData, news_ai_analyst_enabled: e.target.checked })
+                }
+                className="accent-amber-500 w-4 h-4 rounded cursor-pointer"
+              />
+              <span className="font-semibold text-white">
+                Bật AI News Analyst (chỉ sau khi có actual)
+              </span>
+            </label>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">
+                  Giới hạn AI / ngày UTC
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  max="24"
+                  step="1"
+                  value={formData.news_ai_daily_cap ?? 6}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      news_ai_daily_cap: Math.max(
+                        0,
+                        Math.min(24, parseInt(e.target.value) || 0)
+                      ),
+                    })
+                  }
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-amber-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
+                />
+                <span className="text-[11px] text-neutral-500">
+                  0 = tắt AI. Mặc định 6 sự kiện High/ngày; mỗi event tối đa 2 lần thử.
+                </span>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">
+                  Horizon đo phản ứng (phút)
+                </label>
+                <input
+                  type="number"
+                  min="60"
+                  max="240"
+                  step="15"
+                  value={formData.news_reaction_horizon_minutes ?? 240}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      news_reaction_horizon_minutes: Math.max(
+                        60,
+                        Math.min(240, parseInt(e.target.value) || 240)
+                      ),
+                    })
+                  }
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-amber-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
+                />
+                <span className="text-[11px] text-neutral-500">
+                  60–240, mặc định 240. Chỉ đổi nhãn MEASURING/COMPLETE, không đổi cách đo.
+                </span>
+              </div>
+            </div>
+          </div>
+
           <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
             <input
               type="checkbox"

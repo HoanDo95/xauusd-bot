@@ -531,6 +531,20 @@ pub struct BotConfig {
     /// không gửi entry/SL/TP. Mặc định true.
     #[serde(default = "default_true")]
     pub weekend_brief_enabled: bool,
+    /// Bật News Impact & Reaction journal (advisory, measurement-only).
+    /// Không ảnh hưởng tín hiệu/kill switch/score/quota. Mặc định BẬT.
+    #[serde(default = "default_true")]
+    pub news_reaction_enabled: bool,
+    /// Bật AI News Impact Analyst. Chỉ chạy sau khi có actual, tối đa
+    /// `news_ai_daily_cap` sự kiện/ngày UTC. Mặc định BẬT.
+    #[serde(default = "default_true")]
+    pub news_ai_analyst_enabled: bool,
+    /// Số sự kiện tối đa được gọi AI mỗi ngày UTC (0 = tắt AI). Mặc định 6.
+    #[serde(default = "default_news_ai_daily_cap")]
+    pub news_ai_daily_cap: usize,
+    /// Horizon đo phản ứng vàng sau tin (phút, 60..=240, mặc định 240).
+    #[serde(default = "default_news_reaction_horizon_minutes")]
+    pub news_reaction_horizon_minutes: i64,
 }
 
 fn default_max_signals_per_day() -> usize {
@@ -692,6 +706,14 @@ fn default_max_spread_proxy_atr() -> f64 {
     1.0
 }
 
+fn default_news_ai_daily_cap() -> usize {
+    6
+}
+
+fn default_news_reaction_horizon_minutes() -> i64 {
+    240
+}
+
 impl Default for BotConfig {
     fn default() -> Self {
         Self {
@@ -783,6 +805,10 @@ impl Default for BotConfig {
             macro_flow_enabled: true,
             daily_plan_enabled: true,
             weekend_brief_enabled: true,
+            news_reaction_enabled: true,
+            news_ai_analyst_enabled: true,
+            news_ai_daily_cap: default_news_ai_daily_cap(),
+            news_reaction_horizon_minutes: default_news_reaction_horizon_minutes(),
         }
     }
 }
@@ -901,6 +927,8 @@ impl BotConfig {
         self.action_watch_min_confidence = self.action_watch_min_confidence.min(100);
         self.market_view_cooldown_minutes = self.market_view_cooldown_minutes.clamp(15, 1440);
         self.max_spread_proxy_atr = finite_or(self.max_spread_proxy_atr, 1.0).clamp(0.2, 3.0);
+        self.news_ai_daily_cap = self.news_ai_daily_cap.min(24);
+        self.news_reaction_horizon_minutes = self.news_reaction_horizon_minutes.clamp(60, 240);
 
         self.telegram_bot_token = self.telegram_bot_token.trim().to_string();
         self.telegram_chat_id = self.telegram_chat_id.trim().to_string();

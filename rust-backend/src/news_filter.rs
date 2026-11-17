@@ -160,6 +160,49 @@ impl NewsFilterService {
             .sort_by_key(|event| event.scheduled_time);
     }
 
+    /// Merge `forecast`/`previous`/`actual` from a fresh ForexFactory payload
+    /// without replacing the existing calendar. Used by the 5-minute news-impact
+    /// worker to pick up `actual` after a release. Returns the number of events
+    /// touched/added.
+    pub fn merge_event_details(&mut self, fresh: &[EconomicEvent]) -> usize {
+        let mut touched = 0;
+        for event in self.calendar_events.iter_mut() {
+            let Some(update) = fresh.iter().find(|candidate| {
+                candidate.id == event.id
+                    || (candidate.title == event.title
+                        && candidate.scheduled_time == event.scheduled_time)
+            }) else {
+                continue;
+            };
+            if update.forecast.is_some() {
+                event.forecast = update.forecast.clone();
+            }
+            if update.previous.is_some() {
+                event.previous = update.previous.clone();
+            }
+            if update.actual.is_some() {
+                event.actual = update.actual.clone();
+            }
+            touched += 1;
+        }
+
+        for candidate in fresh {
+            let exists = self.calendar_events.iter().any(|event| {
+                event.id == candidate.id
+                    || (event.title == candidate.title
+                        && event.scheduled_time == candidate.scheduled_time)
+            });
+            if !exists {
+                self.calendar_events.push(candidate.clone());
+                touched += 1;
+            }
+        }
+
+        self.calendar_events
+            .sort_by_key(|event| event.scheduled_time);
+        touched
+    }
+
     /// Trả về `true` nếu thị trường AN TOÀN, `false` nếu bị chặn bởi tin High Impact.
     pub fn check_kill_switch(&self, now: DateTime<Utc>, bot_config: &BotConfig) -> bool {
         if !bot_config.kill_switch_enabled {
@@ -381,5 +424,43 @@ mod tests {
         assert!(active);
         assert_eq!(event.map(|e| e.id), Some("TEST-CPI".to_string()));
         assert!(reason.contains("KILL SWITCH"));
+    }
+
+    #[test]
+    fn test_merge_event_details_updates_actual_without_erasing() {
+        let event_time = Utc
+            .with_ymd_and_hms(2026, 11, 9, 13, 30, 0)
+            .single()
+            .expect("valid UTC timestamp");
+        let mut service = NewsFilterService::new(NewsFilterConfig::default());
+        service.update_events(vec![high_impact_event(event_time)]);
+
+        let mut fresh = high_impact_event(event_time);
+        fresh.actual = Some("0.5%".to_string());
+        fresh.forecast = None; // must not erase the existing forecast
+        let touched = service.merge_event_details(&[fresh]);
+
+        assert_eq!(touched, 1);
+        assert_eq!(service.calendar_events[0].actual.as_deref(), Some("0.5%"));
+        assert_eq!(service.calendar_events[0].forecast.as_deref(), Some("0.3%"));
+    }
+
+    #[test]
+    fn test_merge_event_details_adds_new_event_and_deduplicates() {
+        let event_time = Utc
+            .with_ymd_and_hms(2026, 11, 9, 13, 30, 0)
+            .single()
+            .expect("valid UTC timestamp");
+        let mut service = NewsFilterService::new(NewsFilterConfig::default());
+        service.update_events(vec![high_impact_event(event_time)]);
+
+        let mut new_event = high_impact_event(event_time + Duration::hours(1));
+        new_event.id = "TEST-CPI-2".to_string();
+        new_event.title = "US Retail Sales m/m".to_string();
+        let touched = service.merge_event_details(&[new_event.clone(), new_event]);
+
+        assert_eq!(touched, 1);
+        assert_eq!(service.calendar_events.len(), 2);
+        assert_eq!(service.calendar_events[1].id, "TEST-CPI-2");
     }
 }

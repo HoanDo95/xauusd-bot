@@ -15,6 +15,7 @@ import type {
   MarketContext,
   MarketOutlook,
   NewsCalendarData,
+  NewsImpactResponse,
   ScenarioResponse,
   Signal,
   StrategistView,
@@ -439,6 +440,11 @@ export function saveConfig(config: BotConfig): Promise<ConfigResponse> {
 /** GET /api/news-calendar — ForexFactory USD events + Kill Switch state. */
 export function fetchNewsCalendar(): Promise<NewsCalendarData> {
   return request<NewsCalendarData>('/api/news-calendar');
+}
+
+/** GET /api/news-impact — advisory news classification + post-event gold reaction. */
+export function fetchNewsImpact(limit = 50): Promise<NewsImpactResponse> {
+  return request<NewsImpactResponse>(`/api/news-impact?limit=${limit}`);
 }
 
 /** GET /api/health — engine, feed, quota and trend status. */

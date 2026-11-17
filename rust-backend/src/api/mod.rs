@@ -6,6 +6,7 @@ use crate::market_feed::MarketDataFeed;
 use crate::market_strategist::StrategistView;
 use crate::models::{BotConfig, Candle, DailyMacroReport, Signal};
 use crate::news_filter::NewsFilterService;
+use crate::news_impact::{NewsImpactRecord, NewsImpactStore};
 use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot, RsiSnapshot};
 use crate::scenarios::WatchedSetup;
 use crate::signal_review::{review_blocks_signal, review_signal};
@@ -36,6 +37,7 @@ mod macro_flow;
 mod market;
 mod market_view;
 mod news;
+mod news_impact;
 mod scanner;
 mod scenarios;
 mod signals;
@@ -55,6 +57,7 @@ use market::{get_htf_candles, get_market_context, get_recent_candles};
 use news::{
     get_latest_macro_bias, get_news_calendar, send_daily_plan_telegram, trigger_daily_macro_cron,
 };
+use news_impact::{get_news_impact, get_news_impact_summary};
 use scanner::{send_scenario_telegram, start_scanner, stop_scanner};
 use scenarios::get_scenarios;
 use signals::{close_all_signals, get_all_signals, get_stats};
@@ -134,6 +137,10 @@ pub struct AppState {
     /// Quyết định AI gần nhất (BUY/SELL/STANDBY), chỉ giữ trong RAM.
     /// Chỉ được ghi khi AI Decision Mode chạy; không phải lệnh tự động.
     pub last_ai_decision: Arc<RwLock<Option<AiDecision>>>,
+    /// News impact/reaction records (advisory, measurement-only).
+    pub news_impact: Arc<RwLock<Vec<NewsImpactRecord>>>,
+    /// Atomic store for `data/news_reactions.json`.
+    pub news_impact_store: Arc<NewsImpactStore>,
 }
 
 /// Ghi snapshot Config + Signals + DailyReport + session alert dedup xuống đĩa
@@ -193,6 +200,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/config", get(get_config).post(update_config))
         .route("/api/calculate-lot", post(calculate_lot))
         .route("/api/news-calendar", get(get_news_calendar))
+        .route("/api/news-impact", get(get_news_impact))
+        .route("/api/news-impact/summary", get(get_news_impact_summary))
         .route("/api/telegram/test", post(trigger_test_telegram))
         .route("/api/test-telegram", post(trigger_test_telegram))
         .route("/api/telegram/send-signal", post(send_signal_telegram))

@@ -4,7 +4,7 @@ FROM rust:1.99-slim-bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN cargo build --release --locked --bin gold-signal-bot --bin trigger_report
+RUN cargo build --release --locked --bin gold-signal-bot --bin trigger_report --bin news_report
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
@@ -14,6 +14,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=builder /app/target/release/gold-signal-bot /usr/local/bin/gold-signal-bot
 COPY --from=builder /app/target/release/trigger_report /usr/local/bin/trigger_report
+COPY --from=builder /app/target/release/news_report /usr/local/bin/news_report
 RUN mkdir -p /app/data && chown -R bot:bot /app
 USER bot
 ENV PORT=8090 \

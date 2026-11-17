@@ -588,6 +588,119 @@ export interface NewsCalendarData {
   sessionWindowOpen?: boolean;
 }
 
+export type NewsImpactEventClass =
+  | 'INFLATION'
+  | 'LABOR'
+  | 'GROWTH'
+  | 'CONSUMPTION'
+  | 'HOUSING'
+  | 'MANUFACTURING'
+  | 'SENTIMENT'
+  | 'FED'
+  | 'GEOPOLITICAL'
+  | 'OTHER';
+
+export type NewsImpactGoldRelevance = 'HIGH' | 'MEDIUM' | 'LOW';
+export type NewsImpactLean = 'UP' | 'DOWN' | 'UNCLEAR';
+export type NewsImpactReaction = 'UP' | 'DOWN' | 'FLAT' | 'UNKNOWN';
+export type NewsImpactHawkishDovish = 'HAWKISH' | 'DOVISH' | 'NEUTRAL' | 'UNKNOWN';
+
+export interface NewsAiView {
+  generated_at: string;
+  model: string;
+  prompt_version: string;
+  event_class: NewsImpactEventClass;
+  gold_relevance: NewsImpactGoldRelevance;
+  hawkish_dovish: NewsImpactHawkishDovish;
+  gold_lean: NewsImpactLean;
+  confidence: number;
+  conditions?: string | null;
+  reasoning: string;
+}
+
+export interface NewsImpactRecord {
+  schema: number;
+  event_id: string;
+  title: string;
+  currency: string;
+  impact: 'High' | 'Medium' | 'Low';
+  scheduled_time: string;
+  event_class: NewsImpactEventClass;
+  gold_relevance: NewsImpactGoldRelevance;
+  forecast?: string | null;
+  previous?: string | null;
+  actual?: string | null;
+  surprise?: number | null;
+  surprise_pct?: number | null;
+  conditional_lean: NewsImpactLean;
+  conditional_reason: string;
+  status: 'UPCOMING' | 'MEASURING' | 'COMPLETE' | 'UNKNOWN' | string;
+  baseline_price?: number | null;
+  baseline_time?: string | null;
+  return_15m?: number | null;
+  return_60m?: number | null;
+  return_240m?: number | null;
+  return_15m_pct?: number | null;
+  return_60m_pct?: number | null;
+  return_240m_pct?: number | null;
+  mfe_points?: number | null;
+  mae_points?: number | null;
+  volume_ratio?: number | null;
+  h4_atr?: number | null;
+  reaction: NewsImpactReaction;
+  reaction_reason: string;
+  price_source: string;
+  volume_source: string;
+  ai?: NewsAiView | null;
+  ai_attempted_at?: string | null;
+  ai_attempts: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NewsImpactBucket {
+  event_class: NewsImpactEventClass;
+  count: number;
+  up: number;
+  down: number;
+  flat: number;
+  unknown: number;
+  avg_abs_move_60m?: number | null;
+  conditional_hit_rate?: number | null;
+  ai_hit_rate?: number | null;
+}
+
+export interface NewsImpactSummary {
+  total_events: number;
+  measured_events: number;
+  up: number;
+  down: number;
+  flat: number;
+  unknown: number;
+  avg_abs_move_15m?: number | null;
+  avg_abs_move_60m?: number | null;
+  avg_abs_move_240m?: number | null;
+  conditional_total: number;
+  conditional_correct: number;
+  conditional_hit_rate?: number | null;
+  ai_total: number;
+  ai_correct: number;
+  ai_hit_rate?: number | null;
+  majority_down_share?: number | null;
+  by_class: NewsImpactBucket[];
+}
+
+export interface NewsImpactResponse {
+  records: NewsImpactRecord[];
+  summary: NewsImpactSummary;
+  updatedAt?: string | null;
+  enabled?: boolean;
+  aiEnabled?: boolean;
+  aiDailyCap?: number;
+  horizonMinutes?: number;
+  advisoryOnly?: boolean;
+}
+
 export interface BotConfig {
   symbol: string;
   timeframe: string;
@@ -746,6 +859,14 @@ export interface BotConfig {
   daily_plan_enabled?: boolean;
   /** Send the weekend brief (news + next-week assessment) at 07:00 Sat/Sun. Default true. */
   weekend_brief_enabled?: boolean;
+  /** News impact/reaction journal (advisory, measurement-only). Default true. */
+  news_reaction_enabled?: boolean;
+  /** AI News Impact Analyst (post-actual only, capped). Default true. */
+  news_ai_analyst_enabled?: boolean;
+  /** Maximum distinct High-Impact events analyzed by AI per UTC day (0 = off). Default 6. */
+  news_ai_daily_cap?: number;
+  /** Reaction measurement/status horizon in minutes (60–240, default 240). */
+  news_reaction_horizon_minutes?: number;
 }
 
 export interface DailyMacroReport {
