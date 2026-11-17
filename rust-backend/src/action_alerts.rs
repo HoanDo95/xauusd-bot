@@ -164,6 +164,18 @@ pub fn spawn_action_trigger_worker(state: AppState) {
                 continue;
             }
 
+            // Never add a watching alert after a full signal was already
+            // produced for this candle.
+            let has_signal_for_candle = {
+                let signals = state.signals.read().await;
+                signals.iter().any(|signal| {
+                    !signal.is_simulated && signal.candle_timestamp == candle.timestamp
+                })
+            };
+            if has_signal_for_candle {
+                continue;
+            }
+
             // One watching alert per setup lifecycle. While a setup is active,
             // stay silent: the scanner owns the confirmed GOLD SIGNAL.
             let active_setup = state.active_watch_setup.read().await.clone();
