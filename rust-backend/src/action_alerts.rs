@@ -205,6 +205,14 @@ pub fn spawn_action_trigger_worker(state: AppState) {
                 continue;
             }
 
+            // Hard NO_TRADE gate: abnormal spread proxy blocks watching alerts
+            // (the Market View itself stays available with the reason).
+            if let Some(spread) = crate::api::spread_proxy_atr(&state, &candle).await {
+                if spread > config.max_spread_proxy_atr {
+                    continue;
+                }
+            }
+
             // One watching alert per setup lifecycle. While a setup is active,
             // stay silent: the scanner owns the confirmed GOLD SIGNAL.
             let active_setup = state.active_watch_setup.read().await.clone();

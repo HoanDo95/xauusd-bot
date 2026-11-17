@@ -768,6 +768,20 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
             } else {
                 config.clone()
             };
+
+            // Hard NO_TRADE gate: abnormal spread proxy. RSI/EMA never reach
+            // this branch; they only affect scoring/confirmation.
+            if let Some(last_candle) = candles.last() {
+                if let Some(spread) = crate::api::spread_proxy_atr(&state, last_candle).await {
+                    if spread > config.max_spread_proxy_atr {
+                        warn!(
+                            "🛑 [NO_TRADE] Spread proxy {:.2}×H4 ATR > {:.2} — bỏ qua sniper.",
+                            spread, config.max_spread_proxy_atr
+                        );
+                        continue;
+                    }
+                }
+            }
             // A persisted SETUP WATCHING owns the next signal until it triggers
             // or invalidates. Skip the pinbar analyzer so a different candidate
             // cannot fire while the user is watching a frozen setup.

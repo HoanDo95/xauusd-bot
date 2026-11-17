@@ -66,6 +66,7 @@ pub(crate) use entry_check::run_entry_check;
 pub use entry_check::{EntryCheckResult, EntryPlan};
 pub(crate) use live::current_live_view;
 pub(crate) use market_view::compute_market_outlook;
+pub(crate) use market_view::spread_proxy_atr;
 pub(crate) use scanner::{start_scanner_inner, stop_scanner_inner};
 pub(crate) use scenarios::current_scenarios;
 

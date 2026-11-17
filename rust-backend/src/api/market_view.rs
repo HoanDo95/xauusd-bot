@@ -98,16 +98,21 @@ async fn no_trade_reason(
     None
 }
 
+/// Pure spread proxy formula: |live − close| / H4 ATR.
+pub(crate) fn spread_proxy(live: f64, close: f64, h4_atr: f64) -> Option<f64> {
+    if !live.is_finite() || !close.is_finite() || !h4_atr.is_finite() || h4_atr <= 0.0 {
+        return None;
+    }
+    Some(((live - close).abs() / h4_atr).max(0.0))
+}
+
 /// Proxy for abnormal spread without a broker bid/ask feed:
 /// |live − last M15 close| / H4 ATR. Documented as a proxy, not real spread.
-async fn spread_proxy_atr(state: &AppState, last_candle: &Candle) -> Option<f64> {
+pub(crate) async fn spread_proxy_atr(state: &AppState, last_candle: &Candle) -> Option<f64> {
     let live = (*state.live_price.read().await)?;
     let context = state.market_context.read().await;
     let h4_atr = context.as_ref().map(|context| context.h4.atr14)?;
-    if !h4_atr.is_finite() || h4_atr <= 0.0 {
-        return None;
-    }
-    Some(((live - last_candle.close).abs() / h4_atr).max(0.0))
+    spread_proxy(live, last_candle.close, h4_atr)
 }
 
 async fn upcoming_news_notes(state: &AppState, now: DateTime<Utc>) -> Vec<String> {
@@ -143,4 +148,18 @@ async fn active_sniper(state: &AppState) -> bool {
     signals
         .iter()
         .any(|signal| !signal.is_simulated && matches!(signal.status, SignalStatus::Active))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spread_proxy_is_relative_to_h4_atr() {
+        assert_eq!(spread_proxy(2700.0, 2695.0, 10.0), Some(0.5));
+        assert_eq!(spread_proxy(2695.0, 2700.0, 10.0), Some(0.5));
+        assert_eq!(spread_proxy(2700.0, 2700.0, 10.0), Some(0.0));
+        assert_eq!(spread_proxy(2700.0, 2695.0, 0.0), None);
+        assert_eq!(spread_proxy(f64::NAN, 2695.0, 10.0), None);
+    }
 }
