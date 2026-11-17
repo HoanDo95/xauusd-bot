@@ -148,6 +148,19 @@ pub fn htf_shift_amount(spot_basis: Option<f64>, broker_price_offset: f64) -> f6
     spot_basis.unwrap_or(broker_price_offset)
 }
 
+/// Dịch giá HTF theo nguồn: các nguồn đã là giá broker/spot (TwelveData, OANDA,
+/// Exness) chỉ cộng broker offset thủ công; Binance PAXG dùng spot basis.
+fn htf_shift_for(source_label: &str, spot_basis: Option<f64>, broker_price_offset: f64) -> f64 {
+    if source_label.starts_with("TWELVEDATA")
+        || source_label.starts_with("OANDA")
+        || source_label.starts_with("EXNESS")
+    {
+        broker_price_offset
+    } else {
+        htf_shift_amount(spot_basis, broker_price_offset)
+    }
+}
+
 /// Fetch H4/D1/H1 đã đóng cửa và dựng MarketContext. Trả None nếu thiếu H4/D1.
 /// Kèm theo nến H4/D1 (đã căn basis) để dashboard vẽ "view toàn cảnh".
 pub async fn fetch_market_context(
@@ -162,22 +175,14 @@ pub async fn fetch_market_context(
         market_feed.fetch_htf_candles_with_source(Timeframe::H1, 300, data_source),
     );
 
-    // TwelveData đã là giá XAU/USD spot nên chỉ cộng broker offset thủ công;
-    // Binance vẫn dùng spot basis (nếu có) như trước.
-    let binance_shift = htf_shift_amount(spot_basis, broker_price_offset);
-    let spot_shift = broker_price_offset;
-    let shift_for = |source_label: &str| {
-        if source_label.starts_with("TWELVEDATA") || source_label.starts_with("OANDA") {
-            spot_shift
-        } else {
-            binance_shift
-        }
-    };
-    for (candles, shift) in [
-        (&mut h4, shift_for(&h4_source)),
-        (&mut d1, shift_for(&d1_source)),
-        (&mut h1, shift_for(&h1_source)),
+    // TwelveData/OANDA/Exness đã là giá broker/spot nên chỉ cộng broker offset
+    // thủ công; Binance vẫn dùng spot basis (nếu có) như trước.
+    for (candles, source_label) in [
+        (&mut h4, h4_source.as_str()),
+        (&mut d1, d1_source.as_str()),
+        (&mut h1, h1_source.as_str()),
     ] {
+        let shift = htf_shift_for(source_label, spot_basis, broker_price_offset);
         if shift.is_finite() && shift != 0.0 {
             shift_candles_prices(candles, shift);
         }
@@ -197,14 +202,15 @@ pub async fn fetch_market_context(
 
     let twelve_context = h4_source.starts_with("TWELVEDATA");
     let oanda_context = h4_source.starts_with("OANDA");
-    let price_source = if oanda_context {
+    let exness_context = h4_source.starts_with("EXNESS");
+    let price_source = if oanda_context || exness_context {
         h4_source.clone()
     } else if twelve_context {
         twelve_htf_price_source(&[&h4_source, &d1_source, &h1_source]).to_string()
     } else {
         htf_price_source(spot_basis)
     };
-    let context_spot_basis = if twelve_context || oanda_context {
+    let context_spot_basis = if twelve_context || oanda_context || exness_context {
         None
     } else {
         spot_basis
@@ -1466,6 +1472,16 @@ mod tests {
         assert_eq!(htf_shift_amount(None, 0.0), 0.0);
         assert!(htf_shift_amount(None, f64::NAN).is_nan());
         assert!(htf_shift_amount(Some(f64::INFINITY), 2.0).is_infinite());
+    }
+
+    #[test]
+    fn htf_shift_for_treats_exness_as_broker_prices() {
+        assert_eq!(htf_shift_for("EXNESS", Some(13.51), 0.0), 0.0);
+        assert_eq!(htf_shift_for("EXNESS", Some(13.51), 2.0), 2.0);
+        assert_eq!(htf_shift_for("TWELVEDATA_XAUUSD", Some(13.51), 2.0), 2.0);
+        assert_eq!(htf_shift_for("OANDA_XAUUSD", Some(13.51), 0.0), 0.0);
+        assert_eq!(htf_shift_for("BINANCE_PAXG", Some(13.51), 0.0), 13.51);
+        assert_eq!(htf_shift_for("BINANCE_PAXG", None, 2.0), 2.0);
     }
 
     #[test]
