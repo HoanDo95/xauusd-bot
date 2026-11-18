@@ -1461,8 +1461,8 @@ impl TelegramNotifier {
         let action = Self::escape_html(&truncate_chars(&scenario.action, 24));
         let status = if scenario.valid { "" } else { " · INVALID" };
         let trigger = match (scenario.trigger_price, scenario.trigger_direction.as_str()) {
-            (Some(price), "ABOVE") => format!("M15 close > {price:.2}"),
-            (Some(price), "BELOW") => format!("M15 close < {price:.2}"),
+            (Some(price), "ABOVE") => format!("M15 close &gt; {price:.2}"),
+            (Some(price), "BELOW") => format!("M15 close &lt; {price:.2}"),
             (Some(price), "TOUCH") => format!("M15 touch {price:.2}"),
             (Some(price), _) => format!("M15 {price:.2}"),
             (None, _) => "—".to_string(),
@@ -3266,7 +3266,7 @@ mod tests {
             "MARKET PANORAMA",
             "Biến động",
             "PRIMARY — <b>Bearish breakdown</b>",
-            "Trigger M15 close < 3777.14",
+            "Trigger M15 close &lt; 3777.14",
             "Đây là view tham khảo, KHÔNG phải sniper signal",
         ] {
             assert!(message.contains(expected), "missing: {expected}");
