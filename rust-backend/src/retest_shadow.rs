@@ -50,6 +50,9 @@ pub struct RetestLevels {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetestTrade {
     pub setup_id: String,
+    pub scenario_id: String,
+    pub bias: String,
+    pub confidence: u8,
     /// BUY | SELL
     pub direction: String,
     pub entry: f64,
@@ -68,8 +71,8 @@ pub struct RetestOutcome {
 }
 
 impl RetestTrade {
-    pub fn from_levels(
-        setup_id: String,
+    pub fn from_watch(
+        watch: &RetestWatch,
         direction: String,
         levels: RetestLevels,
         entry_candle_timestamp: i64,
@@ -79,7 +82,10 @@ impl RetestTrade {
             return None;
         }
         Some(Self {
-            setup_id,
+            setup_id: watch.setup_id.clone(),
+            scenario_id: watch.scenario.id.clone(),
+            bias: watch.scenario.bias.clone(),
+            confidence: watch.scenario.confidence,
             direction,
             entry: levels.entry,
             stop_loss: levels.stop_loss,
@@ -277,6 +283,9 @@ async fn record_outcome_event(
     let config = state.config.read().await.clone();
     let mut entry = TriggerEvent::new("retest_outcome");
     entry.setup_id = Some(trade.setup_id.clone());
+    entry.scenario_id = Some(trade.scenario_id.clone());
+    entry.bias = Some(trade.bias.clone());
+    entry.confidence = Some(trade.confidence);
     entry.created_at = Some(Utc::now());
     entry.candle_timestamp = Some(candle.timestamp);
     entry.direction = Some(trade.direction.clone());
@@ -434,8 +443,8 @@ pub fn spawn_retest_shadow_worker(state: AppState) {
                     } else {
                         "BUY"
                     };
-                    if let Some(trade) = RetestTrade::from_levels(
-                        watch.setup_id.clone(),
+                    if let Some(trade) = RetestTrade::from_watch(
+                        &watch,
                         direction.to_string(),
                         levels,
                         candle.timestamp,
@@ -632,6 +641,13 @@ mod tests {
     fn trade(direction: &str) -> RetestTrade {
         RetestTrade {
             setup_id: "RETEST-TEST".to_string(),
+            scenario_id: "bearish_breakdown".to_string(),
+            bias: if direction == "SELL" {
+                "BEARISH".to_string()
+            } else {
+                "BULLISH".to_string()
+            },
+            confidence: 70,
             direction: direction.to_string(),
             entry: 3800.0,
             stop_loss: if direction == "SELL" { 3810.0 } else { 3790.0 },
@@ -645,6 +661,7 @@ mod tests {
 
     #[test]
     fn trade_levels_reject_zero_risk() {
+        let watch = watch("BEARISH", 3800.0, 3810.0);
         let levels = RetestLevels {
             entry: 3800.0,
             stop_loss: 3800.0,
@@ -652,10 +669,7 @@ mod tests {
             take_profit_2: 3770.0,
             risk_reward: 2.0,
         };
-        assert!(
-            RetestTrade::from_levels("RETEST-TEST".to_string(), "SELL".to_string(), levels, 0)
-                .is_none()
-        );
+        assert!(RetestTrade::from_watch(&watch, "SELL".to_string(), levels, 0).is_none());
     }
 
     #[test]
