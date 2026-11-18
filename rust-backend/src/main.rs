@@ -193,6 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         active_watch_setup: Arc::new(RwLock::new(persisted.active_watch_setup)),
         daily_view_sent: Arc::new(RwLock::new(persisted.daily_view_sent)),
         retest_watch: Arc::new(RwLock::new(persisted.retest_watch)),
+        active_retest_trade: Arc::new(RwLock::new(persisted.retest_trade)),
         market_strategist_view: Arc::new(RwLock::new(None)),
         trigger_journal: Arc::new(TriggerJournal::new(journal_path)),
         macro_flow: Arc::new(RwLock::new(None)),

@@ -132,6 +132,8 @@ pub struct AppState {
     pub daily_view_sent: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
     /// Retest shadow research watch (không phải signal/quota).
     pub retest_watch: Arc<RwLock<Option<crate::retest_shadow::RetestWatch>>>,
+    /// Retest shadow trade being tracked to TP/SL/timeout.
+    pub active_retest_trade: Arc<RwLock<Option<crate::retest_shadow::RetestTrade>>>,
     /// AI Market Strategist cache cho H1 Market View (advisory, không phải signal).
     pub market_strategist_view: Arc<RwLock<Option<StrategistView>>>,
     /// Append-only trigger journal (analysis log, not live trade state).
@@ -165,6 +167,7 @@ pub async fn persist_state(state: &AppState) -> Result<(), String> {
         action_watch_last_sent: state.action_trigger_last_sent.read().await.clone(),
         daily_view_sent: state.daily_view_sent.read().await.clone(),
         retest_watch: state.retest_watch.read().await.clone(),
+        retest_trade: state.active_retest_trade.read().await.clone(),
     };
     let store = state.store.clone();
 

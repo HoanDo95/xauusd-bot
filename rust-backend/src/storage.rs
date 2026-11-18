@@ -1,5 +1,5 @@
 use crate::models::{BotConfig, DailyMacroReport, Signal};
-use crate::retest_shadow::RetestWatch;
+use crate::retest_shadow::{RetestTrade, RetestWatch};
 use crate::scenarios::WatchedSetup;
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc, Weekday};
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,9 @@ pub struct PersistentState {
     /// Retest shadow research watch (không phải signal).
     #[serde(default)]
     pub retest_watch: Option<RetestWatch>,
+    /// Retest shadow trade being tracked to TP/SL/timeout.
+    #[serde(default)]
+    pub retest_trade: Option<RetestTrade>,
 }
 
 /// Bộ lưu trữ JSON nguyên tử (atomic write) cho server chạy 24/7.

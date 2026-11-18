@@ -46,6 +46,113 @@ pub struct RetestLevels {
     pub risk_reward: f64,
 }
 
+/// A retest trade that was alerted and is being tracked to outcome.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetestTrade {
+    pub setup_id: String,
+    /// BUY | SELL
+    pub direction: String,
+    pub entry: f64,
+    pub stop_loss: f64,
+    pub take_profit_1: f64,
+    pub take_profit_2: f64,
+    pub risk: f64,
+    pub created_at: DateTime<Utc>,
+    pub entry_candle_timestamp: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct RetestOutcome {
+    pub outcome: &'static str,
+    pub r_multiple: f64,
+}
+
+impl RetestTrade {
+    pub fn from_levels(
+        setup_id: String,
+        direction: String,
+        levels: RetestLevels,
+        entry_candle_timestamp: i64,
+    ) -> Option<Self> {
+        let risk = (levels.entry - levels.stop_loss).abs();
+        if !risk.is_finite() || risk <= 0.0 {
+            return None;
+        }
+        Some(Self {
+            setup_id,
+            direction,
+            entry: levels.entry,
+            stop_loss: levels.stop_loss,
+            take_profit_1: levels.take_profit_1,
+            take_profit_2: levels.take_profit_2,
+            risk,
+            created_at: Utc::now(),
+            entry_candle_timestamp,
+        })
+    }
+
+    pub fn is_expired(&self, candle_timestamp: i64) -> bool {
+        candle_timestamp.saturating_sub(self.entry_candle_timestamp) >= 96 * M15_MS
+    }
+
+    pub fn evaluate(&self, candle: &Candle) -> Option<RetestOutcome> {
+        match self.direction.as_str() {
+            "SELL" => {
+                if candle.high >= self.stop_loss {
+                    Some(RetestOutcome {
+                        outcome: "SL",
+                        r_multiple: -1.0,
+                    })
+                } else if candle.low <= self.take_profit_2 {
+                    Some(RetestOutcome {
+                        outcome: "TP2",
+                        r_multiple: 3.0,
+                    })
+                } else if candle.low <= self.take_profit_1 {
+                    Some(RetestOutcome {
+                        outcome: "TP1",
+                        r_multiple: 2.0,
+                    })
+                } else {
+                    None
+                }
+            }
+            "BUY" => {
+                if candle.low <= self.stop_loss {
+                    Some(RetestOutcome {
+                        outcome: "SL",
+                        r_multiple: -1.0,
+                    })
+                } else if candle.high >= self.take_profit_2 {
+                    Some(RetestOutcome {
+                        outcome: "TP2",
+                        r_multiple: 3.0,
+                    })
+                } else if candle.high >= self.take_profit_1 {
+                    Some(RetestOutcome {
+                        outcome: "TP1",
+                        r_multiple: 2.0,
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    pub fn timeout_r(&self, close: f64) -> f64 {
+        if self.risk <= 0.0 {
+            return 0.0;
+        }
+        match self.direction.as_str() {
+            "SELL" => (self.entry - close) / self.risk,
+            "BUY" => (close - self.entry) / self.risk,
+            _ => 0.0,
+        }
+    }
+}
+
 impl RetestWatch {
     pub fn original_risk(&self) -> f64 {
         (self.broken_level - self.original_stop_loss).abs()
@@ -160,6 +267,41 @@ async fn record_watch_event(
     );
 }
 
+async fn record_outcome_event(
+    state: &AppState,
+    trade: &RetestTrade,
+    candle: &Candle,
+    outcome: &str,
+    r_multiple: f64,
+) {
+    let config = state.config.read().await.clone();
+    let mut entry = TriggerEvent::new("retest_outcome");
+    entry.setup_id = Some(trade.setup_id.clone());
+    entry.created_at = Some(Utc::now());
+    entry.candle_timestamp = Some(candle.timestamp);
+    entry.direction = Some(trade.direction.clone());
+    entry.entry = Some(trade.entry);
+    entry.stop_loss = Some(trade.stop_loss);
+    entry.take_profit_1 = Some(trade.take_profit_1);
+    entry.take_profit_2 = Some(trade.take_profit_2);
+    entry.risk_points = Some(trade.risk);
+    entry.close = Some(candle.close);
+    entry.r_multiple = Some(r_multiple);
+    entry.bars_open = Some(
+        candle
+            .timestamp
+            .saturating_sub(trade.entry_candle_timestamp)
+            / M15_MS,
+    );
+    entry.reason = Some(outcome.to_string());
+    entry.source = Some("retest_shadow".to_string());
+    record(
+        &state.trigger_journal,
+        config.trigger_journal_enabled,
+        &entry,
+    );
+}
+
 pub fn spawn_retest_shadow_worker(state: AppState) {
     tokio::spawn(async move {
         info!(
@@ -189,6 +331,49 @@ pub fn spawn_retest_shadow_worker(state: AppState) {
                 Utc::now().timestamp_millis(),
                 config.max_candle_age_secs,
             ) {
+                continue;
+            }
+
+            let active_trade = state.active_retest_trade.read().await.clone();
+            if let Some(trade) = active_trade {
+                if candle.timestamp > trade.entry_candle_timestamp {
+                    if let Some(outcome) = trade.evaluate(&candle) {
+                        record_outcome_event(
+                            &state,
+                            &trade,
+                            &candle,
+                            outcome.outcome,
+                            outcome.r_multiple,
+                        )
+                        .await;
+                        info!(
+                            "🧪 [Retest Shadow] Outcome {} {} · R {:+.2} · bars {}",
+                            trade.setup_id,
+                            outcome.outcome,
+                            outcome.r_multiple,
+                            (candle.timestamp - trade.entry_candle_timestamp) / M15_MS
+                        );
+                        *state.active_retest_trade.write().await = None;
+                        if let Err(err) = persist_state(&state).await {
+                            warn!("⚠️ [Retest Shadow] Không lưu được outcome: {}", err);
+                        }
+                        continue;
+                    }
+                    if trade.is_expired(candle.timestamp) {
+                        let r = trade.timeout_r(candle.close);
+                        record_outcome_event(&state, &trade, &candle, "TIMEOUT", r).await;
+                        info!(
+                            "🧪 [Retest Shadow] Outcome {} TIMEOUT · R {:+.2}",
+                            trade.setup_id, r
+                        );
+                        *state.active_retest_trade.write().await = None;
+                        if let Err(err) = persist_state(&state).await {
+                            warn!("⚠️ [Retest Shadow] Không lưu được timeout: {}", err);
+                        }
+                        continue;
+                    }
+                }
+                // One open research trade at a time; do not arm another watch.
                 continue;
             }
 
@@ -244,6 +429,19 @@ pub fn spawn_retest_shadow_worker(state: AppState) {
                         levels.stop_loss,
                         levels.take_profit_1
                     );
+                    let direction = if watch.scenario.bias.trim().eq_ignore_ascii_case("BEARISH") {
+                        "SELL"
+                    } else {
+                        "BUY"
+                    };
+                    if let Some(trade) = RetestTrade::from_levels(
+                        watch.setup_id.clone(),
+                        direction.to_string(),
+                        levels,
+                        candle.timestamp,
+                    ) {
+                        *state.active_retest_trade.write().await = Some(trade);
+                    }
                     *state.retest_watch.write().await = None;
                     if let Err(err) = persist_state(&state).await {
                         warn!("⚠️ [Retest Shadow] Không lưu được clear watch: {}", err);
@@ -411,5 +609,92 @@ mod tests {
         assert!(watch.is_expired(9 * M15_MS));
         assert!(watch.is_invalidated(&candle(3790.0, 3795.0, 3785.0, 3790.0)));
         assert!(!watch.is_invalidated(&candle(3795.0, 3800.0, 3792.0, 3795.0)));
+    }
+
+    fn trade(direction: &str) -> RetestTrade {
+        RetestTrade {
+            setup_id: "RETEST-TEST".to_string(),
+            direction: direction.to_string(),
+            entry: 3800.0,
+            stop_loss: if direction == "SELL" { 3810.0 } else { 3790.0 },
+            take_profit_1: if direction == "SELL" { 3780.0 } else { 3820.0 },
+            take_profit_2: if direction == "SELL" { 3770.0 } else { 3830.0 },
+            risk: 10.0,
+            created_at: Utc::now(),
+            entry_candle_timestamp: 0,
+        }
+    }
+
+    #[test]
+    fn trade_levels_reject_zero_risk() {
+        let levels = RetestLevels {
+            entry: 3800.0,
+            stop_loss: 3800.0,
+            take_profit_1: 3780.0,
+            take_profit_2: 3770.0,
+            risk_reward: 2.0,
+        };
+        assert!(
+            RetestTrade::from_levels("RETEST-TEST".to_string(), "SELL".to_string(), levels, 0)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn sell_trade_prefers_stop_when_candle_hits_both_sides() {
+        let trade = trade("SELL");
+        let outcome = trade
+            .evaluate(&candle(3800.0, 3811.0, 3769.0, 3775.0))
+            .expect("outcome");
+        assert_eq!(outcome.outcome, "SL");
+        assert_eq!(outcome.r_multiple, -1.0);
+    }
+
+    #[test]
+    fn sell_trade_hits_tp1_then_tp2() {
+        let trade = trade("SELL");
+        let tp1 = trade
+            .evaluate(&candle(3800.0, 3801.0, 3779.0, 3781.0))
+            .expect("tp1");
+        assert_eq!(tp1.outcome, "TP1");
+        assert_eq!(tp1.r_multiple, 2.0);
+        let tp2 = trade
+            .evaluate(&candle(3800.0, 3801.0, 3769.0, 3771.0))
+            .expect("tp2");
+        assert_eq!(tp2.outcome, "TP2");
+        assert_eq!(tp2.r_multiple, 3.0);
+        assert!(trade
+            .evaluate(&candle(3800.0, 3801.0, 3781.0, 3782.0))
+            .is_none());
+    }
+
+    #[test]
+    fn buy_trade_hits_stop_and_targets() {
+        let trade = trade("BUY");
+        let sl = trade
+            .evaluate(&candle(3800.0, 3831.0, 3789.0, 3795.0))
+            .expect("sl");
+        assert_eq!(sl.outcome, "SL");
+        let tp2 = trade
+            .evaluate(&candle(3800.0, 3831.0, 3799.0, 3825.0))
+            .expect("tp2");
+        assert_eq!(tp2.outcome, "TP2");
+    }
+
+    #[test]
+    fn timeout_r_is_signed_by_direction() {
+        let sell = trade("SELL");
+        assert!((sell.timeout_r(3795.0) - 0.5).abs() < 1e-9);
+        assert!((sell.timeout_r(3805.0) + 0.5).abs() < 1e-9);
+        let buy = trade("BUY");
+        assert!((buy.timeout_r(3805.0) - 0.5).abs() < 1e-9);
+        assert!((buy.timeout_r(3795.0) + 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trade_timeout_is_96_bars_after_entry() {
+        let trade = trade("SELL");
+        assert!(!trade.is_expired(95 * M15_MS));
+        assert!(trade.is_expired(96 * M15_MS));
     }
 }
