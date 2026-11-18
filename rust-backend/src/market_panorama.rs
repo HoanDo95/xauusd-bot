@@ -139,6 +139,13 @@ fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
+/// Display-zone cluster tolerance. Signal detection keeps its own 2.5 fixed
+/// tolerance so entry rules do not change; only the panorama/watch zones scale
+/// with H4 volatility.
+fn zone_tolerance(h4_atr: Option<f64>) -> f64 {
+    (h4_atr.unwrap_or(10.0) * 0.10).clamp(2.5, 8.0)
+}
+
 fn zone_view(zone: &SupportResistanceZone, price: f64, h4_atr: Option<f64>) -> ZoneView {
     let distance = (price - zone.price).abs();
     ZoneView {
@@ -327,7 +334,7 @@ pub async fn build_market_panorama(state: &AppState) -> MarketPanorama {
             let (supports, resistances) = GoldMarketAnalyzer::detect_dynamic_sr_zones(
                 &candles,
                 config.lookback_period.max(5),
-                2.5,
+                zone_tolerance(h4_atr),
             );
             (
                 top_zones(&supports, price, h4_atr, 3),
@@ -461,5 +468,18 @@ pub async fn build_market_panorama(state: &AppState) -> MarketPanorama {
         macro_block,
         news,
         score: outlook.score,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_zone_tolerance_scales_with_h4_atr() {
+        assert_eq!(zone_tolerance(None), 2.5);
+        assert_eq!(zone_tolerance(Some(20.0)), 2.5);
+        assert_eq!(zone_tolerance(Some(30.0)), 3.0);
+        assert_eq!(zone_tolerance(Some(100.0)), 8.0);
     }
 }
