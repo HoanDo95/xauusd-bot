@@ -377,6 +377,8 @@ export interface MarketOutlook {
   bot_state: BotState;
   generated_at: string;
   valid_until: string;
+  /** ACTIVE | TRIGGERED | RETEST_WINDOW | INVALIDATED | NO_TRADE */
+  plan_status?: string;
   structure: string;
   market_view: string;
   primary: OutlookScenario | null;

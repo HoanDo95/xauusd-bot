@@ -25,6 +25,21 @@ function actionLabel(action: string): string {
   }
 }
 
+function planStatusTone(status: string): string {
+  switch (status) {
+    case 'TRIGGERED':
+      return 'border-amber-500/40 bg-amber-500/10 text-amber-200';
+    case 'RETEST_WINDOW':
+      return 'border-sky-500/40 bg-sky-500/10 text-sky-200';
+    case 'INVALIDATED':
+      return 'border-rose-500/40 bg-rose-500/10 text-rose-200';
+    case 'NO_TRADE':
+      return 'border-neutral-700 bg-neutral-900 text-neutral-400';
+    default:
+      return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200';
+  }
+}
+
 function planLine(label: string, scenario: OutlookScenario | null): string {
   if (!scenario) return `${label}: chưa có kịch bản hợp lệ.`;
   return [
@@ -117,6 +132,7 @@ export const TradePlanCard: React.FC<Props> = ({ data }) => {
     if (!data) return '';
     return [
       `XAU/USD Trade Plan — ${data.bot_state}`,
+      `Plan status: ${data.plan_status ?? 'ACTIVE'} · valid until ${data.valid_until}`,
       `Structure: ${data.structure} · Session: ${data.session} · D1 ${data.d1_bias} / H4 ${data.h4_bias} / H1 ${data.h1_bias}`,
       `Price: ${price(data.price)} · H4 ATR: ${price(data.h4_atr)}`,
       data.no_trade_reason ? `NO_TRADE: ${data.no_trade_reason}` : '',
@@ -163,6 +179,13 @@ export const TradePlanCard: React.FC<Props> = ({ data }) => {
             </span>
             <span className="px-1.5 py-0.5 rounded border border-neutral-700 bg-neutral-900 text-[9px] font-mono uppercase tracking-wider text-neutral-400">
               {data.bot_state}
+            </span>
+            <span
+              className={`px-1.5 py-0.5 rounded border text-[9px] font-mono font-bold uppercase tracking-wider ${planStatusTone(
+                data.plan_status ?? 'ACTIVE'
+              )}`}
+            >
+              {data.plan_status ?? 'ACTIVE'}
             </span>
           </div>
           <p className="text-[11px] text-neutral-400">

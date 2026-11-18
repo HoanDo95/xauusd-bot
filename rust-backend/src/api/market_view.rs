@@ -10,6 +10,7 @@ use crate::market_view::{build_outlook, score_market, MarketOutlook, OutlookInpu
 use crate::models::{BotConfig, Candle, SignalStatus};
 use crate::news_filter::ImpactLevel;
 use crate::rsi::rsi_snapshot;
+use crate::scenarios::scenario_triggered;
 use crate::storage::PersistentStore;
 use crate::trigger_journal::{record, TriggerEvent};
 use axum::{extract::State, response::IntoResponse, Json};
@@ -51,6 +52,25 @@ pub async fn compute_market_outlook(state: &AppState) -> MarketOutlook {
     } else {
         None
     };
+    let primary_scenario = scenarios
+        .scenarios
+        .iter()
+        .find(|scenario| scenario.role.eq_ignore_ascii_case("PRIMARY"));
+    let retest_active = state.retest_watch.read().await.is_some();
+    let plan_status = if no_trade_reason.is_some() {
+        "NO_TRADE"
+    } else if primary_scenario.is_none_or(|scenario| !scenario.valid) {
+        "INVALIDATED"
+    } else if retest_active {
+        "RETEST_WINDOW"
+    } else if last_candle.as_ref().is_some_and(|candle| {
+        primary_scenario.is_some_and(|scenario| scenario_triggered(scenario, candle))
+    }) {
+        "TRIGGERED"
+    } else {
+        "ACTIVE"
+    }
+    .to_string();
 
     build_outlook(OutlookInput {
         scenarios: &scenarios,
@@ -63,6 +83,7 @@ pub async fn compute_market_outlook(state: &AppState) -> MarketOutlook {
         active_sniper,
         strategist,
         score,
+        plan_status,
     })
 }
 

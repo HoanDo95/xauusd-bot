@@ -558,6 +558,11 @@ impl TelegramNotifier {
             Self::escape_html(&outlook.structure)
         ));
         lines.push(format!(
+            "Plan: <b>{}</b> · valid until {}",
+            Self::escape_html(&outlook.plan_status),
+            Self::escape_html(&outlook.valid_until)
+        ));
+        lines.push(format!(
             "D1 {} / H4 {} / H1 {} · Giá {} · H4 ATR {}",
             Self::escape_html(&outlook.d1_bias),
             Self::escape_html(&outlook.h4_bias),
@@ -2730,6 +2735,7 @@ mod tests {
             bot_state: BotState::MarketView,
             generated_at: "2026-11-17T03:00:00Z".to_string(),
             valid_until: "2026-11-17T04:00:00Z".to_string(),
+            plan_status: "ACTIVE".to_string(),
             structure: "TECHNICAL_PULLBACK".to_string(),
             market_view: "H4/H1 bearish, M15 hồi lên kháng cự.".to_string(),
             primary: Some(OutlookScenario {
@@ -2809,6 +2815,7 @@ mod tests {
             bot_state: BotState::NoTrade,
             generated_at: "2026-11-18T06:00:00Z".to_string(),
             valid_until: "2026-11-18T07:00:00Z".to_string(),
+            plan_status: "ACTIVE".to_string(),
             structure: "UNKNOWN".to_string(),
             market_view: "test".to_string(),
             primary: None,

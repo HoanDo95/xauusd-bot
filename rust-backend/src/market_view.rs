@@ -8,7 +8,7 @@
 use crate::market_context::MarketContext;
 use crate::market_strategist::StrategistView;
 use crate::scenarios::{Scenario, ScenarioResponse};
-use chrono::{DateTime, Duration, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Three operating states. WATCHING is a sub-state of MARKET_VIEW.
@@ -87,6 +87,9 @@ pub struct MarketOutlook {
     pub bot_state: BotState,
     pub generated_at: String,
     pub valid_until: String,
+    /// ACTIVE | TRIGGERED | RETEST_WINDOW | INVALIDATED | NO_TRADE
+    #[serde(default)]
+    pub plan_status: String,
     /// TREND_BULL | TREND_BEAR | TECHNICAL_PULLBACK | RANGE | REVERSAL_WATCH | MIXED | UNKNOWN
     pub structure: String,
     pub market_view: String,
@@ -119,6 +122,7 @@ pub struct OutlookInput<'a> {
     pub active_sniper: bool,
     pub strategist: Option<StrategistView>,
     pub score: Option<MarketScore>,
+    pub plan_status: String,
 }
 
 pub fn build_outlook(input: OutlookInput<'_>) -> MarketOutlook {
@@ -175,7 +179,8 @@ pub fn build_outlook(input: OutlookInput<'_>) -> MarketOutlook {
     MarketOutlook {
         bot_state,
         generated_at: input.now.to_rfc3339(),
-        valid_until: next_h1_close(input.now).to_rfc3339(),
+        valid_until: next_daily_slot(input.now).to_rfc3339(),
+        plan_status: input.plan_status,
         structure,
         market_view,
         primary,
@@ -579,12 +584,26 @@ fn format_level(value: Option<f64>) -> String {
         .unwrap_or_else(|| "n/a".to_string())
 }
 
-fn next_h1_close(now: DateTime<Utc>) -> DateTime<Utc> {
-    let mut next = now + Duration::hours(1);
-    next = next.with_minute(0).unwrap_or(next);
-    next = next.with_second(0).unwrap_or(next);
-    next = next.with_nanosecond(0).unwrap_or(next);
-    next
+/// Next Daily View slot in Vietnam time: 07:00, 13:00 or 19:00, weekdays.
+fn next_daily_slot(now: DateTime<Utc>) -> DateTime<Utc> {
+    const HOURS: [u32; 3] = [7, 13, 19];
+    let vietnam_now = now + Duration::hours(7);
+    for day_offset in 0..8 {
+        let date = (vietnam_now + Duration::days(day_offset)).date_naive();
+        if matches!(date.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun) {
+            continue;
+        }
+        for hour in HOURS {
+            let Some(local) = date.and_hms_opt(hour, 0, 0) else {
+                continue;
+            };
+            let candidate = Utc.from_utc_datetime(&local) - Duration::hours(7);
+            if candidate > now {
+                return candidate;
+            }
+        }
+    }
+    now + Duration::hours(1)
 }
 
 fn round2(value: f64) -> f64 {
@@ -597,7 +616,7 @@ mod tests {
     use crate::market_context::TimeframeContext;
     use crate::rsi::RsiSnapshot;
     use crate::scenarios::ScenarioMarket;
-    use chrono::TimeZone;
+    use chrono::{TimeZone, Timelike};
 
     fn timeframe(bias: &str, close: f64, atr: f64) -> TimeframeContext {
         TimeframeContext {
@@ -832,6 +851,7 @@ mod tests {
             active_sniper: false,
             strategist: None,
             score: None,
+            plan_status: "ACTIVE".to_string(),
         });
         assert_eq!(outlook.bot_state, BotState::MarketView);
         assert_eq!(outlook.structure, "TREND_BEAR");
@@ -860,6 +880,7 @@ mod tests {
             active_sniper: false,
             strategist: None,
             score: None,
+            plan_status: "ACTIVE".to_string(),
         });
         assert_eq!(no_trade.bot_state, BotState::NoTrade);
         assert!(no_trade.no_trade_reason.is_some());
@@ -875,16 +896,21 @@ mod tests {
             active_sniper: true,
             strategist: None,
             score: None,
+            plan_status: "ACTIVE".to_string(),
         });
         assert_eq!(sniper.bot_state, BotState::SniperTrigger);
     }
 
     #[test]
-    fn valid_until_is_the_next_h1_close() {
-        let now = Utc.with_ymd_and_hms(2026, 11, 17, 10, 23, 0).unwrap();
-        let next = next_h1_close(now);
-        assert_eq!(next.hour(), 11);
+    fn valid_until_is_the_next_daily_slot() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 17, 10, 23, 0).unwrap(); // 17:23 VN
+        let next = next_daily_slot(now);
+        assert_eq!(next.hour(), 12); // 19:00 VN = 12:00 UTC
         assert_eq!(next.minute(), 0);
         assert_eq!(next.second(), 0);
+
+        let late = Utc.with_ymd_and_hms(2026, 11, 17, 13, 0, 0).unwrap(); // 20:00 VN
+        let next = next_daily_slot(late);
+        assert_eq!(next.hour(), 0); // next day 07:00 VN = 00:00 UTC
     }
 }

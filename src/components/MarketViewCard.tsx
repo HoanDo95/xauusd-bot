@@ -55,6 +55,21 @@ function actionLabel(action: string): string {
   }
 }
 
+function planStatusTone(status: string): string {
+  switch (status) {
+    case 'TRIGGERED':
+      return 'border-amber-500/40 bg-amber-500/10 text-amber-200';
+    case 'RETEST_WINDOW':
+      return 'border-sky-500/40 bg-sky-500/10 text-sky-200';
+    case 'INVALIDATED':
+      return 'border-rose-500/40 bg-rose-500/10 text-rose-200';
+    case 'NO_TRADE':
+      return 'border-neutral-700 bg-neutral-900 text-neutral-400';
+    default:
+      return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200';
+  }
+}
+
 function h1StatusTone(status: string): string {
   switch ((status || '').toUpperCase()) {
     case 'CONFIRMED':
@@ -217,6 +232,13 @@ export const MarketViewCard: React.FC<Props> = ({ data, onRefreshStrategist }) =
             )}`}
           >
             {data.bot_state}
+          </span>
+          <span
+            className={`px-2.5 py-1 rounded-md border text-[10px] font-mono font-black tracking-wider ${planStatusTone(
+              data.plan_status ?? 'ACTIVE'
+            )}`}
+          >
+            {data.plan_status ?? 'ACTIVE'}
           </span>
           <span className="text-[10px] text-neutral-500 font-mono">
             {timeLabel(data.generated_at)} → {timeLabel(data.valid_until)}
