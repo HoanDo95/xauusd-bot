@@ -42,6 +42,10 @@ const D1_MS: i64 = 24 * H1_MS;
 
 /// Wait up to eight closed M15 candles for the scenario trigger to print.
 const TRIGGER_WAIT_BARS: usize = 8;
+/// Research: wait up to this many M15 bars for a breakout/breakdown retest.
+const RETEST_WAIT_BARS: usize = 8;
+/// Research: SL buffer beyond the retest candle high/low.
+const RETEST_BUFFER_USD: f64 = 3.0;
 /// Forward simulation horizon: 96 M15 candles = 24 hours.
 const MAX_HOLD_BARS: usize = 96;
 /// The live context is built from 300 HTF candles.
@@ -1007,6 +1011,83 @@ fn trigger_confirmation_ok(
     }
 }
 
+/// Research: convert a breakout/breakdown trigger into a retest entry.
+///
+/// Wait up to `RETEST_WAIT_BARS` M15 bars for price to retest the broken level
+/// and reject (bearish close below for SELL, bullish close above for BUY).
+/// Entry stays at the broken level; SL sits beyond the retest candle high/low
+/// plus `RETEST_BUFFER_USD`; TP1/TP2 are 2R/3R. Returns `None` when no retest
+/// appears or price runs too far before retesting.
+fn build_retest_levels(
+    side: SignalType,
+    trigger_direction: &str,
+    levels: ScenarioLevels,
+    trigger_idx: usize,
+    m15: &[Candle],
+    end_idx: usize,
+) -> Option<(usize, ScenarioLevels)> {
+    let direction = trigger_direction.trim().to_ascii_uppercase();
+    if direction != "BELOW" && direction != "ABOVE" {
+        return None;
+    }
+    let entry = levels.entry;
+    let original_risk = (levels.entry - levels.stop_loss).abs();
+    if !original_risk.is_finite() || original_risk <= 0.0 {
+        return None;
+    }
+    let last = (trigger_idx + RETEST_WAIT_BARS).min(end_idx);
+    for (j, candle) in m15.iter().enumerate().take(last + 1).skip(trigger_idx + 1) {
+        match side {
+            SignalType::Sell if direction == "BELOW" => {
+                if candle.high >= entry && candle.close < entry && candle.close < candle.open {
+                    let stop_loss = candle.high.max(entry) + RETEST_BUFFER_USD;
+                    let risk = (entry - stop_loss).abs();
+                    if !risk.is_finite() || risk <= 0.0 {
+                        return None;
+                    }
+                    return Some((
+                        j,
+                        ScenarioLevels {
+                            entry,
+                            stop_loss,
+                            take_profit_1: entry - risk * 2.0,
+                            take_profit_2: entry - risk * 3.0,
+                            risk_reward: 2.0,
+                        },
+                    ));
+                }
+                if candle.low < entry - original_risk {
+                    return None;
+                }
+            }
+            SignalType::Buy if direction == "ABOVE" => {
+                if candle.low <= entry && candle.close > entry && candle.close > candle.open {
+                    let stop_loss = candle.low.min(entry) - RETEST_BUFFER_USD;
+                    let risk = (stop_loss - entry).abs();
+                    if !risk.is_finite() || risk <= 0.0 {
+                        return None;
+                    }
+                    return Some((
+                        j,
+                        ScenarioLevels {
+                            entry,
+                            stop_loss,
+                            take_profit_1: entry + risk * 2.0,
+                            take_profit_2: entry + risk * 3.0,
+                            risk_reward: 2.0,
+                        },
+                    ));
+                }
+                if candle.high > entry + original_risk {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn resolve_fill(
     side: SignalType,
     trigger_direction: &str,
@@ -1556,6 +1637,7 @@ struct Funnel {
     primary_valid: usize,
     primary_skipped_counter: usize,
     htf_filter_skipped: usize,
+    retest_skipped: usize,
     buy_rsi_h1_skipped: usize,
     trigger_found: usize,
     trigger_confirmation_skipped: usize,
@@ -1577,6 +1659,7 @@ struct VariantConfig {
     anti_chase_filter_enabled: bool,
     aligned_only: bool,
     htf_filters: bool,
+    breakdown_retest: bool,
     buy_rsi_h1_guard: bool,
     bearish_rejection_enabled: bool,
     htf_levels_enabled: bool,
@@ -2327,6 +2410,7 @@ struct RunOptions {
     anti_chase_filter_enabled: bool,
     aligned_only: bool,
     htf_filters: bool,
+    breakdown_retest: bool,
     buy_rsi_h1_guard: bool,
     bearish_rejection_enabled: bool,
     htf_levels_enabled: bool,
@@ -2414,7 +2498,7 @@ fn run_variant(
         let Some(side) = side_for_scenario(scenario) else {
             continue;
         };
-        let Some(levels) = levels_from_scenario(scenario, side) else {
+        let Some(mut levels) = levels_from_scenario(scenario, side) else {
             continue;
         };
         funnel.primary_valid += 1;
@@ -2471,10 +2555,38 @@ fn run_variant(
             }
         }
 
-        let Some(trigger_idx) = trigger_index else {
+        let Some(mut trigger_idx) = trigger_index else {
             continue;
         };
         funnel.trigger_found += 1;
+
+        let mut retest_fill: Option<FillResult> = None;
+        let retest_direction = scenario.trigger_direction.trim().to_ascii_uppercase();
+        if options.breakdown_retest && matches!(retest_direction.as_str(), "BELOW" | "ABOVE") {
+            match build_retest_levels(
+                side,
+                &scenario.trigger_direction,
+                levels,
+                trigger_idx,
+                m15,
+                end_idx,
+            ) {
+                Some((retest_idx, retest_levels)) => {
+                    levels = retest_levels;
+                    trigger_idx = retest_idx;
+                    retest_fill = Some(FillResult {
+                        fill_index: retest_idx,
+                        fill_price: levels.entry,
+                        kind: FillKind::Level,
+                        slippage: 0.0,
+                    });
+                }
+                None => {
+                    funnel.retest_skipped += 1;
+                    continue;
+                }
+            }
+        }
 
         let trigger_candle = &m15[trigger_idx];
         let entry_within_trigger_range =
@@ -2485,24 +2597,27 @@ fn run_variant(
             funnel.entry_outside_trigger_range += 1;
         }
 
-        let fill = match resolve_fill(
-            side,
-            &scenario.trigger_direction,
-            levels,
-            trigger_idx,
-            m15,
-            end_idx,
-        ) {
-            FillOutcome::Filled(fill) => fill,
-            FillOutcome::SkippedNoFill => {
-                funnel.entries_skipped_no_fill += 1;
-                continue;
-            }
-            FillOutcome::SkippedGapTooLarge => {
-                funnel.entries_skipped_no_fill += 1;
-                funnel.entries_skipped_gap_too_large += 1;
-                continue;
-            }
+        let fill = match retest_fill {
+            Some(fill) => fill,
+            None => match resolve_fill(
+                side,
+                &scenario.trigger_direction,
+                levels,
+                trigger_idx,
+                m15,
+                end_idx,
+            ) {
+                FillOutcome::Filled(fill) => fill,
+                FillOutcome::SkippedNoFill => {
+                    funnel.entries_skipped_no_fill += 1;
+                    continue;
+                }
+                FillOutcome::SkippedGapTooLarge => {
+                    funnel.entries_skipped_no_fill += 1;
+                    funnel.entries_skipped_gap_too_large += 1;
+                    continue;
+                }
+            },
         };
         match fill.kind {
             FillKind::Level => funnel.entries_filled_at_level += 1,
@@ -2748,6 +2863,7 @@ async fn run() -> Result<()> {
                 anti_chase_filter_enabled: anti_chase,
                 aligned_only,
                 htf_filters: false,
+                breakdown_retest: false,
                 buy_rsi_h1_guard,
                 bearish_rejection_enabled,
                 htf_levels_enabled,
@@ -2768,6 +2884,7 @@ async fn run() -> Result<()> {
                     anti_chase_filter_enabled: anti_chase,
                     aligned_only,
                     htf_filters: false,
+                    breakdown_retest: false,
                     buy_rsi_h1_guard,
                     bearish_rejection_enabled,
                     htf_levels_enabled,
@@ -2797,6 +2914,7 @@ async fn run() -> Result<()> {
             anti_chase_filter_enabled: true,
             aligned_only: false,
             htf_filters: false,
+            breakdown_retest: false,
             buy_rsi_h1_guard: true,
             bearish_rejection_enabled: false,
             htf_levels_enabled: true,
@@ -2819,6 +2937,7 @@ async fn run() -> Result<()> {
                 anti_chase_filter_enabled: true,
                 aligned_only: false,
                 htf_filters: false,
+                breakdown_retest: false,
                 buy_rsi_h1_guard: true,
                 bearish_rejection_enabled: false,
                 htf_levels_enabled: true,
@@ -2847,6 +2966,7 @@ async fn run() -> Result<()> {
             anti_chase_filter_enabled: true,
             aligned_only: false,
             htf_filters: false,
+            breakdown_retest: false,
             buy_rsi_h1_guard: true,
             bearish_rejection_enabled: false,
             htf_levels_enabled: true,
@@ -2869,6 +2989,7 @@ async fn run() -> Result<()> {
                 anti_chase_filter_enabled: true,
                 aligned_only: false,
                 htf_filters: false,
+                breakdown_retest: false,
                 buy_rsi_h1_guard: true,
                 bearish_rejection_enabled: false,
                 htf_levels_enabled: true,
@@ -2897,6 +3018,7 @@ async fn run() -> Result<()> {
             anti_chase_filter_enabled: true,
             aligned_only: false,
             htf_filters: true,
+            breakdown_retest: false,
             buy_rsi_h1_guard: true,
             bearish_rejection_enabled: false,
             htf_levels_enabled: true,
@@ -2918,6 +3040,7 @@ async fn run() -> Result<()> {
                 anti_chase_filter_enabled: true,
                 aligned_only: false,
                 htf_filters: true,
+                breakdown_retest: false,
                 buy_rsi_h1_guard: true,
                 bearish_rejection_enabled: false,
                 htf_levels_enabled: true,
@@ -2934,6 +3057,58 @@ async fn run() -> Result<()> {
         },
     );
 
+    println!("Running variant quantum_v3_htf_retest...");
+    let quantum_v3_htf_retest = run_variant(
+        &m15,
+        &h1_all,
+        &h4_all,
+        &d1_all,
+        start_idx,
+        end_idx,
+        RunOptions {
+            anti_chase_filter_enabled: true,
+            aligned_only: false,
+            htf_filters: true,
+            breakdown_retest: true,
+            buy_rsi_h1_guard: true,
+            bearish_rejection_enabled: false,
+            htf_levels_enabled: true,
+            structural_sl_atr_cap: 1.0,
+            quantum_weighted_score_enabled: true,
+            quantum_trigger_confirmation_enabled: true,
+            quantum_volume_confirm_ratio: args.quantum_volume_ratio,
+            confirmation_mode: args.confirmation_mode,
+            cost_r: args.cost_r,
+        },
+    );
+    variants.insert(
+        "quantum_v3_htf_retest".to_string(),
+        VariantReport {
+            config: VariantConfig {
+                name: "quantum_v3_htf_retest".to_string(),
+                description:
+                    "quantum_v3_htf + retest entry for breakout/breakdown (8-bar wait, 3 USD buffer, 2R/3R)."
+                        .to_string(),
+                anti_chase_filter_enabled: true,
+                aligned_only: false,
+                htf_filters: true,
+                breakdown_retest: true,
+                buy_rsi_h1_guard: true,
+                bearish_rejection_enabled: false,
+                htf_levels_enabled: true,
+                structural_sl_atr_cap: 1.0,
+                quantum_weighted_score_enabled: true,
+                quantum_trigger_confirmation_enabled: true,
+                quantum_volume_confirm_ratio: args.quantum_volume_ratio,
+                confirmation_mode: args.confirmation_mode.as_str().to_string(),
+            },
+            funnel: quantum_v3_htf_retest.funnel,
+            overall: quantum_v3_htf_retest.overall,
+            breakdowns: quantum_v3_htf_retest.breakdowns,
+            trades: quantum_v3_htf_retest.trades,
+        },
+    );
+
     let comparison: Vec<ComparisonRow> = [
         "legacy",
         "htf_only",
@@ -2942,6 +3117,7 @@ async fn run() -> Result<()> {
         "quantum_v2",
         "quantum_v3",
         "quantum_v3_htf",
+        "quantum_v3_htf_retest",
         "anti_chase_off",
         "aligned_only",
         "aligned_only_no_anti_chase",
