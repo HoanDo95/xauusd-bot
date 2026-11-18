@@ -1,6 +1,7 @@
 use crate::ai_decision::AiDecision;
 use crate::api::EntryCheckResult;
 use crate::divergence_alerts::DivergenceAlert;
+use crate::market_panorama::{MarketPanorama, PanoramaScenario};
 use crate::market_view::{MarketOutlook, OutlookScenario};
 use crate::models::{
     DailyMacroReport, EconomicEvent, EntryType, ImpactLevel, Signal, SignalStatus, SignalType,
@@ -1408,6 +1409,170 @@ impl TelegramNotifier {
     /// Đây là check theo yêu cầu: AI decision + entry plan tham khảo từ
     /// candidate/scenario. KHÔNG phải trade signal, không quota, không auto-trade.
     /// Mọi text động đều được escape HTML trước khi gửi.
+    fn format_panorama_scenario(scenario: &PanoramaScenario) -> String {
+        let role = Self::escape_html(&truncate_chars(&scenario.role, 24));
+        let name = Self::escape_html(&truncate_chars(&scenario.name, 80));
+        let action = Self::escape_html(&truncate_chars(&scenario.action, 24));
+        let status = if scenario.valid { "" } else { " · INVALID" };
+        let trigger = match (scenario.trigger_price, scenario.trigger_direction.as_str()) {
+            (Some(price), "ABOVE") => format!("M15 close > {price:.2}"),
+            (Some(price), "BELOW") => format!("M15 close < {price:.2}"),
+            (Some(price), "TOUCH") => format!("M15 touch {price:.2}"),
+            (Some(price), _) => format!("M15 {price:.2}"),
+            (None, _) => "—".to_string(),
+        };
+        let risk_reward = scenario
+            .risk_reward
+            .map(|value| format!("1:{value:.2}"))
+            .unwrap_or_else(|| "—".to_string());
+        let mut lines = vec![
+            format!(
+                "{role} — <b>{name}</b> · {action} · Conf {}%{status}",
+                scenario.confidence
+            ),
+            format!(
+                "Zone <code>{:.2}–{:.2}</code> · Trigger {trigger}",
+                scenario.zone_low, scenario.zone_high
+            ),
+            format!(
+                "SL {} · TP1 {} · TP2 {} · R:R {risk_reward}",
+                format_level(scenario.stop_loss),
+                format_level(scenario.take_profit_1),
+                format_level(scenario.take_profit_2)
+            ),
+            format!(
+                "Invalidation: {}",
+                Self::escape_html(&truncate_chars(&scenario.invalidation, 180))
+            ),
+        ];
+        if let Some(h1) = scenario.h1_confirmation.as_ref() {
+            let momentum = h1
+                .momentum_atr
+                .map(|value| format!("{value:.2}×ATR"))
+                .unwrap_or_else(|| "n/a".to_string());
+            lines.push(format!(
+                "H1: <b>{}</b> · bias {} · momentum {}",
+                Self::escape_html(&truncate_chars(&h1.status, 16)),
+                Self::escape_html(&truncate_chars(&h1.bias, 16)),
+                momentum
+            ));
+        }
+        lines.join("\n")
+    }
+
+    fn format_panorama_block(panorama: &MarketPanorama) -> String {
+        let mut lines = Vec::new();
+        lines.push("🧭 <b>MARKET PANORAMA</b>".to_string());
+        let atr_pct = panorama
+            .volatility
+            .atr_pct
+            .map(|value| format!("{value:.2}%"))
+            .unwrap_or_else(|| "—".to_string());
+        let daily_change = panorama
+            .volatility
+            .daily_change_pct
+            .map(|value| format!("{value:+.2}%"))
+            .unwrap_or_else(|| "—".to_string());
+        let spread = panorama
+            .volatility
+            .spread_usd
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "—".to_string());
+        let m15_range = panorama
+            .volatility
+            .m15_range
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "—".to_string());
+        lines.push(format!(
+            "📊 <b>Biến động</b>: giá {} · H4 ATR {} ({atr_pct}) · daily {daily_change} · spread {spread} USD · M15 range {m15_range} · regime {}",
+            format_level(panorama.price),
+            format_level(panorama.volatility.h4_atr),
+            Self::escape_html(&panorama.volatility.regime)
+        ));
+        lines.push(format!(
+            "🧱 <b>Cấu trúc</b>: D1 {} ({}) / H4 {} ({}) / H1 {} ({}) · session {}",
+            Self::escape_html(&panorama.structure.d1_bias),
+            Self::escape_html(&panorama.structure.d1_structure),
+            Self::escape_html(&panorama.structure.h4_bias),
+            Self::escape_html(&panorama.structure.h4_structure),
+            Self::escape_html(&panorama.structure.h1_bias),
+            Self::escape_html(&panorama.structure.h1_structure),
+            Self::escape_html(&panorama.session)
+        ));
+        if let Some(score) = panorama.score.as_ref() {
+            lines.push(format!(
+                "Score 60/30/10: {}/100 · Structure {}/60 · Trigger {}/30 · Macro {}/10",
+                score.total, score.structure, score.trigger, score.macro_score
+            ));
+        }
+
+        let mut zone_lines = Vec::new();
+        for zone in panorama.zones.supports.iter().take(3) {
+            zone_lines.push(format!(
+                "S {:.2}–{:.2} · {} touches · {} ATR",
+                zone.min_price,
+                zone.max_price,
+                zone.touch_count,
+                zone.distance_atr
+                    .map(|value| format!("{value:.2}"))
+                    .unwrap_or_else(|| "—".to_string())
+            ));
+        }
+        for zone in panorama.zones.resistances.iter().take(3) {
+            zone_lines.push(format!(
+                "R {:.2}–{:.2} · {} touches · {} ATR",
+                zone.min_price,
+                zone.max_price,
+                zone.touch_count,
+                zone.distance_atr
+                    .map(|value| format!("{value:.2}"))
+                    .unwrap_or_else(|| "—".to_string())
+            ));
+        }
+        if !zone_lines.is_empty() {
+            lines.push("📍 <b>Vùng theo dõi</b>".to_string());
+            lines.extend(zone_lines);
+        }
+
+        let scenario_limit = if panorama.scenarios.len() > 3 {
+            3
+        } else {
+            panorama.scenarios.len()
+        };
+        for scenario in panorama.scenarios.iter().take(scenario_limit) {
+            lines.push(String::new());
+            lines.push(Self::format_panorama_scenario(scenario));
+        }
+
+        if let Some(macro_block) = panorama.macro_block.as_ref() {
+            lines.push(String::new());
+            lines.push(format!(
+                "🌐 <b>Macro</b>: {} {}% · flow {} · alignment {}",
+                Self::escape_html(&macro_block.bias),
+                macro_block.confidence,
+                Self::escape_html(&macro_block.flow_quality),
+                Self::escape_html(&macro_block.alignment)
+            ));
+        }
+
+        let news = &panorama.news;
+        let mut news_line = String::from("📰 <b>News</b>: ");
+        match news.next_high_impact_title.as_ref() {
+            Some(title) => {
+                news_line.push_str(&Self::escape_html(&truncate_chars(title, 120)));
+                if let Some(minutes) = news.minutes_until {
+                    news_line.push_str(&format!(" · sau {minutes} phút"));
+                }
+            }
+            None => news_line.push_str("không có tin đỏ USD sắp tới"),
+        }
+        if news.kill_switch_active {
+            news_line.push_str(" · ⛔ KILL SWITCH ACTIVE");
+        }
+        lines.push(news_line);
+        lines.join("\n")
+    }
+
     pub fn format_entry_check(result: &EntryCheckResult) -> String {
         let decision = &result.decision;
         let symbol = result
@@ -1589,19 +1754,37 @@ impl TelegramNotifier {
             None => String::new(),
         };
 
-        format!(
-            "🧠 <b>AI ENTRY CHECK</b> — {}\n\
+        let panorama_block = result
+            .panorama
+            .as_ref()
+            .map(Self::format_panorama_block)
+            .unwrap_or_default();
+        let header = if result.panorama.is_some() {
+            "🧭 <b>START-ENTRY — MARKET PANORAMA</b>"
+        } else {
+            "🧠 <b>AI ENTRY CHECK</b>"
+        };
+        let footer = if result.panorama.is_some() {
+            "Đây là view tham khảo, KHÔNG phải sniper signal. Không quota, không auto-trade."
+        } else {
+            "Đây là check thủ công, KHÔNG phải trade signal tự động."
+        };
+
+        let body = format!(
+            "{header} — {}\n\
              Action: <b>{action}</b> · confidence {confidence}%\n\
              Selected scenario: {}\n\
              Reason: {reason}\n\
+             {panorama_block}\n\
              {plan_block}\n\
              {macro_line}\n\
              {volume_line}\n\
-             {strategist_block}\n\
-             Đây là check thủ công, KHÔNG phải trade signal tự động.",
+             {strategist_block}",
             Self::escape_html(&truncate_chars(symbol, 40)),
             Self::escape_html(&truncate_chars(selected, 24))
-        )
+        );
+        let body: String = body.chars().take(3400).collect();
+        format!("{body}\n{footer}")
     }
 
     /// Gửi AI Entry Check thủ công tới Telegram. Token/Chat trống = simulator
@@ -2905,6 +3088,7 @@ mod tests {
             }),
             generated_at: "2026-11-12T00:00:00Z".to_string(),
             market_strategist: None,
+            panorama: None,
         }
     }
 
@@ -2928,6 +3112,66 @@ mod tests {
                 "missing message text: {expected}"
             );
         }
+    }
+
+    #[test]
+    fn format_entry_check_includes_panorama_when_present() {
+        let mut result = sample_entry_check_result();
+        result.panorama = Some(MarketPanorama {
+            price: Some(3800.0),
+            session: "IN".to_string(),
+            source: "EXNESS".to_string(),
+            volume_source: "EXNESS_TICK".to_string(),
+            volatility: crate::market_panorama::VolatilityBlock {
+                h4_atr: Some(30.0),
+                atr_pct: Some(0.79),
+                regime: "NORMAL".to_string(),
+                ..Default::default()
+            },
+            structure: crate::market_panorama::StructureBlock {
+                d1_bias: "BEARISH".to_string(),
+                h4_bias: "BEARISH".to_string(),
+                h1_bias: "BEARISH".to_string(),
+                ..Default::default()
+            },
+            scenarios: vec![PanoramaScenario {
+                role: "PRIMARY".to_string(),
+                scenario_id: "bearish_breakdown".to_string(),
+                name: "Bearish breakdown".to_string(),
+                bias: "BEARISH".to_string(),
+                action: "WATCH_SELL".to_string(),
+                valid: true,
+                zone_low: 3773.85,
+                zone_high: 3780.43,
+                trigger_price: Some(3777.14),
+                trigger_direction: "BELOW".to_string(),
+                trigger_timeframe: "M15".to_string(),
+                entry: Some(3777.14),
+                stop_loss: Some(3818.25),
+                take_profit_1: Some(3694.91),
+                take_profit_2: Some(3653.81),
+                risk_reward: Some(2.0),
+                confidence: 60,
+                macro_alignment: "ALIGNED".to_string(),
+                invalidation: "close above 3785.36".to_string(),
+                h1_confirmation: None,
+            }],
+            ..Default::default()
+        });
+
+        let message = TelegramNotifier::format_entry_check(&result);
+
+        for expected in [
+            "START-ENTRY — MARKET PANORAMA",
+            "MARKET PANORAMA",
+            "Biến động",
+            "PRIMARY — <b>Bearish breakdown</b>",
+            "Trigger M15 close < 3777.14",
+            "Đây là view tham khảo, KHÔNG phải sniper signal",
+        ] {
+            assert!(message.contains(expected), "missing: {expected}");
+        }
+        assert!(!message.contains("AI ENTRY CHECK"));
     }
 
     #[test]

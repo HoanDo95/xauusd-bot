@@ -9,6 +9,7 @@ pub mod exness_feed;
 pub mod macro_flow;
 pub mod market_context;
 pub mod market_feed;
+pub mod market_panorama;
 pub mod market_strategist;
 pub mod market_view;
 pub mod market_view_worker;

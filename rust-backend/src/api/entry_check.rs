@@ -12,6 +12,7 @@ use crate::ai_decision::{
     ai_decision_enabled, relaxed_candidate_config, review_market_decision, AiDecision,
 };
 use crate::analyzer::GoldMarketAnalyzer;
+use crate::market_panorama::{build_market_panorama, MarketPanorama};
 use crate::market_strategist::StrategistView;
 use crate::models::{BotConfig, Signal, SignalType};
 use crate::risk_manager::PositionSizer;
@@ -67,6 +68,10 @@ pub struct EntryCheckResult {
     /// Cached H1 AI Market Strategist view (advisory; never an entry/signal).
     #[serde(default)]
     pub market_strategist: Option<StrategistView>,
+    /// Deterministic market panorama: volatility, structure, zones, scenarios,
+    /// news. Present even when AI is disabled/unavailable.
+    #[serde(default)]
+    pub panorama: Option<MarketPanorama>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -307,10 +312,6 @@ pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult
         return Err(MARKET_CLOSED_MESSAGE.to_string());
     }
     let config = state.config.read().await.clone();
-    if !ai_decision_enabled(&config) {
-        return Err(AI_DECISION_DISABLED_MESSAGE.to_string());
-    }
-
     let candles = state.candles.read().await.clone();
     let live_price = *state.live_price.read().await;
     let mut context = state.market_context.read().await.clone();
@@ -345,21 +346,49 @@ pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult
                 )
             });
 
-    let decision = review_market_decision(
-        candidate.as_ref(),
-        context.as_ref(),
-        macro_flow.as_ref(),
-        Some(&scenarios),
-        Some(&rsi),
-        Some(&delta),
-        &events,
-        &config,
-    )
-    .await
-    .ok_or_else(|| {
-        warn!("⚠️ [AI Entry Check] Không có quyết định AI — không có kế hoạch tham khảo.");
-        AI_DECISION_UNAVAILABLE_MESSAGE.to_string()
-    })?;
+    // The deterministic panorama is always available, even when AI is off or
+    // unavailable. This is the primary product of `/start-entry`.
+    let panorama = Some(build_market_panorama(state).await);
+
+    let decision = if ai_decision_enabled(&config) {
+        review_market_decision(
+            candidate.as_ref(),
+            context.as_ref(),
+            macro_flow.as_ref(),
+            Some(&scenarios),
+            Some(&rsi),
+            Some(&delta),
+            &events,
+            &config,
+        )
+        .await
+        .unwrap_or_else(|| {
+            warn!("⚠️ [AI Entry Check] AI không phản hồi — trả panorama deterministic.");
+            AiDecision {
+                action: "STANDBY".to_string(),
+                confidence_score: 0.0,
+                selected_scenario: None,
+                reason: AI_DECISION_UNAVAILABLE_MESSAGE.to_string(),
+                execution_rule: None,
+                macro_flow_alignment: None,
+                macro_flow_note: None,
+                provider: "unavailable".to_string(),
+                model: "unavailable".to_string(),
+            }
+        })
+    } else {
+        AiDecision {
+            action: "STANDBY".to_string(),
+            confidence_score: 0.0,
+            selected_scenario: None,
+            reason: AI_DECISION_DISABLED_MESSAGE.to_string(),
+            execution_rule: None,
+            macro_flow_alignment: None,
+            macro_flow_note: None,
+            provider: "disabled".to_string(),
+            model: "disabled".to_string(),
+        }
+    };
 
     // Deliberately do NOT write `state.last_ai_decision`: this is a manual
     // market view, not a scanner signal. Writing it would make Action View
@@ -384,11 +413,14 @@ pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult
         }
     }
 
+    // Every manual `/start-entry` view refreshes the AI Strategist when enabled.
     let market_strategist = if config.market_strategist_enabled {
-        state.market_strategist_view.read().await.clone()
+        let outlook = crate::api::compute_market_outlook(state).await;
+        crate::api::refresh_market_strategist(state, &outlook, &config).await
     } else {
         None
     };
+
     Ok(EntryCheckResult {
         decision,
         live_view,
@@ -396,6 +428,7 @@ pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult
         entry_plan,
         generated_at: now.to_rfc3339(),
         market_strategist,
+        panorama,
     })
 }
 

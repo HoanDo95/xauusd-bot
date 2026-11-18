@@ -540,6 +540,109 @@ export interface EntryCheckResult {
   generated_at: string;
   /** Cached H1 AI Market Strategist view (advisory; never an entry/signal). */
   market_strategist?: StrategistView | null;
+  /** Deterministic panorama: volatility, structure, zones, scenarios, news. */
+  panorama?: MarketPanorama | null;
+}
+
+export interface MarketPanorama {
+  generated_at: string;
+  price: number | null;
+  session: string;
+  weekend: boolean;
+  source: string;
+  volume_source: string;
+  volatility: PanoramaVolatility;
+  structure: PanoramaStructure;
+  zones: PanoramaZones;
+  scenarios: PanoramaScenario[];
+  macro_block: PanoramaMacro | null;
+  news: PanoramaNews;
+  score: MarketScore | null;
+}
+
+export interface PanoramaVolatility {
+  h4_atr: number | null;
+  atr_pct: number | null;
+  daily_change_pct: number | null;
+  spread_usd: number | null;
+  spread_proxy_atr: number | null;
+  regime: string;
+  m15_range: number | null;
+}
+
+export interface PanoramaStructure {
+  d1_bias: string;
+  h4_bias: string;
+  h1_bias: string;
+  d1_structure: string;
+  h4_structure: string;
+  h1_structure: string;
+  h4_atr: number | null;
+  price_vs_ema50_m15: number | null;
+}
+
+export interface PanoramaZones {
+  nearest_support: number | null;
+  nearest_resistance: number | null;
+  supports: PanoramaZone[];
+  resistances: PanoramaZone[];
+  htf_levels: PanoramaHtfLevel[];
+}
+
+export interface PanoramaZone {
+  price: number;
+  min_price: number;
+  max_price: number;
+  touch_count: number;
+  strength: number;
+  distance_usd: number;
+  distance_atr: number | null;
+}
+
+export interface PanoramaHtfLevel {
+  timeframe: string;
+  kind: string;
+  price: number;
+  distance_atr: number | null;
+}
+
+export interface PanoramaScenario {
+  role: string;
+  scenario_id: string;
+  name: string;
+  bias: string;
+  action: string;
+  valid: boolean;
+  zone_low: number;
+  zone_high: number;
+  trigger_price: number | null;
+  trigger_direction: string;
+  trigger_timeframe: string;
+  entry: number | null;
+  stop_loss: number | null;
+  take_profit_1: number | null;
+  take_profit_2: number | null;
+  risk_reward: number | null;
+  confidence: number;
+  macro_alignment: string;
+  invalidation: string;
+  h1_confirmation?: H1Confirmation | null;
+}
+
+export interface PanoramaMacro {
+  bias: string;
+  confidence: number;
+  score: number;
+  flow_quality: string;
+  alignment: string;
+  note: string;
+}
+
+export interface PanoramaNews {
+  next_high_impact_title: string | null;
+  minutes_until: number | null;
+  kill_switch_active: boolean;
+  kill_switch_reason: string;
 }
 
 /** AI Chief Risk Officer review — veto-only, never live SL/TP. */

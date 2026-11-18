@@ -27,7 +27,7 @@ const HELP_TEXT: &str = "🤖 <b>XAUUSD Bot commands</b>\n\
                          /start — Bật scanner + gửi scenario view\n\
                          /stop — Tạm dừng scanner\n\
                          /view — Gửi lại scenario view\n\
-                         /start-entry — AI entry check thủ công (không phải trade signal)\n\
+                         /start-entry — Market panorama + AI view thủ công (không phải trade signal)\n\
                          /status — Trạng thái bot\n\
                          /help — Danh sách lệnh";
 
@@ -203,7 +203,7 @@ async fn handle_update(
             if PersistentStore::is_market_closed_weekend(Utc::now()) {
                 if let Err(err) = notifier
                     .send_html_message(
-                        "🌙 Thị trường đóng cửa cuối tuần — không có entry check. Weekend brief sẽ gửi lúc 07:00.",
+                        "🌙 Thị trường đóng cửa cuối tuần — không có market panorama. Weekend brief sẽ gửi lúc 07:00.",
                     )
                     .await
                 {
