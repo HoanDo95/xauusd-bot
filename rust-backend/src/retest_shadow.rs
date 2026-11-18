@@ -440,7 +440,25 @@ pub fn spawn_retest_shadow_worker(state: AppState) {
                         levels,
                         candle.timestamp,
                     ) {
-                        *state.active_retest_trade.write().await = Some(trade);
+                        // Match the backtest: the retest candle itself can reach
+                        // TP1/TP2 (SL is beyond its wick + buffer, so it cannot
+                        // hit SL on this candle).
+                        if let Some(outcome) = trade.evaluate(&candle) {
+                            record_outcome_event(
+                                &state,
+                                &trade,
+                                &candle,
+                                outcome.outcome,
+                                outcome.r_multiple,
+                            )
+                            .await;
+                            info!(
+                                "🧪 [Retest Shadow] Outcome {} {} · R {:+.2} · bars 0",
+                                trade.setup_id, outcome.outcome, outcome.r_multiple
+                            );
+                        } else {
+                            *state.active_retest_trade.write().await = Some(trade);
+                        }
                     }
                     *state.retest_watch.write().await = None;
                     if let Err(err) = persist_state(&state).await {
