@@ -130,6 +130,7 @@ struct Args {
     cache_path: PathBuf,
     csv_path: Option<PathBuf>,
     cost_r: f64,
+    quantum_volume_ratio: f64,
     out_json: PathBuf,
     out_md: PathBuf,
 }
@@ -145,6 +146,7 @@ impl Default for Args {
             cache_path: manifest_dir.join("data/backtest/PAXGUSDT_M15.jsonl"),
             csv_path: None,
             cost_r: 0.0,
+            quantum_volume_ratio: 1.2,
             out_json: manifest_dir.join("report_scenarios.json"),
             out_md: manifest_dir.join("report_scenarios.md"),
         }
@@ -163,6 +165,7 @@ fn print_usage() {
            --cache <PATH>          JSONL candle cache path\n\
            --csv <PATH>            Read M15 CSV (timestamp,open,high,low,close,volume) instead of Binance\n\
            --cost-r <R>            Subtract R cost per trade (default: 0.0)\n\
+           --quantum-volume-ratio <R>  Quantum confirmation volume threshold (default: 1.2)\n\
            --out-json <PATH>       JSON report path (default: rust-backend/report_scenarios.json)\n\
            --out-md <PATH>         Markdown report path (default: rust-backend/report_scenarios.md)\n\
            --help                  Show this help\n\
@@ -228,6 +231,17 @@ fn parse_args() -> Result<Args> {
                 if !args.cost_r.is_finite() || args.cost_r < 0.0 {
                     return Err(AppError::Message(
                         "--cost-r must be finite and >= 0".to_string(),
+                    ));
+                }
+            }
+            "--quantum-volume-ratio" => {
+                let value = require_value(&mut iter, &flag)?;
+                args.quantum_volume_ratio = value.trim().parse::<f64>().map_err(|_| {
+                    AppError::Message(format!("invalid --quantum-volume-ratio: {value}"))
+                })?;
+                if !args.quantum_volume_ratio.is_finite() || args.quantum_volume_ratio <= 0.0 {
+                    return Err(AppError::Message(
+                        "--quantum-volume-ratio must be finite and > 0".to_string(),
                     ));
                 }
             }
@@ -2675,7 +2689,7 @@ async fn run() -> Result<()> {
                 structural_sl_atr_cap,
                 quantum_weighted_score_enabled: false,
                 quantum_trigger_confirmation_enabled: false,
-                quantum_volume_confirm_ratio: 1.2,
+                quantum_volume_confirm_ratio: args.quantum_volume_ratio,
                 cost_r: args.cost_r,
             },
         );
@@ -2694,7 +2708,7 @@ async fn run() -> Result<()> {
                     structural_sl_atr_cap,
                     quantum_weighted_score_enabled: false,
                     quantum_trigger_confirmation_enabled: false,
-                    quantum_volume_confirm_ratio: 1.2,
+                    quantum_volume_confirm_ratio: args.quantum_volume_ratio,
                 },
                 funnel: result.funnel,
                 overall: result.overall,
@@ -2722,7 +2736,7 @@ async fn run() -> Result<()> {
             structural_sl_atr_cap: 1.0,
             quantum_weighted_score_enabled: true,
             quantum_trigger_confirmation_enabled: false,
-            quantum_volume_confirm_ratio: 1.2,
+            quantum_volume_confirm_ratio: args.quantum_volume_ratio,
             cost_r: args.cost_r,
         },
     );
@@ -2743,7 +2757,7 @@ async fn run() -> Result<()> {
                 structural_sl_atr_cap: 1.0,
                 quantum_weighted_score_enabled: true,
                 quantum_trigger_confirmation_enabled: false,
-                quantum_volume_confirm_ratio: 1.2,
+                quantum_volume_confirm_ratio: args.quantum_volume_ratio,
             },
             funnel: quantum.funnel,
             overall: quantum.overall,
@@ -2770,7 +2784,7 @@ async fn run() -> Result<()> {
             structural_sl_atr_cap: 1.0,
             quantum_weighted_score_enabled: true,
             quantum_trigger_confirmation_enabled: true,
-            quantum_volume_confirm_ratio: 1.2,
+            quantum_volume_confirm_ratio: args.quantum_volume_ratio,
             cost_r: args.cost_r,
         },
     );
@@ -2780,7 +2794,7 @@ async fn run() -> Result<()> {
             config: VariantConfig {
                 name: "quantum_v3".to_string(),
                 description:
-                    "HTF levels; SL cap; weighted v2 + engulfing confirmation + volume 1.2x."
+                    "HTF levels; SL cap; weighted v2 + engulfing confirmation + volume threshold from --quantum-volume-ratio."
                         .to_string(),
                 anti_chase_filter_enabled: true,
                 aligned_only: false,
@@ -2791,7 +2805,7 @@ async fn run() -> Result<()> {
                 structural_sl_atr_cap: 1.0,
                 quantum_weighted_score_enabled: true,
                 quantum_trigger_confirmation_enabled: true,
-                quantum_volume_confirm_ratio: 1.2,
+                quantum_volume_confirm_ratio: args.quantum_volume_ratio,
             },
             funnel: quantum_v3.funnel,
             overall: quantum_v3.overall,
@@ -2818,7 +2832,7 @@ async fn run() -> Result<()> {
             structural_sl_atr_cap: 1.0,
             quantum_weighted_score_enabled: true,
             quantum_trigger_confirmation_enabled: true,
-            quantum_volume_confirm_ratio: 1.2,
+            quantum_volume_confirm_ratio: args.quantum_volume_ratio,
             cost_r: args.cost_r,
         },
     );
@@ -2838,7 +2852,7 @@ async fn run() -> Result<()> {
                 structural_sl_atr_cap: 1.0,
                 quantum_weighted_score_enabled: true,
                 quantum_trigger_confirmation_enabled: true,
-                quantum_volume_confirm_ratio: 1.2,
+                quantum_volume_confirm_ratio: args.quantum_volume_ratio,
             },
             funnel: quantum_v3_htf.funnel,
             overall: quantum_v3_htf.overall,
