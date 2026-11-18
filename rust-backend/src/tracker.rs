@@ -143,7 +143,15 @@ pub(crate) fn pending_confirmation(
                 }
             }
         }
-        EntryType::Market => Some(ConfirmationType::DirectionalClose),
+        EntryType::Market => match signal.signal_type {
+            SignalType::Buy if candle.close > candle.open => {
+                Some(ConfirmationType::DirectionalClose)
+            }
+            SignalType::Sell if candle.close < candle.open => {
+                Some(ConfirmationType::DirectionalClose)
+            }
+            _ => None,
+        },
     }
 }
 
@@ -548,6 +556,27 @@ mod tests {
         let mut candle = candle(timestamp, open, high, low, close);
         candle.volume = volume;
         candle
+    }
+
+    #[test]
+    fn pending_market_requires_directional_close_when_enabled() {
+        let signal = signal(SignalType::Sell, 100.0, 110.0, 80.0, 70.0, 1);
+        let mut candles: Vec<Candle> = (-20..0)
+            .map(|timestamp| candle(timestamp, 100.0, 100.0, 100.0, 100.0))
+            .collect();
+
+        candles.push(candle_vol(2, 99.0, 101.0, 98.5, 100.5, 3000.0));
+        assert_eq!(
+            pending_confirmation(&signal, &candles, candles.len() - 1, 1.2),
+            None
+        );
+
+        candles.pop();
+        candles.push(candle_vol(2, 101.0, 101.5, 99.0, 99.5, 3000.0));
+        assert_eq!(
+            pending_confirmation(&signal, &candles, candles.len() - 1, 1.2),
+            Some(ConfirmationType::DirectionalClose)
+        );
     }
 
     #[test]
