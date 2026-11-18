@@ -24,3 +24,15 @@ dotenvy = "0.15"
 # Tracing & Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Memory-safe local/test builds: debug info is the largest avoidable memory
+# consumer. Keep it off for dev/test; release binaries stay optimized.
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0
+
+# Fewer codegen units reduces peak memory during release/Docker builds.
+[profile.release]
+codegen-units = 4

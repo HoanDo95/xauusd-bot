@@ -1,0 +1,6 @@
+# Memory-safe build defaults for the 15 GB host.
+# Rustc can use ~0.5–1.5 GB per codegen job; 2 jobs keeps the host responsive
+# while the bot, MT5 terminal, and Docker are running.
+[build]
+jobs = 2
+incremental = false

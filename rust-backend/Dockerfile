@@ -2,7 +2,11 @@
 # Rust backend image — build context: rust-backend/
 FROM rust:1.99-slim-bookworm AS builder
 WORKDIR /app
+# Keep peak memory bounded on the shared 15 GB host.
+ENV CARGO_BUILD_JOBS=2 \
+    CARGO_INCREMENTAL=0
 COPY Cargo.toml Cargo.lock ./
+COPY .cargo ./.cargo
 COPY src ./src
 RUN cargo build --release --locked --bin gold-signal-bot --bin trigger_report --bin news_report
 
