@@ -212,12 +212,17 @@ async fn no_trade_reason(
     }
 
     let Some(last_candle) = last_candle else {
-        return Some("Chưa có nến M15 — NO_TRADE.".to_string());
+        return Some(format!("Chưa có nến {} — NO_TRADE.", config.timeframe));
     };
-    let close_ms = last_candle.timestamp.saturating_add(15 * 60 * 1000);
+    let close_ms = last_candle
+        .timestamp
+        .saturating_add(last_candle.timeframe.duration_millis());
     let age_ms = now.timestamp_millis().saturating_sub(close_ms);
     if age_ms > 30 * 60 * 1000 {
-        return Some("Dữ liệu M15 cũ hơn 30 phút — NO_TRADE.".to_string());
+        return Some(format!(
+            "Dữ liệu {} cũ hơn 30 phút — NO_TRADE.",
+            last_candle.timeframe
+        ));
     }
 
     if let Some(spread) = spread_proxy_atr {

@@ -25,6 +25,17 @@ impl std::fmt::Display for Timeframe {
     }
 }
 
+impl Timeframe {
+    /// Độ dài một nến tính bằng milliseconds.
+    pub fn duration_millis(self) -> i64 {
+        match self {
+            Timeframe::M15 => 15 * 60 * 1000,
+            Timeframe::H1 => 60 * 60 * 1000,
+            Timeframe::H4 => 4 * 60 * 60 * 1000,
+        }
+    }
+}
+
 /// Cấu trúc dữ liệu nến chuẩn OHLCV
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Candle {
