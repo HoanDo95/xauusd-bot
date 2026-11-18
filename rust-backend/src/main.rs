@@ -192,6 +192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         action_trigger_last_sent: Arc::new(RwLock::new(persisted.action_watch_last_sent)),
         active_watch_setup: Arc::new(RwLock::new(persisted.active_watch_setup)),
         daily_view_sent: Arc::new(RwLock::new(persisted.daily_view_sent)),
+        retest_watch: Arc::new(RwLock::new(persisted.retest_watch)),
         market_strategist_view: Arc::new(RwLock::new(None)),
         trigger_journal: Arc::new(TriggerJournal::new(journal_path)),
         macro_flow: Arc::new(RwLock::new(None)),
@@ -220,6 +221,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 8c. Action Trigger Worker — cảnh báo khi PRIMARY scenario chạm trigger trên
     // nến M15 đã đóng. Read-only: không quota, không chèn tín hiệu, không auto-trade.
     gold_signal_bot::action_alerts::spawn_action_trigger_worker(state.clone());
+
+    // 8c2. Retest shadow research — journal/Telegram only, never a signal/quota.
+    gold_signal_bot::retest_shadow::spawn_retest_shadow_worker(state.clone());
 
     // 6e. Trigger journal outcome worker — hypothetical TP/SL/MFE/MAE for every
     // trigger, including those blocked by confirmation/AI/risk.

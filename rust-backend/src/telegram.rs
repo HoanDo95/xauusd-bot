@@ -7,6 +7,7 @@ use crate::models::{
     DailyMacroReport, EconomicEvent, EntryType, ImpactLevel, Signal, SignalStatus, SignalType,
     SupportResistanceZone,
 };
+use crate::retest_shadow::RetestLevels;
 use crate::scenarios::{Scenario, ScenarioResponse};
 use crate::session_alerts::SessionBriefing;
 use reqwest::Client;
@@ -681,6 +682,38 @@ impl TelegramNotifier {
     }
 
     /// Gửi MARKET VIEW H1. Read-only: không signal, không quota, không Lot.
+    /// Research-only retest shadow message. Never a signal or quota event.
+    pub fn format_retest_shadow_message(
+        scenario: &Scenario,
+        levels: &RetestLevels,
+        candle_close: f64,
+    ) -> String {
+        let name = Self::escape_html(&truncate_chars(&scenario.name, 80));
+        let direction = Self::escape_html(&truncate_chars(&scenario.trigger_direction, 16));
+        let risk_reward = if levels.risk_reward.is_finite() {
+            format!("{:.2}", levels.risk_reward)
+        } else {
+            "—".to_string()
+        };
+        format!(
+            "🧪 <b>RESEARCH — RETEST SHADOW</b> — {name}\n\
+             XAU/USD · {direction} · M15 close {candle_close:.2}\n\
+             Retest level <code>{:.2}</code> · SL {:.2} · TP1 {:.2} · TP2 {:.2} · R:R 1:{risk_reward}\n\
+             ⚠️ Chỉ để đo forward test. Không phải signal, không quota, không auto-trade.",
+            levels.entry, levels.stop_loss, levels.take_profit_1, levels.take_profit_2
+        )
+    }
+
+    pub async fn send_retest_shadow_alert(
+        &self,
+        scenario: &Scenario,
+        levels: &RetestLevels,
+        candle_close: f64,
+    ) -> Result<i64, String> {
+        let message_text = Self::format_retest_shadow_message(scenario, levels, candle_close);
+        self.send_html_message(&message_text).await
+    }
+
     pub async fn send_daily_view(&self, outlook: &MarketOutlook, slot: u32) -> Result<i64, String> {
         let message_text = Self::format_daily_view_message(outlook, slot);
         self.send_html_message(&message_text).await
@@ -3065,6 +3098,26 @@ mod tests {
                 "missing message text: {expected}"
             );
         }
+    }
+
+    #[test]
+    fn format_retest_shadow_message_is_research_only() {
+        let scenario = base_scenario("bearish_breakdown", "Bearish breakdown", "BEARISH");
+        let levels = RetestLevels {
+            entry: 3800.0,
+            stop_loss: 3806.0,
+            take_profit_1: 3788.0,
+            take_profit_2: 3782.0,
+            risk_reward: 2.0,
+        };
+        let message = TelegramNotifier::format_retest_shadow_message(&scenario, &levels, 3799.5);
+        assert!(message.contains("RESEARCH — RETEST SHADOW"));
+        assert!(message.contains("Retest level <code>3800.00</code>"));
+        assert!(message.contains("SL 3806.00"));
+        assert!(message.contains("TP1 3788.00"));
+        assert!(message.contains("TP2 3782.00"));
+        assert!(message.contains("Không phải signal, không quota"));
+        assert!(!message.contains("GOLD SIGNAL"));
     }
 
     #[test]

@@ -1520,6 +1520,19 @@ export const ConfigPanel: React.FC<Props> = ({
                   Bật SETUP WATCHING + SCENARIO TRIGGER alerts
                 </span>
               </label>
+              <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+                <input
+                  type="checkbox"
+                  checked={formData.retest_shadow_enabled ?? true}
+                  onChange={(e) =>
+                    setFormData({ ...formData, retest_shadow_enabled: e.target.checked })
+                  }
+                  className="accent-amber-500 w-4 h-4 rounded cursor-pointer"
+                />
+                <span className="font-semibold text-amber-200">
+                  Bật RETEST SHADOW research (journal/Telegram, không signal)
+                </span>
+              </label>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

@@ -1,4 +1,5 @@
 use crate::models::{BotConfig, DailyMacroReport, Signal};
+use crate::retest_shadow::RetestWatch;
 use crate::scenarios::WatchedSetup;
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc, Weekday};
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,9 @@ pub struct PersistentState {
     /// Các slot Daily View đã gửi, key `YYYY-MM-DD:HH` theo giờ Việt Nam.
     #[serde(default)]
     pub daily_view_sent: HashMap<String, DateTime<Utc>>,
+    /// Retest shadow research watch (không phải signal).
+    #[serde(default)]
+    pub retest_watch: Option<RetestWatch>,
 }
 
 /// Bộ lưu trữ JSON nguyên tử (atomic write) cho server chạy 24/7.

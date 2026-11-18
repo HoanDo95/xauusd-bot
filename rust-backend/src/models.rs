@@ -489,6 +489,9 @@ pub struct BotConfig {
     /// không Entry/SL/TP/Lot. Mặc định true.
     #[serde(default = "default_true")]
     pub action_trigger_alert_enabled: bool,
+    /// Bật shadow research retest (chỉ journal/Telegram research, không signal/quota).
+    #[serde(default = "default_true")]
+    pub retest_shadow_enabled: bool,
     /// Số phút tối thiểu giữa hai cảnh báo cùng scenario + hướng + vùng trigger
     /// (5..=1440, mặc định 120). Đây là backstop; mỗi setup chỉ gửi 1 lần.
     #[serde(default = "default_action_trigger_cooldown")]
@@ -797,6 +800,7 @@ impl Default for BotConfig {
             divergence_alert_h4: true,
             divergence_alert_cooldown_minutes: default_divergence_alert_cooldown(),
             action_trigger_alert_enabled: true,
+            retest_shadow_enabled: true,
             action_trigger_cooldown_minutes: default_action_trigger_cooldown(),
             action_watch_distance_atr: default_action_watch_distance_atr(),
             action_watch_max_distance_points: default_action_watch_max_distance_points(),

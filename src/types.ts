@@ -955,6 +955,8 @@ export interface BotConfig {
   divergence_alert_cooldown_minutes?: number;
   /** Telegram alert when the PRIMARY scenario trigger is hit on a closed M15 candle. Default true. */
   action_trigger_alert_enabled?: boolean;
+  /** Shadow retest research: journal/Telegram only, never a signal or quota. Default true. */
+  retest_shadow_enabled?: boolean;
   /** Minimum minutes between alerts for the same scenario + direction + zone (5–1440, default 120). */
   action_trigger_cooldown_minutes?: number;
   /** Max distance from price to trigger for SETUP WATCHING, in H4 ATR. Default 1.0. */
