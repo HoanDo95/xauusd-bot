@@ -60,6 +60,16 @@ impl ExnessTick {
             None
         }
     }
+
+    /// Real bid/ask spread in USD/oz. `None` for zero, crossed or non-finite
+    /// quotes; callers should treat that as "spread unavailable", not zero.
+    pub fn spread(&self) -> Option<f64> {
+        if self.bid.is_finite() && self.ask.is_finite() && self.bid > 0.0 && self.ask >= self.bid {
+            Some(self.ask - self.bid)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -227,20 +237,24 @@ mod tests {
             time: 1,
         };
         assert_eq!(tick.mid(), Some(4100.2));
+        assert!((tick.spread().expect("spread") - 0.4).abs() < 1e-9);
         let bid_only = ExnessTick {
             bid: 4100.0,
             ask: 0.0,
             time: 1,
         };
         assert_eq!(bid_only.mid(), Some(4100.0));
+        assert_eq!(bid_only.spread(), None);
         let crossed = ExnessTick {
             bid: 4101.0,
             ask: 4100.0,
             time: 1,
         };
         assert_eq!(crossed.mid(), Some(4101.0));
+        assert_eq!(crossed.spread(), None);
         let empty = ExnessTick::default();
         assert_eq!(empty.mid(), None);
+        assert_eq!(empty.spread(), None);
     }
 
     #[test]

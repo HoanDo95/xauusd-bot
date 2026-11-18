@@ -35,6 +35,7 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
     let config = state.config.read().await.clone();
     let signals = state.signals.read().await.clone();
     let live_price = *state.live_price.read().await;
+    let live_spread = *state.live_spread.read().await;
     let active_data_source = state.active_data_source.read().await.clone();
     let active_volume_source = state.active_volume_source.read().await.clone();
     let spot_price = *state.spot_price.read().await;
@@ -148,6 +149,7 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "spotPrice": spot_price,
         "spotBasis": spot_basis,
         "livePrice": live_price,
+        "spreadUsd": live_spread,
         "feedOk": feed_ok,
         "lastScanAt": last_scan_at.map(|at| at.to_rfc3339()),
         "lastScanAgeSecs": last_scan_age_secs,

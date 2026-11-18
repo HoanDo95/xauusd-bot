@@ -944,6 +944,16 @@ impl MarketDataFeed {
         }
     }
 
+    /// Real Exness bid/ask spread in USD/oz, or `None` when the file is stale
+    /// or the quote is invalid. Never fabricates a zero spread.
+    pub fn exness_spread(&self) -> Option<f64> {
+        let file = load_exness_file(&self.exness_path)?;
+        if !file.is_fresh(Utc::now(), EXNESS_MAX_AGE_SECS) {
+            return None;
+        }
+        file.tick.as_ref().and_then(|tick| tick.spread())
+    }
+
     /// Kéo ảnh chụp thị trường: nến đã đóng, giá live và nguồn thực tế.
     ///
     /// `preferred_source` quyết định provider được thử trước. Nếu provider ưu tiên

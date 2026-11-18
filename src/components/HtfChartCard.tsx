@@ -104,7 +104,7 @@ export const HtfChartCard: React.FC = () => {
             </span>
           </div>
           <p className="text-[11px] text-neutral-500">
-            Nến H4 đã đóng từ Binance PAXG, tự động làm mới mỗi 5 phút. Chỉ dùng để nhìn xu hướng lớn.
+            Nến H4 đã đóng từ nguồn hiện tại (Exness MT5), tự động làm mới mỗi 5 phút. Chỉ dùng để nhìn xu hướng lớn.
           </p>
         </div>
 

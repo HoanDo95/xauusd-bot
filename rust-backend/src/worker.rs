@@ -727,6 +727,12 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                 };
                 *state.candles.write().await = fresh_candles;
                 *state.live_price.write().await = snapshot.live_price;
+                *state.live_spread.write().await = if snapshot.source.eq_ignore_ascii_case("EXNESS")
+                {
+                    state.market_feed.exness_spread()
+                } else {
+                    None
+                };
                 *state.active_data_source.write().await = snapshot.source.clone();
                 if !updates.is_empty() {
                     info!("📈 Đã cập nhật {} tín hiệu theo TP/SL", updates.len());

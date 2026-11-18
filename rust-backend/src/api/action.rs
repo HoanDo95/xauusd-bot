@@ -11,6 +11,8 @@ const VOLUME_PROXY_WARNING: &str =
     "Volume là proxy PAXG, không phải volume XAUUSD thật; chỉ nên xem là tương đối.";
 const VOLUME_FUTURES_PROXY_WARNING: &str =
     "Volume là COMEX GC=F futures proxy, không phải tick volume spot XAU/USD; chỉ nên xem là tương đối.";
+const VOLUME_TICK_WARNING: &str =
+    "Volume là tick volume, không có buy/sell delta; chỉ nên xem là tương đối.";
 const NO_DATA_FALLBACK: &str = "Chưa đủ nến để phân tích.";
 const NO_TRADE_HEADLINE: &str = "Đứng ngoài";
 
@@ -45,6 +47,8 @@ fn volume_quality(volume_source: &str) -> &'static str {
         "YAHOO_FUTURES_PROXY" => "FUTURES_PROXY",
         "BINANCE_PAXG_PROXY" => "PAXG_PROXY",
         "BINANCE_PAXG" => "PAXG",
+        "EXNESS_TICK" => "EXNESS_TICK",
+        "OANDA_TICK" => "OANDA_TICK",
         "NONE" => "NONE",
         _ => "UNKNOWN",
     }
@@ -54,6 +58,7 @@ fn volume_warning(quality: &str) -> Option<&'static str> {
     match quality {
         "PAXG" | "PAXG_PROXY" => Some(VOLUME_PROXY_WARNING),
         "FUTURES_PROXY" => Some(VOLUME_FUTURES_PROXY_WARNING),
+        "EXNESS_TICK" | "OANDA_TICK" => Some(VOLUME_TICK_WARNING),
         _ => None,
     }
 }
@@ -786,6 +791,8 @@ mod tests {
         assert_eq!(volume_quality("YAHOO_FUTURES_PROXY"), "FUTURES_PROXY");
         assert_eq!(volume_quality("BINANCE_PAXG_PROXY"), "PAXG_PROXY");
         assert_eq!(volume_quality("BINANCE_PAXG"), "PAXG");
+        assert_eq!(volume_quality("EXNESS_TICK"), "EXNESS_TICK");
+        assert_eq!(volume_quality("OANDA_TICK"), "OANDA_TICK");
         assert_eq!(volume_quality("NONE"), "NONE");
         assert_eq!(volume_quality("TWELVEDATA"), "UNKNOWN");
         assert_eq!(volume_quality("binance_paxg"), "PAXG");
@@ -795,6 +802,8 @@ mod tests {
             Some(VOLUME_FUTURES_PROXY_WARNING)
         );
         assert_eq!(volume_warning("PAXG"), Some(VOLUME_PROXY_WARNING));
+        assert_eq!(volume_warning("EXNESS_TICK"), Some(VOLUME_TICK_WARNING));
+        assert_eq!(volume_warning("OANDA_TICK"), Some(VOLUME_TICK_WARNING));
         assert_eq!(volume_warning("NONE"), None);
         assert_eq!(volume_warning("UNKNOWN"), None);
 

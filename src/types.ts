@@ -302,7 +302,7 @@ export interface ActionViewResponse {
   /** NEAR <= 0.5 ATR, MID <= 1.5 ATR, FAR > 1.5 ATR, UNKNOWN when missing. */
   proximity?: 'NEAR' | 'MID' | 'FAR' | 'UNKNOWN' | string;
   macroFlow: MacroFlowAlignment | null;
-  volumeQuality: 'PAXG_PROXY' | 'PAXG' | 'FUTURES_PROXY' | 'NONE' | 'XAUUSD' | 'UNKNOWN';
+  volumeQuality: 'PAXG_PROXY' | 'PAXG' | 'FUTURES_PROXY' | 'EXNESS_TICK' | 'OANDA_TICK' | 'NONE' | 'XAUUSD' | 'UNKNOWN';
   volumeWarning: string | null;
   /** Whether the read-only PRIMARY-scenario trigger Telegram alert is enabled. */
   triggerAlertEnabled?: boolean;

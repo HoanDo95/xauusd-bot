@@ -174,6 +174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         store: Arc::new(store),
         market_feed: Arc::new(market_feed),
         live_price: Arc::new(RwLock::new(initial_live_price)),
+        live_spread: Arc::new(RwLock::new(None)),
         active_data_source: Arc::new(RwLock::new(initial_data_source)),
         active_volume_source: Arc::new(RwLock::new("BINANCE_PAXG".to_string())),
         spot_price: Arc::new(RwLock::new(initial_spot_price)),

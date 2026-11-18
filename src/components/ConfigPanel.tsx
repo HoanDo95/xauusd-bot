@@ -154,24 +154,26 @@ export const ConfigPanel: React.FC<Props> = ({
             {/* Auto PAXG → XAU/USD spot basis */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-neutral-300">
-                Tự động căn PAXG → XAU/USD spot (TwelveData free)
+                Tự động căn PAXG → XAU/USD spot (chỉ dùng cho Binance PAXG)
               </label>
               <label className="flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
                 <input
                   type="checkbox"
                   checked={formData.use_auto_spot_basis ?? true}
+                  disabled={(formData.data_source ?? 'BINANCE_PAXG') !== 'BINANCE_PAXG'}
                   onChange={(e) =>
                     setFormData({ ...formData, use_auto_spot_basis: e.target.checked })
                   }
-                  className="accent-violet-500 w-4 h-4 rounded cursor-pointer mt-0.5"
+                  className="accent-violet-500 w-4 h-4 rounded cursor-pointer mt-0.5 disabled:opacity-40"
                 />
                 <span className="text-[11px] text-neutral-300 leading-snug">
                   Căn giá PAXG (Binance) về giá spot XAU/USD tham chiếu
                 </span>
               </label>
               <span className="text-[11px] text-neutral-500">
-                Cần <span className="font-mono text-neutral-400">TWELVEDATA_API_KEY</span>; tự fallback
-                gold-api.com. Cache 300s, offset broker thủ công vẫn được cộng thêm.
+                {(formData.data_source ?? 'BINANCE_PAXG') !== 'BINANCE_PAXG'
+                  ? 'Không áp dụng cho nguồn hiện tại; Exness đã là giá broker.'
+                  : 'Cần TWELVEDATA_API_KEY; tự fallback gold-api.com. Cache 300s, offset broker thủ công vẫn được cộng thêm.'}
               </span>
             </div>
 

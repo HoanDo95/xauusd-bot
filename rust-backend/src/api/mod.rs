@@ -90,6 +90,8 @@ pub struct AppState {
     pub market_feed: Arc<MarketDataFeed>,
     /// Giá live gần nhất từ nến đang chạy (nếu có).
     pub live_price: Arc<RwLock<Option<f64>>>,
+    /// Spread bid/ask thật từ Exness tick (USD/oz), None khi stale/không có.
+    pub live_spread: Arc<RwLock<Option<f64>>>,
     /// Nguồn dữ liệu thực tế đang hoạt động: TWELVEDATA / BINANCE_PAXG / FALLBACK_SEED.
     pub active_data_source: Arc<RwLock<String>>,
     /// Nguồn volume thực tế: BINANCE_PAXG / BINANCE_PAXG_PROXY / NONE.

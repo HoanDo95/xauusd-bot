@@ -16,7 +16,9 @@ interface Props {
 }
 
 function feedLabel(dataSource?: string): string {
+  if (dataSource === 'EXNESS') return 'Exness MT5 XAUUSDm (demo)';
   if (dataSource === 'TWELVEDATA') return 'TwelveData XAU/USD (Free)';
+  if (dataSource === 'OANDA') return 'OANDA XAU/USD (tick volume)';
   if (dataSource === 'FALLBACK_SEED' || dataSource === 'OFFLINE') {
     return 'Offline Fallback (Seed)';
   }

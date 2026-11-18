@@ -298,6 +298,7 @@ pub async fn build_market_panorama(state: &AppState) -> MarketPanorama {
     let outlook = compute_market_outlook(state).await;
     let source = state.active_data_source.read().await.clone();
     let volume_source = state.active_volume_source.read().await.clone();
+    let spread_usd = *state.live_spread.read().await;
     let now = Utc::now();
 
     let price = outlook
@@ -443,7 +444,7 @@ pub async fn build_market_panorama(state: &AppState) -> MarketPanorama {
             h4_atr,
             atr_pct,
             daily_change_pct,
-            spread_usd: None,
+            spread_usd,
             spread_proxy_atr: outlook.spread_proxy_atr,
             regime: volatility_regime(atr_pct),
             m15_range,
