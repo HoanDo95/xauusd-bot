@@ -46,6 +46,7 @@ import {
 import { Header, type DashboardTab } from '../components/Header';
 import { ActionCard } from '../components/ActionCard';
 import { MarketViewCard } from '../components/MarketViewCard';
+import { TradePlanCard } from '../components/TradePlanCard';
 import { MetricCards } from '../components/MetricCards';
 import { MacroContextCard } from '../components/MacroContextCard';
 import { MacroFlowCard } from '../components/MacroFlowCard';
@@ -668,6 +669,8 @@ export default function DashboardPage() {
         {currentTab === 'monitor' && (
           <div className="flex flex-col gap-6">
             {/* Always-on H1 Market View — structure + primary/alternative zones */}
+            <TradePlanCard data={marketView} />
+
             <MarketViewCard data={marketView} onRefreshStrategist={handleRefreshStrategist} />
 
             {/* Top-level "Should I enter now?" verdict (read-only, no quota) */}

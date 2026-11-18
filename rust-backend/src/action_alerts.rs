@@ -117,6 +117,84 @@ fn timeframe_millis(timeframe: Timeframe) -> i64 {
     }
 }
 
+/// Send the discretionary full-plan alert when a PRIMARY scenario trigger is
+/// confirmed by a closed M15 candle. This is deliberately separate from the
+/// scanner's confirmed GOLD SIGNAL: it never inserts a signal, consumes quota,
+/// calls AI or places an order. It is deduped per setup/candle and suppressed
+/// when a full signal already exists for the same candle.
+async fn maybe_send_action_trigger_alert(
+    state: &AppState,
+    scenario: &Scenario,
+    candle: &Candle,
+    now: DateTime<Utc>,
+    source: &str,
+) {
+    let config = state.config.read().await.clone();
+    if !config.action_trigger_alert_enabled {
+        return;
+    }
+    let Some(trigger_price) = scenario.trigger_price.filter(|value| value.is_finite()) else {
+        return;
+    };
+
+    // Never duplicate the scanner's full confirmed signal for the same candle.
+    let has_signal_for_candle = {
+        let signals = state.signals.read().await;
+        signals
+            .iter()
+            .any(|signal| !signal.is_simulated && signal.candle_timestamp == candle.timestamp)
+    };
+    if has_signal_for_candle {
+        return;
+    }
+
+    let key = format!(
+        "action-trigger:{}:{}:{:.2}:{}",
+        source, scenario.id, trigger_price, candle.timestamp
+    );
+    let last_sent = state
+        .action_trigger_last_sent
+        .read()
+        .await
+        .get(&key)
+        .copied();
+    if !should_send_trigger_alert(
+        config.action_trigger_alert_enabled,
+        scenario.valid,
+        scenario.trigger_price,
+        last_sent,
+        config.action_trigger_cooldown_minutes,
+        now,
+    ) {
+        return;
+    }
+
+    let telegram = state.telegram.read().await.clone();
+    match telegram
+        .send_action_trigger_alert(scenario, candle.close)
+        .await
+    {
+        Ok(msg_id) => {
+            info!(
+                "🚨 [Action Trigger] {} {} · M15 close {:.2} · trigger {:.2} · msg_id={}",
+                scenario.id, scenario.trigger_direction, candle.close, trigger_price, msg_id
+            );
+            {
+                let mut last_sent = state.action_trigger_last_sent.write().await;
+                last_sent.insert(key, now);
+                prune_last_sent(&mut last_sent, MAX_ACTION_TRIGGER_DEDUP);
+            }
+            if let Err(err) = persist_state(state).await {
+                warn!("⚠️ [Action Trigger] Không lưu được cooldown: {}", err);
+            }
+        }
+        Err(err) => warn!(
+            "⚠️ [Action Trigger] Không gửi được cảnh báo {}: {}",
+            scenario.id, err
+        ),
+    }
+}
+
 /// Spawn the read-only action-trigger worker (30-second cadence).
 ///
 /// Every tick reuses the shared read-only scenario builder, so trigger levels
@@ -241,6 +319,8 @@ pub fn spawn_action_trigger_worker(state: AppState) {
             let active_setup = state.active_watch_setup.read().await.clone();
             if let Some(setup) = active_setup {
                 if setup.is_triggered(&candle) {
+                    maybe_send_action_trigger_alert(&state, &setup.scenario, &candle, now, "watch")
+                        .await;
                     continue;
                 }
                 if setup.is_expired(now, WATCH_SETUP_MAX_BARS)
@@ -285,8 +365,10 @@ pub fn spawn_action_trigger_worker(state: AppState) {
             }
 
             // The confirmed full signal is owned by the scanner. This worker
-            // only warns that price is approaching the trigger.
+            // sends a discretionary trigger alert and lets the scanner handle
+            // the full GOLD SIGNAL separately.
             if scenario_triggered(primary, &candle) {
+                maybe_send_action_trigger_alert(&state, primary, &candle, now, "primary").await;
                 continue;
             }
 

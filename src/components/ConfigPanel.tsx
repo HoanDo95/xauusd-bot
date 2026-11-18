@@ -1494,13 +1494,15 @@ export const ConfigPanel: React.FC<Props> = ({
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="flex flex-col gap-1">
                 <div className="text-xs font-bold text-sky-300 uppercase tracking-wider">
-                  👀 SETUP WATCHING — cảnh báo vùng theo dõi, không phải entry
+                  👀 SETUP WATCHING + SCENARIO TRIGGER — không phải sniper signal
                 </div>
                 <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
                   Gửi Telegram đúng <strong className="text-neutral-200">1 lần</strong> khi giá tiến
-                  gần trigger của kịch bản PRIMARY. Sau đó bot im lặng cho đến khi setup trigger
-                  (GOLD SIGNAL) hoặc invalid (SL / quá 8 nến M15). Chỉ báo vùng theo dõi + trigger,
-                  tuyệt đối không có Entry/SL/TP/Lot.
+                  gần trigger của kịch bản PRIMARY (chỉ vùng + trigger, không Entry/SL/TP). Khi nến
+                  M15 đóng cửa xác nhận trigger, bot gửi thêm một alert
+                  <strong className="text-neutral-200"> SCENARIO TRIGGER</strong> với đầy đủ
+                  Entry/SL/TP để bạn tự quyết định. Alert này không phải GOLD SIGNAL đã qua AI/volume
+                  confirmation và không tiêu quota.
                 </p>
               </div>
               <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
@@ -1513,7 +1515,7 @@ export const ConfigPanel: React.FC<Props> = ({
                   className="accent-sky-500 w-4 h-4 rounded cursor-pointer"
                 />
                 <span className="font-semibold text-white">
-                  Bật SETUP WATCHING alerts
+                  Bật SETUP WATCHING + SCENARIO TRIGGER alerts
                 </span>
               </label>
             </div>
@@ -1657,9 +1659,10 @@ export const ConfigPanel: React.FC<Props> = ({
                 🧭 MARKET VIEW — luôn có kịch bản, không khóa bởi RSI/EMA
               </div>
               <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
-                Xuất Market Outlook mỗi H1 close: cấu trúc, Primary/Alternative zones,
-                invalidation và risk notes. Dashboard cập nhật 24/5; Telegram chỉ gửi trong
-                phiên khi view thay đổi materially và qua cooldown.
+                Gửi Market Outlook dạng trade plan: cấu trúc, Primary/Alternative zones,
+                trigger, SL/TP, invalidation và risk notes. Bot gửi một Daily Plan lúc
+                13:00 VN (thứ 2–6) và gửi thêm khi H1 close làm view thay đổi materially;
+                có thể gửi ngoài session 13:00–23:00.
               </p>
             </div>
             <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">

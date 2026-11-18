@@ -459,12 +459,12 @@ impl TelegramNotifier {
             .unwrap_or_else(|| "—".to_string());
 
         format!(
-            "🚨 <b>ACTION TRIGGERED</b> — {name}\n\
+            "🎯 <b>SCENARIO TRIGGER — DISCRETIONARY</b> — {name}\n\
              XAU/USD · {timeframe} close {candle_close:.2} {direction} {trigger_price}\n\
              Entry {entry} · SL {stop_loss} · TP1 {take_profit_1} · TP2 {take_profit_2} · R:R 1:{risk_reward}\n\
              Macro/Flow: {macro_alignment}\n\
-             Volume: PAXG proxy (khi nguồn volume là PAXG) — chỉ là volume tương đối, không phải volume XAU/USD thật.\n\
-             Đây là cảnh báo trigger của kịch bản, KHÔNG phải trade signal đã xác nhận."
+             Volume: tick/proxy tùy nguồn — chỉ là volume tương đối, không phải volume XAU/USD thật.\n\
+             Đây là cảnh báo trigger của kịch bản, KHÔNG phải sniper signal đã xác nhận."
         )
     }
 
@@ -2482,7 +2482,7 @@ mod tests {
 
         let message = TelegramNotifier::format_action_trigger_message(&scenario, 2705.25);
 
-        assert!(message.contains("ACTION TRIGGERED"));
+        assert!(message.contains("SCENARIO TRIGGER — DISCRETIONARY"));
         assert!(message.contains("Bullish breakout"));
         assert!(message.contains("M15 close 2705.25 ABOVE 2701.00"));
         assert!(message.contains("Entry 2701.00"));
@@ -2491,8 +2491,8 @@ mod tests {
         assert!(message.contains("TP2 2731.00"));
         assert!(message.contains("R:R 1:2.00"));
         assert!(message.contains("Macro/Flow: ALIGNED"));
-        assert!(message.contains("Volume: PAXG proxy"));
-        assert!(message.contains("KHÔNG phải trade signal đã xác nhận"));
+        assert!(message.contains("Volume: tick/proxy tùy nguồn"));
+        assert!(message.contains("KHÔNG phải sniper signal đã xác nhận"));
     }
 
     #[test]
@@ -2517,7 +2517,7 @@ mod tests {
 
         assert!(message.contains("NONE —"));
         assert!(message.contains("Entry — · SL — · TP1 — · TP2 — · R:R 1:—"));
-        assert!(message.contains("KHÔNG phải trade signal"));
+        assert!(message.contains("KHÔNG phải sniper signal"));
     }
 
     #[test]
