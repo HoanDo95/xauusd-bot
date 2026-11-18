@@ -611,7 +611,7 @@ impl TelegramNotifier {
             lines.push(format!("• {}", Self::escape_html(note)));
         }
         lines.push(String::new());
-        lines.push("KẾ HOẠCH THAM KHẢO — CHƯA PHẢI ENTRY.".to_string());
+        lines.push("KẾ HOẠCH THAM KHẢO — DISCRETIONARY; KHÔNG PHẢI SNIPER SIGNAL.".to_string());
         lines.join("\n").chars().take(3500).collect()
     }
 
@@ -2579,7 +2579,7 @@ mod tests {
         assert!(message.contains("PRIMARY"));
         assert!(message.contains("ALTERNATIVE"));
         assert!(message.contains("3872.00"));
-        assert!(message.contains("CHƯA PHẢI ENTRY"));
+        assert!(message.contains("DISCRETIONARY; KHÔNG PHẢI SNIPER SIGNAL"));
         assert!(message.contains("Score 60/30/10: 78/100"));
         assert!(!message.contains("Lot "));
     }
