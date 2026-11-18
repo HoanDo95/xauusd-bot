@@ -194,6 +194,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         daily_view_sent: Arc::new(RwLock::new(persisted.daily_view_sent)),
         retest_watch: Arc::new(RwLock::new(persisted.retest_watch)),
         active_retest_trade: Arc::new(RwLock::new(persisted.retest_trade)),
+        retest_scalp_watch: Arc::new(RwLock::new(persisted.retest_scalp_watch)),
+        active_retest_scalp_trade: Arc::new(RwLock::new(persisted.retest_scalp_trade)),
         market_strategist_view: Arc::new(RwLock::new(None)),
         trigger_journal: Arc::new(TriggerJournal::new(journal_path)),
         macro_flow: Arc::new(RwLock::new(None)),
@@ -225,6 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 8c2. Retest shadow research — journal/Telegram only, never a signal/quota.
     gold_signal_bot::retest_shadow::spawn_retest_shadow_worker(state.clone());
+    gold_signal_bot::retest_scalp::spawn_retest_scalp_worker(state.clone());
 
     // 6e. Trigger journal outcome worker — hypothetical TP/SL/MFE/MAE for every
     // trigger, including those blocked by confirmation/AI/risk.

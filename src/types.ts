@@ -959,6 +959,16 @@ export interface BotConfig {
   action_trigger_alert_enabled?: boolean;
   /** Shadow retest research: journal/Telegram only, never a signal or quota. Default true. */
   retest_shadow_enabled?: boolean;
+  /** Retest scalp research: alert-only, default false. Never a signal or quota. */
+  retest_scalp_enabled?: boolean;
+  /** Max structural SL distance for the retest scalp profile (USD, default 20). */
+  retest_scalp_max_sl_usd?: number;
+  /** TP1 distance from entry for the retest scalp profile (USD, default 20). */
+  retest_scalp_tp1_usd?: number;
+  /** TP2 distance from entry for the retest scalp profile (USD, default 40). */
+  retest_scalp_tp2_usd?: number;
+  /** Suggested risk percentage for the retest scalp lot (default 0.5). */
+  retest_scalp_risk_percentage?: number;
   /** Minimum minutes between alerts for the same scenario + direction + zone (5–1440, default 120). */
   action_trigger_cooldown_minutes?: number;
   /** Max distance from price to trigger for SETUP WATCHING, in H4 ATR. Default 1.0. */

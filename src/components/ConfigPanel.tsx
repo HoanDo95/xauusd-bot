@@ -1667,6 +1667,120 @@ export const ConfigPanel: React.FC<Props> = ({
             </span>
           </div>
 
+          {/* RETEST SCALP research — alert-only, default off */}
+          <div className="rounded-xl border border-orange-500/30 bg-orange-500/5 p-4 flex flex-col gap-4">
+            <div>
+              <div className="text-xs font-bold text-orange-300 uppercase tracking-wider">
+                ⚡ SCALP RETEST 20/40 — research, alert-only
+              </div>
+              <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
+                Sau PRIMARY trigger, chờ retest tối đa 8 nến M15 rồi mới vào tại broken level.
+                SL cấu trúc tối đa 20$; TP1 20$ (50%), TP2 40$ (50%); sau TP1 dời SL về entry.
+                Không phải sniper signal, không quota, không auto-trade. Khi bật profile này,
+                RETEST SHADOW 2R/3R không arm watch mới để tránh trùng alert.
+              </p>
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+              <input
+                type="checkbox"
+                checked={formData.retest_scalp_enabled ?? false}
+                onChange={(e) =>
+                  setFormData({ ...formData, retest_scalp_enabled: e.target.checked })
+                }
+                className="accent-orange-500 w-4 h-4 rounded cursor-pointer"
+              />
+              <span className="font-semibold text-orange-200">
+                Bật SCALP RETEST research (mặc định tắt)
+              </span>
+            </label>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">SL tối đa ($)</label>
+                <input
+                  type="number"
+                  min="5"
+                  max="50"
+                  step="1"
+                  disabled={!(formData.retest_scalp_enabled ?? false)}
+                  value={formData.retest_scalp_max_sl_usd ?? 20}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      retest_scalp_max_sl_usd: Math.max(
+                        5,
+                        Math.min(50, parseFloat(e.target.value) || 20)
+                      ),
+                    })
+                  }
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-orange-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">TP1 ($)</label>
+                <input
+                  type="number"
+                  min="5"
+                  max="100"
+                  step="1"
+                  disabled={!(formData.retest_scalp_enabled ?? false)}
+                  value={formData.retest_scalp_tp1_usd ?? 20}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      retest_scalp_tp1_usd: Math.max(
+                        5,
+                        Math.min(100, parseFloat(e.target.value) || 20)
+                      ),
+                    })
+                  }
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-orange-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">TP2 ($)</label>
+                <input
+                  type="number"
+                  min="10"
+                  max="200"
+                  step="1"
+                  disabled={!(formData.retest_scalp_enabled ?? false)}
+                  value={formData.retest_scalp_tp2_usd ?? 40}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      retest_scalp_tp2_usd: Math.max(
+                        10,
+                        Math.min(200, parseFloat(e.target.value) || 40)
+                      ),
+                    })
+                  }
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-orange-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-neutral-300">Risk (%/lệnh)</label>
+                <input
+                  type="number"
+                  min="0.1"
+                  max="2"
+                  step="0.1"
+                  disabled={!(formData.retest_scalp_enabled ?? false)}
+                  value={formData.retest_scalp_risk_percentage ?? 0.5}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      retest_scalp_risk_percentage: Math.max(
+                        0.1,
+                        Math.min(2, parseFloat(e.target.value) || 0.5)
+                      ),
+                    })
+                  }
+                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-orange-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
+                />
+              </div>
+            </div>
+          </div>
+
           {/* MARKET VIEW — always-on outlook */}
           <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 flex flex-col gap-4">
             <div>

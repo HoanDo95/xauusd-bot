@@ -18,6 +18,7 @@ pub mod news_analyst;
 pub mod news_filter;
 pub mod news_impact;
 pub mod news_impact_worker;
+pub mod retest_scalp;
 pub mod retest_shadow;
 pub mod risk_guardrails;
 pub mod risk_manager;

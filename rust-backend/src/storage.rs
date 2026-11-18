@@ -36,6 +36,12 @@ pub struct PersistentState {
     /// Retest shadow trade being tracked to TP/SL/timeout.
     #[serde(default)]
     pub retest_trade: Option<RetestTrade>,
+    /// Retest scalp research watch (alert-only).
+    #[serde(default)]
+    pub retest_scalp_watch: Option<RetestWatch>,
+    /// Retest scalp trade being tracked to TP1/TP2/BE/timeout.
+    #[serde(default)]
+    pub retest_scalp_trade: Option<crate::retest_scalp::RetestScalpTrade>,
 }
 
 /// Bộ lưu trữ JSON nguyên tử (atomic write) cho server chạy 24/7.

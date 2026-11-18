@@ -492,6 +492,21 @@ pub struct BotConfig {
     /// Bật shadow research retest (chỉ journal/Telegram research, không signal/quota).
     #[serde(default = "default_true")]
     pub retest_shadow_enabled: bool,
+    /// Bật profile research retest scalp (alert-only, không signal/quota/AI). Mặc định false.
+    #[serde(default)]
+    pub retest_scalp_enabled: bool,
+    /// SL tối đa của retest scalp tính bằng USD (5..=50, mặc định 20).
+    #[serde(default)]
+    pub retest_scalp_max_sl_usd: f64,
+    /// TP1 cách entry bao nhiêu USD (5..=100, mặc định 20).
+    #[serde(default)]
+    pub retest_scalp_tp1_usd: f64,
+    /// TP2 cách entry bao nhiêu USD (10..=200, mặc định 40; phải > TP1).
+    #[serde(default)]
+    pub retest_scalp_tp2_usd: f64,
+    /// Risk % gợi ý cho lot của retest scalp (0.1..=2.0, mặc định 0.5).
+    #[serde(default)]
+    pub retest_scalp_risk_percentage: f64,
     /// Số phút tối thiểu giữa hai cảnh báo cùng scenario + hướng + vùng trigger
     /// (5..=1440, mặc định 120). Đây là backstop; mỗi setup chỉ gửi 1 lần.
     #[serde(default = "default_action_trigger_cooldown")]
@@ -801,6 +816,11 @@ impl Default for BotConfig {
             divergence_alert_cooldown_minutes: default_divergence_alert_cooldown(),
             action_trigger_alert_enabled: true,
             retest_shadow_enabled: true,
+            retest_scalp_enabled: false,
+            retest_scalp_max_sl_usd: 20.0,
+            retest_scalp_tp1_usd: 20.0,
+            retest_scalp_tp2_usd: 40.0,
+            retest_scalp_risk_percentage: 0.5,
             action_trigger_cooldown_minutes: default_action_trigger_cooldown(),
             action_watch_distance_atr: default_action_watch_distance_atr(),
             action_watch_max_distance_points: default_action_watch_max_distance_points(),
@@ -848,6 +868,15 @@ impl BotConfig {
         self.volume_ma_period = self.volume_ma_period.clamp(5, 50);
         self.account_balance = finite_or(self.account_balance, 10_000.0).max(100.0);
         self.risk_percentage = finite_or(self.risk_percentage, 1.0).clamp(0.1, 5.0);
+        self.retest_scalp_max_sl_usd =
+            finite_or(self.retest_scalp_max_sl_usd, 20.0).clamp(5.0, 50.0);
+        self.retest_scalp_tp1_usd = finite_or(self.retest_scalp_tp1_usd, 20.0).clamp(5.0, 100.0);
+        self.retest_scalp_tp2_usd = finite_or(self.retest_scalp_tp2_usd, 40.0).clamp(10.0, 200.0);
+        if self.retest_scalp_tp2_usd <= self.retest_scalp_tp1_usd {
+            self.retest_scalp_tp2_usd = (self.retest_scalp_tp1_usd * 2.0).min(200.0);
+        }
+        self.retest_scalp_risk_percentage =
+            finite_or(self.retest_scalp_risk_percentage, 0.5).clamp(0.1, 2.0);
         self.account_leverage = finite_or(self.account_leverage, 100.0).clamp(1.0, 1000.0);
         self.max_signals_per_day = self.max_signals_per_day.clamp(1, 5);
         self.max_concurrent_signals = self.max_concurrent_signals.min(20);
@@ -1778,6 +1807,37 @@ mod tests {
         }
         .sanitized();
         assert_eq!(valid.action_trigger_cooldown_minutes, 45);
+    }
+
+    #[test]
+    fn sanitize_retest_scalp_defaults_and_clamps() {
+        let defaults = BotConfig::default();
+        assert!(!defaults.retest_scalp_enabled);
+        assert_eq!(defaults.retest_scalp_max_sl_usd, 20.0);
+        assert_eq!(defaults.retest_scalp_tp1_usd, 20.0);
+        assert_eq!(defaults.retest_scalp_tp2_usd, 40.0);
+        assert_eq!(defaults.retest_scalp_risk_percentage, 0.5);
+
+        let clamped = BotConfig {
+            retest_scalp_max_sl_usd: 999.0,
+            retest_scalp_tp1_usd: 1.0,
+            retest_scalp_tp2_usd: 2.0,
+            retest_scalp_risk_percentage: 9.0,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(clamped.retest_scalp_max_sl_usd, 50.0);
+        assert_eq!(clamped.retest_scalp_tp1_usd, 5.0);
+        assert_eq!(clamped.retest_scalp_tp2_usd, 10.0);
+        assert_eq!(clamped.retest_scalp_risk_percentage, 2.0);
+
+        let ordered = BotConfig {
+            retest_scalp_tp1_usd: 30.0,
+            retest_scalp_tp2_usd: 20.0,
+            ..BotConfig::default()
+        }
+        .sanitized();
+        assert_eq!(ordered.retest_scalp_tp2_usd, 60.0);
     }
 
     #[test]

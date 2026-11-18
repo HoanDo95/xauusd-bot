@@ -7,6 +7,7 @@ use crate::models::{
     DailyMacroReport, EconomicEvent, EntryType, ImpactLevel, Signal, SignalStatus, SignalType,
     SupportResistanceZone,
 };
+use crate::retest_scalp::RetestScalpTrade;
 use crate::retest_shadow::RetestLevels;
 use crate::scenarios::{Scenario, ScenarioResponse};
 use crate::session_alerts::SessionBriefing;
@@ -716,6 +717,60 @@ impl TelegramNotifier {
         candle_close: f64,
     ) -> Result<i64, String> {
         let message_text = Self::format_retest_shadow_message(scenario, levels, candle_close);
+        self.send_html_message(&message_text).await
+    }
+
+    pub fn format_retest_scalp_message(
+        scenario: &Scenario,
+        trade: &RetestScalpTrade,
+        candle_close: f64,
+        lot_size: f64,
+        risk_usd: f64,
+        risk_pct: f64,
+    ) -> String {
+        let name = Self::escape_html(&truncate_chars(&scenario.name, 80));
+        let direction = Self::escape_html(&truncate_chars(&scenario.trigger_direction, 16));
+        let tp1_note = if trade.tp1_hit {
+            "\nTP1 đã chạm cùng nến; SL đã về entry cho 50% còn lại."
+        } else {
+            ""
+        };
+        format!(
+            "⚡ <b>SCALP RETEST — RESEARCH</b> — {name}\n\
+             XAU/USD · {direction} · M15 close {candle_close:.2}\n\
+             Entry <code>{:.2}</code> · SL {:.2} · risk {:.2}$\n\
+             TP1 {:.2} (50%) · TP2 {:.2} (50%)\n\
+             Risk {:.1}% · Lot gợi ý {:.2} · Risk ${:.2}\n\
+             Sau TP1 dời SL về entry; có thể chốt tay phần còn lại.{tp1_note}\n\
+             ⚠️ Alert-only, không phải sniper signal, không quota, không auto-trade.",
+            trade.entry,
+            trade.stop_loss,
+            trade.risk,
+            trade.take_profit_1,
+            trade.take_profit_2,
+            risk_pct,
+            lot_size,
+            risk_usd
+        )
+    }
+
+    pub async fn send_retest_scalp_alert(
+        &self,
+        scenario: &Scenario,
+        trade: &RetestScalpTrade,
+        candle_close: f64,
+        lot_size: f64,
+        risk_usd: f64,
+        risk_pct: f64,
+    ) -> Result<i64, String> {
+        let message_text = Self::format_retest_scalp_message(
+            scenario,
+            trade,
+            candle_close,
+            lot_size,
+            risk_usd,
+            risk_pct,
+        );
         self.send_html_message(&message_text).await
     }
 
@@ -3124,6 +3179,38 @@ mod tests {
         assert!(message.contains("TP1 3788.00"));
         assert!(message.contains("TP2 3782.00"));
         assert!(message.contains("Không phải signal, không quota"));
+        assert!(!message.contains("GOLD SIGNAL"));
+    }
+
+    #[test]
+    fn format_retest_scalp_message_is_research_only() {
+        let scenario = base_scenario("bearish_breakdown", "Bearish breakdown", "BEARISH");
+        let trade = RetestScalpTrade {
+            setup_id: "SCALP-TEST".to_string(),
+            scenario_id: "bearish_breakdown".to_string(),
+            bias: "BEARISH".to_string(),
+            confidence: 70,
+            direction: "SELL".to_string(),
+            entry: 3800.0,
+            stop_loss: 3810.0,
+            take_profit_1: 3780.0,
+            take_profit_2: 3760.0,
+            risk: 10.0,
+            created_at: chrono::Utc::now(),
+            entry_candle_timestamp: 0,
+            tp1_hit: false,
+            be_active: false,
+        };
+        let message = TelegramNotifier::format_retest_scalp_message(
+            &scenario, &trade, 3799.5, 0.05, 50.0, 0.5,
+        );
+        assert!(message.contains("SCALP RETEST — RESEARCH"));
+        assert!(message.contains("Entry <code>3800.00</code>"));
+        assert!(message.contains("SL 3810.00"));
+        assert!(message.contains("TP1 3780.00 (50%)"));
+        assert!(message.contains("TP2 3760.00 (50%)"));
+        assert!(message.contains("Risk 0.5%"));
+        assert!(message.contains("Alert-only"));
         assert!(!message.contains("GOLD SIGNAL"));
     }
 
