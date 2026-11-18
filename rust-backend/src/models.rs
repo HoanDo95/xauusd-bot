@@ -496,16 +496,16 @@ pub struct BotConfig {
     #[serde(default)]
     pub retest_scalp_enabled: bool,
     /// SL tối đa của retest scalp tính bằng USD (5..=50, mặc định 20).
-    #[serde(default)]
+    #[serde(default = "default_retest_scalp_max_sl")]
     pub retest_scalp_max_sl_usd: f64,
     /// TP1 cách entry bao nhiêu USD (5..=100, mặc định 20).
-    #[serde(default)]
+    #[serde(default = "default_retest_scalp_tp1")]
     pub retest_scalp_tp1_usd: f64,
     /// TP2 cách entry bao nhiêu USD (10..=200, mặc định 40; phải > TP1).
-    #[serde(default)]
+    #[serde(default = "default_retest_scalp_tp2")]
     pub retest_scalp_tp2_usd: f64,
     /// Risk % gợi ý cho lot của retest scalp (0.1..=2.0, mặc định 0.5).
-    #[serde(default)]
+    #[serde(default = "default_retest_scalp_risk_pct")]
     pub retest_scalp_risk_percentage: f64,
     /// Số phút tối thiểu giữa hai cảnh báo cùng scenario + hướng + vùng trigger
     /// (5..=1440, mặc định 120). Đây là backstop; mỗi setup chỉ gửi 1 lần.
@@ -705,6 +705,22 @@ fn default_divergence_alert_cooldown() -> i64 {
 
 fn default_action_trigger_cooldown() -> i64 {
     120
+}
+
+fn default_retest_scalp_max_sl() -> f64 {
+    20.0
+}
+
+fn default_retest_scalp_tp1() -> f64 {
+    20.0
+}
+
+fn default_retest_scalp_tp2() -> f64 {
+    40.0
+}
+
+fn default_retest_scalp_risk_pct() -> f64 {
+    0.5
 }
 
 fn default_action_watch_distance_atr() -> f64 {
@@ -1838,6 +1854,24 @@ mod tests {
         }
         .sanitized();
         assert_eq!(ordered.retest_scalp_tp2_usd, 60.0);
+
+        let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = value.as_object_mut().expect("config object");
+        for key in [
+            "retest_scalp_enabled",
+            "retest_scalp_max_sl_usd",
+            "retest_scalp_tp1_usd",
+            "retest_scalp_tp2_usd",
+            "retest_scalp_risk_percentage",
+        ] {
+            object.remove(key);
+        }
+        let legacy: BotConfig = serde_json::from_value(value).expect("deserialize legacy config");
+        assert!(!legacy.retest_scalp_enabled);
+        assert_eq!(legacy.retest_scalp_max_sl_usd, 20.0);
+        assert_eq!(legacy.retest_scalp_tp1_usd, 20.0);
+        assert_eq!(legacy.retest_scalp_tp2_usd, 40.0);
+        assert_eq!(legacy.retest_scalp_risk_percentage, 0.5);
     }
 
     #[test]
