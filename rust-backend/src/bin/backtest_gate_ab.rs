@@ -7,6 +7,7 @@
 
 use chrono::{DateTime, Utc};
 use gold_signal_bot::decision_gates::confirmed_signal_with_gates;
+use gold_signal_bot::macro_history::MacroHistory;
 use gold_signal_bot::market_context::{build_market_context, htf_allows_signal};
 use gold_signal_bot::market_view::score_scenario;
 use gold_signal_bot::models::{BotConfig, Candle, Signal, Timeframe};
@@ -230,6 +231,10 @@ struct TradeAnalysis {
     rsi_h1: Option<f64>,
     rsi_h4: Option<f64>,
     distance_ema_atr: f64,
+    macro_bias: Option<String>,
+    macro_alignment: Option<String>,
+    macro_real_yield_change_5d: Option<f64>,
+    macro_dollar_change_5d_pct: Option<f64>,
     passed: BTreeMap<String, bool>,
 }
 
@@ -239,6 +244,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cache_path = PathBuf::from("data/backtest/XAUUSDm_M15.jsonl");
     let mut out_path = PathBuf::from("data/backtest/gate_ab.json");
     let mut variant = "quantum_v3_htf_retest".to_string();
+    let mut macro_dir: Option<PathBuf> = None;
 
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -246,6 +252,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--cache" => cache_path = PathBuf::from(args.next().ok_or("--cache value")?),
             "--out" => out_path = PathBuf::from(args.next().ok_or("--out value")?),
             "--variant" => variant = args.next().ok_or("--variant value")?,
+            "--macro-dir" => {
+                macro_dir = Some(PathBuf::from(args.next().ok_or("--macro-dir value")?))
+            }
             "--help" => {
                 println!("Usage: backtest_gate_ab [--report PATH] [--cache PATH] [--out PATH] [--variant NAME]");
                 return Ok(());
@@ -266,6 +275,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let config = base_config();
+    let macro_history = macro_dir
+        .as_deref()
+        .map(MacroHistory::load)
+        .transpose()
+        .map_err(|err| format!("macro history: {err}"))?;
     let gate_names = [
         "confirmation",
         "rsi_extreme",
@@ -273,7 +287,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "htf",
         "macro_counter",
         "buy_rsi",
+        "macro_history",
         "all",
+        "all_with_macro",
     ];
     let mut passed_map: BTreeMap<String, Vec<f64>> = gate_names
         .iter()
@@ -387,6 +403,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .signal
         .is_some();
 
+        let macro_point = macro_history
+            .as_ref()
+            .map(|history| history.at(trigger_close_ms, &trade.direction));
+        let macro_history_pass = macro_point
+            .as_ref()
+            .map(|point| !point.alignment.eq_ignore_ascii_case("COUNTER"))
+            .unwrap_or(true);
         let mut passed = BTreeMap::new();
         passed.insert("confirmation".to_string(), confirmation);
         passed.insert("rsi_extreme".to_string(), rsi_gate);
@@ -394,15 +417,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         passed.insert("htf".to_string(), htf.0);
         passed.insert("macro_counter".to_string(), macro_block.is_none());
         passed.insert("buy_rsi".to_string(), buy_rsi.is_none());
-        passed.insert(
-            "all".to_string(),
-            confirmation
-                && rsi_gate
-                && anti_chase.is_none()
-                && htf.0
-                && macro_block.is_none()
-                && buy_rsi.is_none(),
-        );
+        let all_core = confirmation
+            && rsi_gate
+            && anti_chase.is_none()
+            && htf.0
+            && macro_block.is_none()
+            && buy_rsi.is_none();
+        passed.insert("macro_history".to_string(), macro_history_pass);
+        passed.insert("all".to_string(), all_core);
+        passed.insert("all_with_macro".to_string(), all_core && macro_history_pass);
 
         for name in gate_names {
             if passed.get(name).copied().unwrap_or(false) {
@@ -430,6 +453,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             rsi_h1,
             rsi_h4,
             distance_ema_atr,
+            macro_bias: macro_point.as_ref().map(|point| point.bias.clone()),
+            macro_alignment: macro_point.as_ref().map(|point| point.alignment.clone()),
+            macro_real_yield_change_5d: macro_point
+                .as_ref()
+                .and_then(|point| point.real_yield_change_5d),
+            macro_dollar_change_5d_pct: macro_point
+                .as_ref()
+                .and_then(|point| point.dollar_change_5d_pct),
             passed,
         });
     }

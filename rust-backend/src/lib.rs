@@ -9,6 +9,7 @@ pub mod decision_trace;
 pub mod divergence_alerts;
 pub mod exness_feed;
 pub mod macro_flow;
+pub mod macro_history;
 pub mod market_context;
 pub mod market_feed;
 pub mod market_panorama;
