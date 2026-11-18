@@ -353,6 +353,7 @@ struct Args {
     variants: Vec<Variant>,
     early_be: f64,
     cost_usd: f64,
+    sr_atr_fraction: f64,
     /// Walk-forward analysis is always included in the report; the flag is
     /// accepted so the requested invocation is explicit.
     walk_forward: bool,
@@ -375,6 +376,7 @@ impl Default for Args {
             ],
             early_be: 0.0,
             cost_usd: 0.0,
+            sr_atr_fraction: 0.0,
             walk_forward: false,
         }
     }
@@ -417,6 +419,8 @@ fn print_usage() {
            --early-be <POINTS>     Early break-even distance for partial_be (default: 0 = off)\n\
            --cost-usd <USD>        Round-turn spread+slippage cost in USD/oz, subtracted\n\
                                    as cost_usd / risk from every trade R (default: 0)\n\
+           --sr-atr-fraction <R>   S/R cluster tolerance = avg M15 range * R, clamp 2.5–8\n\
+                                   (default: 0 = fixed 2.5 USD)\n\
            --walk-forward          Explicitly enable walk-forward reporting (always on)\n\
            --help                  Show this help"
     );
@@ -504,6 +508,18 @@ fn parse_args() -> Result<Args> {
                     ));
                 }
                 args.cost_usd = parsed;
+            }
+            "--sr-atr-fraction" => {
+                let value = require_value(&mut iter, &flag)?;
+                let parsed = value.trim().parse::<f64>().map_err(|_| {
+                    AppError::Message(format!("invalid --sr-atr-fraction value: {value}"))
+                })?;
+                if !parsed.is_finite() || parsed < 0.0 || parsed > 0.5 {
+                    return Err(AppError::Message(
+                        "--sr-atr-fraction must be finite and between 0 and 0.5".to_string(),
+                    ));
+                }
+                args.sr_atr_fraction = parsed;
             }
             "--help" | "-h" => {
                 print_usage();
@@ -1821,7 +1837,7 @@ fn swing_sl_levels(
     }
 }
 
-fn backtest_config() -> BotConfig {
+fn backtest_config(sr_atr_fraction: f64) -> BotConfig {
     BotConfig {
         lookback_period: 30,
         gold_sl_buffer_points: 10.0,
@@ -1836,6 +1852,7 @@ fn backtest_config() -> BotConfig {
         account_leverage: 100.0,
         entry_mode: "MARKET".to_string(),
         data_source: "BINANCE_PAXG".to_string(),
+        sr_atr_fraction,
         ..BotConfig::default()
     }
 }
@@ -5207,7 +5224,7 @@ async fn run() -> Result<()> {
     }
 
     let effective_end_ms = requested_end_ms.min(now_ms);
-    let config = backtest_config();
+    let config = backtest_config(args.sr_atr_fraction);
 
     println!(
         "Backtest {} {} from {} to {} (step {}m)",

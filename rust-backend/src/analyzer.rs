@@ -10,6 +10,27 @@ use tracing::{info, warn};
 /// Bộ máy Phân Tích Kỹ Thuật Tự Động cho Vàng (XAU/USD)
 pub struct GoldMarketAnalyzer;
 
+/// S/R cluster tolerance for the signal analyzer. Default is the historical
+/// fixed 2.5 USD. `sr_atr_fraction > 0` is a research/backtest opt-in that
+/// scales the tolerance with the average M15 range (clamped 2.5–8 USD).
+fn sr_cluster_tolerance(config: &BotConfig, candles: &[Candle]) -> f64 {
+    if config.sr_atr_fraction <= 0.0 {
+        return 2.5;
+    }
+    let period = 14;
+    let start = candles.len().saturating_sub(period);
+    let window = &candles[start..];
+    if window.is_empty() {
+        return 2.5;
+    }
+    let average_range = window
+        .iter()
+        .map(|candle| candle.high - candle.low)
+        .sum::<f64>()
+        / window.len() as f64;
+    (average_range * config.sr_atr_fraction).clamp(2.5, 8.0)
+}
+
 impl GoldMarketAnalyzer {
     /// 1. Tự động quét và phát hiện các vùng Hỗ trợ / Kháng cự động từ dữ liệu nến
     pub fn detect_dynamic_sr_zones(
@@ -312,7 +333,7 @@ impl GoldMarketAnalyzer {
         let (supports, resistances) = Self::detect_dynamic_sr_zones(
             previous_candles,
             config.lookback_period,
-            2.5, // 2.5$ biên độ cluster cho Vàng
+            sr_cluster_tolerance(config, previous_candles),
         );
 
         // Bước C: Kiểm tra mô hình Nến rút chân
@@ -895,6 +916,19 @@ mod tests {
 
         GoldMarketAnalyzer::analyze_market(&candles, &buy_config(gold_sl_buffer_points))
             .expect("expected a valid BUY signal")
+    }
+
+    #[test]
+    fn sr_tolerance_defaults_fixed_and_scales_with_fraction() {
+        let candles: Vec<Candle> = (0..14)
+            .map(|index| candle(index, 100.0, 105.0, 95.0, 100.0, 1000.0))
+            .collect();
+        let mut config = BotConfig::default();
+        assert_eq!(sr_cluster_tolerance(&config, &candles), 2.5);
+        config.sr_atr_fraction = 0.5;
+        assert_eq!(sr_cluster_tolerance(&config, &candles), 5.0);
+        config.sr_atr_fraction = 1.0;
+        assert_eq!(sr_cluster_tolerance(&config, &candles), 8.0);
     }
 
     #[test]

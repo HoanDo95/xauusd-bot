@@ -681,53 +681,6 @@ impl TelegramNotifier {
     }
 
     /// Gửi MARKET VIEW H1. Read-only: không signal, không quota, không Lot.
-    pub async fn send_market_view(&self, outlook: &MarketOutlook) -> Result<i64, String> {
-        if self.bot_token.is_empty() || self.chat_id.is_empty() {
-            info!(
-                "⚠️ [Telegram Simulator] MARKET VIEW {} (chưa cấu hình token)",
-                outlook.bot_state.as_str()
-            );
-            return Ok(1001);
-        }
-
-        let message_text = Self::format_market_view_message(outlook);
-        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
-        let payload = json!({
-            "chat_id": self.chat_id,
-            "text": message_text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": true
-        });
-
-        match self.client.post(&url).json(&payload).send().await {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    let body: serde_json::Value =
-                        resp.json().await.map_err(|e| e.without_url().to_string())?;
-                    let msg_id = body["result"]["message_id"].as_i64().unwrap_or(0);
-                    info!(
-                        "✅ Đã gửi MARKET VIEW {} tới Telegram! Message ID: {}",
-                        outlook.bot_state.as_str(),
-                        msg_id
-                    );
-                    Ok(msg_id)
-                } else {
-                    let err_text = resp
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "Lỗi không xác định".into());
-                    error!("❌ Telegram MARKET VIEW API lỗi: {}", err_text);
-                    Err(format!("Telegram API Error: {err_text}"))
-                }
-            }
-            Err(err) => {
-                let err = err.without_url();
-                error!("❌ Không thể gửi MARKET VIEW tới Telegram: {}", err);
-                Err(format!("Network Error: {err}"))
-            }
-        }
-    }
-
     pub async fn send_daily_view(&self, outlook: &MarketOutlook, slot: u32) -> Result<i64, String> {
         let message_text = Self::format_daily_view_message(outlook, slot);
         self.send_html_message(&message_text).await

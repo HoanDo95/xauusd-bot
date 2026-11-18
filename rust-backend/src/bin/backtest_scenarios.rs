@@ -131,6 +131,7 @@ struct Args {
     csv_path: Option<PathBuf>,
     cost_r: f64,
     quantum_volume_ratio: f64,
+    confirmation_mode: ConfirmationMode,
     out_json: PathBuf,
     out_md: PathBuf,
 }
@@ -147,6 +148,7 @@ impl Default for Args {
             csv_path: None,
             cost_r: 0.0,
             quantum_volume_ratio: 1.2,
+            confirmation_mode: ConfirmationMode::Directional,
             out_json: manifest_dir.join("report_scenarios.json"),
             out_md: manifest_dir.join("report_scenarios.md"),
         }
@@ -166,6 +168,7 @@ fn print_usage() {
            --csv <PATH>            Read M15 CSV (timestamp,open,high,low,close,volume) instead of Binance\n\
            --cost-r <R>            Subtract R cost per trade (default: 0.0)\n\
            --quantum-volume-ratio <R>  Quantum confirmation volume threshold (default: 1.2)\n\
+           --confirmation-mode <MODE>  volume | directional | directional_close | directional_body (default: directional)\n\
            --out-json <PATH>       JSON report path (default: rust-backend/report_scenarios.json)\n\
            --out-md <PATH>         Markdown report path (default: rust-backend/report_scenarios.md)\n\
            --help                  Show this help\n\
@@ -244,6 +247,12 @@ fn parse_args() -> Result<Args> {
                         "--quantum-volume-ratio must be finite and > 0".to_string(),
                     ));
                 }
+            }
+            "--confirmation-mode" => {
+                let value = require_value(&mut iter, &flag)?;
+                args.confirmation_mode = ConfirmationMode::parse(&value).ok_or_else(|| {
+                    AppError::Message(format!("invalid --confirmation-mode: {value}"))
+                })?;
             }
             "--out-json" => {
                 args.out_json = PathBuf::from(require_value(&mut iter, &flag)?);
@@ -931,6 +940,7 @@ fn trigger_confirmation_ok(
     candles: &[Candle],
     index: usize,
     volume_ratio: f64,
+    mode: ConfirmationMode,
 ) -> bool {
     let Some(candle) = candles.get(index) else {
         return false;
@@ -953,23 +963,46 @@ fn trigger_confirmation_ok(
     }
 
     let direction = trigger_direction.trim().to_ascii_uppercase();
-    match (side, direction.as_str()) {
+    let range = candle.high - candle.low;
+    let body = (candle.close - candle.open).abs();
+    let close_position = if range > 0.0 {
+        (candle.close - candle.low) / range
+    } else {
+        0.5
+    };
+    let directional_ok = match (side, direction.as_str()) {
         (SignalType::Buy, "ABOVE") => candle.close > candle.open,
         (SignalType::Sell, "BELOW") => candle.close < candle.open,
-        (SignalType::Buy, "TOUCH") => {
-            let (bullish_pinbar, _) = GoldMarketAnalyzer::check_pinbar_rejection(candle, 2.0);
-            let (bullish_engulfing, _) = previous
+        _ => false,
+    };
+
+    match (side, direction.as_str()) {
+        (SignalType::Buy | SignalType::Sell, "TOUCH") => {
+            let (bullish_pinbar, bearish_pinbar) =
+                GoldMarketAnalyzer::check_pinbar_rejection(candle, 2.0);
+            let (bullish_engulfing, bearish_engulfing) = previous
                 .map(|previous| GoldMarketAnalyzer::check_engulfing(previous, candle))
                 .unwrap_or((false, false));
-            bullish_pinbar || bullish_engulfing
+            match side {
+                SignalType::Buy => bullish_pinbar || bullish_engulfing,
+                SignalType::Sell => bearish_pinbar || bearish_engulfing,
+            }
         }
-        (SignalType::Sell, "TOUCH") => {
-            let (_, bearish_pinbar) = GoldMarketAnalyzer::check_pinbar_rejection(candle, 2.0);
-            let (_, bearish_engulfing) = previous
-                .map(|previous| GoldMarketAnalyzer::check_engulfing(previous, candle))
-                .unwrap_or((false, false));
-            bearish_pinbar || bearish_engulfing
-        }
+        (SignalType::Buy, "ABOVE") | (SignalType::Sell, "BELOW") => match mode {
+            ConfirmationMode::Volume => true,
+            ConfirmationMode::Directional => directional_ok,
+            ConfirmationMode::DirectionalClose => {
+                directional_ok
+                    && if side == SignalType::Buy {
+                        close_position >= 0.70
+                    } else {
+                        close_position <= 0.30
+                    }
+            }
+            ConfirmationMode::DirectionalBody => {
+                directional_ok && range > 0.0 && body / range >= 0.50
+            }
+        },
         _ => false,
     }
 }
@@ -1551,6 +1584,7 @@ struct VariantConfig {
     quantum_weighted_score_enabled: bool,
     quantum_trigger_confirmation_enabled: bool,
     quantum_volume_confirm_ratio: f64,
+    confirmation_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2259,6 +2293,35 @@ fn print_summary(report: &Report) {
 // Main run
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfirmationMode {
+    Volume,
+    Directional,
+    DirectionalClose,
+    DirectionalBody,
+}
+
+impl ConfirmationMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "volume" | "volume_only" => Some(Self::Volume),
+            "directional" => Some(Self::Directional),
+            "directional_close" => Some(Self::DirectionalClose),
+            "directional_body" => Some(Self::DirectionalBody),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Volume => "volume",
+            Self::Directional => "directional",
+            Self::DirectionalClose => "directional_close",
+            Self::DirectionalBody => "directional_body",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RunOptions {
     anti_chase_filter_enabled: bool,
@@ -2271,6 +2334,7 @@ struct RunOptions {
     quantum_weighted_score_enabled: bool,
     quantum_trigger_confirmation_enabled: bool,
     quantum_volume_confirm_ratio: f64,
+    confirmation_mode: ConfirmationMode,
     cost_r: f64,
 }
 
@@ -2388,6 +2452,7 @@ fn run_variant(
                         m15,
                         j,
                         options.quantum_volume_confirm_ratio,
+                        options.confirmation_mode,
                     )
                 {
                     funnel.trigger_confirmation_skipped += 1;
@@ -2690,6 +2755,7 @@ async fn run() -> Result<()> {
                 quantum_weighted_score_enabled: false,
                 quantum_trigger_confirmation_enabled: false,
                 quantum_volume_confirm_ratio: args.quantum_volume_ratio,
+                confirmation_mode: args.confirmation_mode,
                 cost_r: args.cost_r,
             },
         );
@@ -2709,6 +2775,7 @@ async fn run() -> Result<()> {
                     quantum_weighted_score_enabled: false,
                     quantum_trigger_confirmation_enabled: false,
                     quantum_volume_confirm_ratio: args.quantum_volume_ratio,
+                    confirmation_mode: args.confirmation_mode.as_str().to_string(),
                 },
                 funnel: result.funnel,
                 overall: result.overall,
@@ -2737,6 +2804,7 @@ async fn run() -> Result<()> {
             quantum_weighted_score_enabled: true,
             quantum_trigger_confirmation_enabled: false,
             quantum_volume_confirm_ratio: args.quantum_volume_ratio,
+            confirmation_mode: args.confirmation_mode,
             cost_r: args.cost_r,
         },
     );
@@ -2758,6 +2826,7 @@ async fn run() -> Result<()> {
                 quantum_weighted_score_enabled: true,
                 quantum_trigger_confirmation_enabled: false,
                 quantum_volume_confirm_ratio: args.quantum_volume_ratio,
+                confirmation_mode: args.confirmation_mode.as_str().to_string(),
             },
             funnel: quantum.funnel,
             overall: quantum.overall,
@@ -2785,6 +2854,7 @@ async fn run() -> Result<()> {
             quantum_weighted_score_enabled: true,
             quantum_trigger_confirmation_enabled: true,
             quantum_volume_confirm_ratio: args.quantum_volume_ratio,
+            confirmation_mode: args.confirmation_mode,
             cost_r: args.cost_r,
         },
     );
@@ -2806,6 +2876,7 @@ async fn run() -> Result<()> {
                 quantum_weighted_score_enabled: true,
                 quantum_trigger_confirmation_enabled: true,
                 quantum_volume_confirm_ratio: args.quantum_volume_ratio,
+                confirmation_mode: args.confirmation_mode.as_str().to_string(),
             },
             funnel: quantum_v3.funnel,
             overall: quantum_v3.overall,
@@ -2833,6 +2904,7 @@ async fn run() -> Result<()> {
             quantum_weighted_score_enabled: true,
             quantum_trigger_confirmation_enabled: true,
             quantum_volume_confirm_ratio: args.quantum_volume_ratio,
+            confirmation_mode: args.confirmation_mode,
             cost_r: args.cost_r,
         },
     );
@@ -2853,6 +2925,7 @@ async fn run() -> Result<()> {
                 quantum_weighted_score_enabled: true,
                 quantum_trigger_confirmation_enabled: true,
                 quantum_volume_confirm_ratio: args.quantum_volume_ratio,
+                confirmation_mode: args.confirmation_mode.as_str().to_string(),
             },
             funnel: quantum_v3_htf.funnel,
             overall: quantum_v3_htf.overall,

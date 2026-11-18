@@ -274,6 +274,9 @@ pub struct BotConfig {
     pub rejection_wick_ratio: f64,
     /// Số nến nhìn lại để tìm đỉnh đáy hỗ trợ/kháng cự (Lookback)
     pub lookback_period: usize,
+    /// ATR fraction for S/R cluster tolerance (0 = fixed 2.5 USD; research).
+    #[serde(default)]
+    pub sr_atr_fraction: f64,
     /// Chu kỳ trung bình cộng khối lượng (Volume MA Period)
     pub volume_ma_period: usize,
     /// Tổng số dư tài khoản giao dịch (Account Balance USD, e.g. $10,000)
@@ -725,6 +728,7 @@ impl Default for BotConfig {
             volume_filter_enabled: true,
             rejection_wick_ratio: 2.0,
             lookback_period: 30,
+            sr_atr_fraction: 0.0,
             volume_ma_period: 20,
             account_balance: 10000.0,
             risk_percentage: 1.0,
@@ -836,6 +840,7 @@ impl BotConfig {
         self.volume_surge_multiplier = finite_or(self.volume_surge_multiplier, 1.5).clamp(1.1, 3.5);
         self.rejection_wick_ratio = finite_or(self.rejection_wick_ratio, 2.0).clamp(1.5, 4.0);
         self.lookback_period = self.lookback_period.clamp(15, 100);
+        self.sr_atr_fraction = finite_or(self.sr_atr_fraction, 0.0).clamp(0.0, 0.5);
         self.volume_ma_period = self.volume_ma_period.clamp(5, 50);
         self.account_balance = finite_or(self.account_balance, 10_000.0).max(100.0);
         self.risk_percentage = finite_or(self.risk_percentage, 1.0).clamp(0.1, 5.0);
