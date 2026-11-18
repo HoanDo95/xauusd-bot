@@ -53,6 +53,9 @@ pub struct OutlookScenario {
     pub scenario_id: String,
     /// WATCH_SELL | WATCH_BUY | STAND_ASIDE
     pub action: String,
+    /// Scenario passed level ordering, R:R and risk validation.
+    #[serde(default)]
+    pub valid: bool,
     pub zone_low: f64,
     pub zone_high: f64,
     pub trigger: String,
@@ -377,6 +380,7 @@ fn outlook_scenario(
         role: scenario.role.trim().to_uppercase(),
         scenario_id: scenario.id.clone(),
         action: action.to_string(),
+        valid: scenario.valid,
         zone_low,
         zone_high,
         trigger: scenario.trigger.clone(),

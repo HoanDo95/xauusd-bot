@@ -126,6 +126,8 @@ pub struct AppState {
     pub action_trigger_last_sent: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
     /// Setup đang theo dõi (đã gửi 1 watching alert). None = chưa có setup.
     pub active_watch_setup: Arc<RwLock<Option<WatchedSetup>>>,
+    /// Các slot Daily View đã gửi, key `YYYY-MM-DD:HH` theo giờ Việt Nam.
+    pub daily_view_sent: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
     /// AI Market Strategist cache cho H1 Market View (advisory, không phải signal).
     pub market_strategist_view: Arc<RwLock<Option<StrategistView>>>,
     /// Append-only trigger journal (analysis log, not live trade state).
@@ -157,6 +159,7 @@ pub async fn persist_state(state: &AppState) -> Result<(), String> {
         sent_session_alerts: state.sent_session_alerts.read().await.clone(),
         active_watch_setup: state.active_watch_setup.read().await.clone(),
         action_watch_last_sent: state.action_trigger_last_sent.read().await.clone(),
+        daily_view_sent: state.daily_view_sent.read().await.clone(),
     };
     let store = state.store.clone();
 

@@ -1660,9 +1660,9 @@ export const ConfigPanel: React.FC<Props> = ({
               </div>
               <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
                 Gửi Market Outlook dạng trade plan: cấu trúc, Primary/Alternative zones,
-                trigger, SL/TP, invalidation và risk notes. Bot gửi một Daily Plan lúc
-                13:00 VN (thứ 2–6) và gửi thêm khi H1 close làm view thay đổi materially;
-                có thể gửi ngoài session 13:00–23:00.
+                trigger, SL/TP, invalidation và risk notes. Bot gửi đúng 3 slot
+                <strong className="text-neutral-200"> 07:00 / 13:00 / 19:00 VN</strong> (T2–T6),
+                mỗi lần đều qua AI Strategist; chỉ gửi plan khi PRIMARY confidence ≥ 60%.
               </p>
             </div>
             <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">

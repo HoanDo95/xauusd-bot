@@ -615,6 +615,31 @@ impl TelegramNotifier {
         lines.join("\n").chars().take(3500).collect()
     }
 
+    /// Daily View header + full Market View. AI is mandatory for daily slots;
+    /// when the provider is unavailable, the deterministic plan is still sent
+    /// with an explicit warning.
+    pub fn format_daily_view_message(outlook: &MarketOutlook, slot: u32) -> String {
+        let mut message = format!("📅 <b>DAILY VIEW — {slot:02}:00 VN</b>\n");
+        message.push_str(&Self::format_market_view_message(outlook));
+        if outlook.strategist.is_none() {
+            message.push_str("\n🧠 <b>AI Strategist</b>: unavailable — deterministic view only.");
+        }
+        message
+    }
+
+    /// Compact no-plan message for a daily slot where PRIMARY is missing,
+    /// invalid, or below the 60% confidence threshold. Contains no levels.
+    pub fn format_daily_view_no_plan(slot: u32, reason: &str) -> String {
+        format!(
+            "📅 <b>DAILY VIEW — {slot:02}:00 VN</b>\n\
+             ⛔ <b>NO QUALIFIED PLAN</b>\n\
+             Lý do: {}\n\
+             Không có Entry/SL/TP. Bot tiếp tục theo dõi.\n\
+             ⚠️ DISCRETIONARY; KHÔNG PHẢI SNIPER SIGNAL.",
+            Self::escape_html(&truncate_chars(reason, 300))
+        )
+    }
+
     fn format_outlook_scenario(label: &str, scenario: &OutlookScenario) -> String {
         let h1 = scenario
             .h1_confirmation
@@ -700,6 +725,16 @@ impl TelegramNotifier {
                 Err(format!("Network Error: {err}"))
             }
         }
+    }
+
+    pub async fn send_daily_view(&self, outlook: &MarketOutlook, slot: u32) -> Result<i64, String> {
+        let message_text = Self::format_daily_view_message(outlook, slot);
+        self.send_html_message(&message_text).await
+    }
+
+    pub async fn send_daily_view_no_plan(&self, slot: u32, reason: &str) -> Result<i64, String> {
+        let message_text = Self::format_daily_view_no_plan(slot, reason);
+        self.send_html_message(&message_text).await
     }
 
     pub async fn send_action_trigger_alert(
@@ -2532,6 +2567,7 @@ mod tests {
                 role: "PRIMARY".to_string(),
                 scenario_id: "bearish_rejection".to_string(),
                 action: "WATCH_SELL".to_string(),
+                valid: true,
                 zone_low: 3872.0,
                 zone_high: 3876.0,
                 trigger: "M15 close dưới 3872".to_string(),
@@ -2546,6 +2582,7 @@ mod tests {
                 role: "ALTERNATE".to_string(),
                 scenario_id: "bullish_bounce".to_string(),
                 action: "WATCH_BUY".to_string(),
+                valid: true,
                 zone_low: 3860.0,
                 zone_high: 3864.0,
                 trigger: "M15 close trên 3864".to_string(),
@@ -2582,6 +2619,47 @@ mod tests {
         assert!(message.contains("DISCRETIONARY; KHÔNG PHẢI SNIPER SIGNAL"));
         assert!(message.contains("Score 60/30/10: 78/100"));
         assert!(!message.contains("Lot "));
+    }
+
+    #[test]
+    fn format_daily_view_no_plan_has_no_levels() {
+        let message =
+            TelegramNotifier::format_daily_view_no_plan(7, "PRIMARY confidence 55% < 60%.");
+        assert!(message.contains("DAILY VIEW — 07:00 VN"));
+        assert!(message.contains("NO QUALIFIED PLAN"));
+        assert!(message.contains("55%"));
+        assert!(message.contains("60%"));
+        assert!(!message.contains("Entry "));
+        assert!(!message.contains("SL "));
+        assert!(!message.contains("TP1"));
+    }
+
+    #[test]
+    fn format_daily_view_message_adds_slot_and_ai_warning() {
+        let outlook = MarketOutlook {
+            bot_state: BotState::NoTrade,
+            generated_at: "2026-11-18T06:00:00Z".to_string(),
+            valid_until: "2026-11-18T07:00:00Z".to_string(),
+            structure: "UNKNOWN".to_string(),
+            market_view: "test".to_string(),
+            primary: None,
+            alternative: None,
+            risk_notes: vec![],
+            no_trade_reason: Some("test".to_string()),
+            session: "OUT".to_string(),
+            spread_proxy_atr: None,
+            d1_bias: "NEUTRAL".to_string(),
+            h4_bias: "NEUTRAL".to_string(),
+            h1_bias: "NEUTRAL".to_string(),
+            price: Some(3800.0),
+            h4_atr: None,
+            strategist: None,
+            score: None,
+        };
+        let message = TelegramNotifier::format_daily_view_message(&outlook, 13);
+        assert!(message.contains("DAILY VIEW — 13:00 VN"));
+        assert!(message.contains("MARKET VIEW"));
+        assert!(message.contains("AI Strategist"));
     }
 
     #[test]

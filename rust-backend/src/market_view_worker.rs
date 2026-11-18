@@ -1,164 +1,147 @@
-//! MARKET VIEW Telegram worker.
+//! DAILY MARKET VIEW Telegram worker.
 //!
-//! The dashboard/API computes the view 24/5. This worker sends:
-//! - one daily plan at/after 13:00 Vietnam time on weekdays, even when the view
-//!   is unchanged;
-//! - an extra message on a new H1 close when the view changed materially and the
-//!   cooldown elapsed.
-//!
-//! It never inserts a signal, consumes quota or places an order.
+//! Sends exactly three discretionary plans per weekday (07:00, 13:00, 19:00
+//! Vietnam time). Every daily send goes through the AI Market Strategist; if AI
+//! is unavailable the deterministic plan is still sent with an explicit warning.
+//! The worker never inserts a signal, consumes quota or places an order.
 
-use crate::api::{compute_market_outlook, AppState};
+use crate::api::{compute_market_outlook, persist_state, AppState};
 use crate::market_view::MarketOutlook;
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
+use std::collections::HashMap;
 use std::time::Duration as StdDuration;
 use tracing::{info, warn};
 
 const MARKET_VIEW_INTERVAL_SECS: u64 = 60;
-const DAILY_PLAN_HOUR_VN: u32 = 13;
+const DAILY_PLAN_HOURS_VN: [u32; 3] = [7, 13, 19];
+const MIN_DAILY_CONFIDENCE: u8 = 60;
+const DAILY_VIEW_RETENTION_DAYS: i64 = 7;
 
-/// A weekday daily plan is due at/after 13:00 Vietnam time, once per date.
-fn daily_plan_due(vietnam_now: DateTime<Utc>, last_date: Option<chrono::NaiveDate>) -> bool {
-    let weekday = !matches!(
+/// Return the most recent due slot that has not been sent yet, or `None`.
+///
+/// Example: if the bot starts at 14:00 VN it sends the 13:00 slot, not both
+/// 07:00 and 13:00. A failed send remains due for a later retry in the same slot.
+fn daily_plan_slot(
+    vietnam_now: DateTime<Utc>,
+    sent: &HashMap<String, DateTime<Utc>>,
+) -> Option<u32> {
+    if matches!(
         vietnam_now.weekday(),
         chrono::Weekday::Sat | chrono::Weekday::Sun
-    );
-    weekday
-        && vietnam_now.hour() >= DAILY_PLAN_HOUR_VN
-        && last_date != Some(vietnam_now.date_naive())
+    ) {
+        return None;
+    }
+    let date_key = vietnam_now.format("%Y-%m-%d").to_string();
+    let slot = DAILY_PLAN_HOURS_VN
+        .iter()
+        .copied()
+        .filter(|hour| vietnam_now.hour() >= *hour)
+        .max()?;
+    let key = format!("{date_key}:{slot:02}");
+    (!sent.contains_key(&key)).then_some(slot)
+}
+
+fn prune_daily_view_sent(sent: &mut HashMap<String, DateTime<Utc>>, now: DateTime<Utc>) {
+    let cutoff = now - Duration::days(DAILY_VIEW_RETENTION_DAYS);
+    sent.retain(|_, at| *at >= cutoff);
+}
+
+fn daily_plan_key(vietnam_now: DateTime<Utc>, slot: u32) -> String {
+    format!("{}:{:02}", vietnam_now.format("%Y-%m-%d"), slot)
+}
+
+fn no_plan_reason(outlook: &MarketOutlook) -> String {
+    let mut reason = match outlook.primary.as_ref() {
+        None => "Chưa có PRIMARY hợp lệ.".to_string(),
+        Some(primary) if !primary.valid => "PRIMARY không hợp lệ.".to_string(),
+        Some(primary) if primary.confidence < MIN_DAILY_CONFIDENCE => format!(
+            "PRIMARY confidence {}% < {}%.",
+            primary.confidence, MIN_DAILY_CONFIDENCE
+        ),
+        Some(_) => "Không đạt điều kiện gửi.".to_string(),
+    };
+    if let Some(note) = outlook
+        .no_trade_reason
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        reason.push(' ');
+        reason.push_str(note);
+    }
+    reason
 }
 
 pub fn spawn_market_view_worker(state: AppState) {
     tokio::spawn(async move {
         info!(
-            "🧭 [Market View] Worker đã khởi chạy (chu kỳ {} giây, daily plan {}:00 VN)...",
-            MARKET_VIEW_INTERVAL_SECS, DAILY_PLAN_HOUR_VN
+            "🧭 [Market View] Worker đã khởi chạy (daily {:?} VN, min confidence {}%, AI mỗi lần gửi).",
+            DAILY_PLAN_HOURS_VN, MIN_DAILY_CONFIDENCE
         );
         let mut interval = tokio::time::interval(StdDuration::from_secs(MARKET_VIEW_INTERVAL_SECS));
-        let mut last_h1_timestamp: Option<i64> = None;
-        let mut last_key: Option<String> = None;
-        let mut last_sent: Option<DateTime<Utc>> = None;
-        let mut last_daily_plan_date: Option<chrono::NaiveDate> = None;
 
         loop {
             interval.tick().await;
             let config = state.config.read().await.clone();
-            if !config.is_active {
-                continue;
-            }
-            if !config.market_view_telegram_enabled && !config.market_strategist_enabled {
+            if !config.is_active || !config.market_view_telegram_enabled {
                 continue;
             }
 
             let now = Utc::now();
             let vietnam_now = now + Duration::hours(7);
-            let today = vietnam_now.date_naive();
-            let daily_due = daily_plan_due(vietnam_now, last_daily_plan_date);
-
-            let h1_timestamp = {
-                let context = state.market_context.read().await;
-                context
-                    .as_ref()
-                    .map(|context| context.h1.last_candle_timestamp)
-                    .unwrap_or(0)
-            };
-            let h1_changed = h1_timestamp > 0 && last_h1_timestamp != Some(h1_timestamp);
-            if !h1_changed && !daily_due {
+            let sent = state.daily_view_sent.read().await.clone();
+            let Some(slot) = daily_plan_slot(vietnam_now, &sent) else {
                 continue;
-            }
-            if h1_changed {
-                last_h1_timestamp = Some(h1_timestamp);
-            }
+            };
 
             let mut outlook = compute_market_outlook(&state).await;
-            let strategist = if config.market_strategist_enabled {
-                crate::api::refresh_market_strategist(&state, &outlook, &config).await
-            } else {
-                *state.market_strategist_view.write().await = None;
-                None
-            };
+
+            // Daily views must go through AI every time. If the provider is
+            // unavailable, keep the deterministic plan and label it explicitly.
+            let strategist = crate::api::refresh_market_strategist(&state, &outlook, &config).await;
             outlook.strategist = strategist;
 
-            if !config.market_view_telegram_enabled {
-                if daily_due {
-                    last_daily_plan_date = Some(today);
-                }
-                continue;
-            }
-
-            let key = outlook_key(&outlook);
-            let cooldown = Duration::minutes(config.market_view_cooldown_minutes.max(15));
-            let cooldown_elapsed = match last_sent {
-                None => true,
-                Some(sent) => now - sent >= cooldown,
-            };
-            let should_send =
-                daily_due || (last_key.as_deref() != Some(key.as_str()) && cooldown_elapsed);
-            if !should_send {
-                continue;
-            }
-
             let telegram = state.telegram.read().await.clone();
-            match telegram.send_market_view(&outlook).await {
+            let result = match outlook.primary.as_ref() {
+                Some(primary) if primary.valid && primary.confidence >= MIN_DAILY_CONFIDENCE => {
+                    telegram.send_daily_view(&outlook, slot).await
+                }
+                _ => {
+                    let reason = no_plan_reason(&outlook);
+                    telegram.send_daily_view_no_plan(slot, &reason).await
+                }
+            };
+
+            match result {
                 Ok(msg_id) => {
+                    let key = daily_plan_key(vietnam_now, slot);
+                    {
+                        let mut sent = state.daily_view_sent.write().await;
+                        sent.insert(key, now);
+                        prune_daily_view_sent(&mut sent, now);
+                    }
+                    if let Err(err) = persist_state(&state).await {
+                        warn!("⚠️ [Market View] Không lưu được slot đã gửi: {}", err);
+                    }
                     info!(
-                        "🧭 [Market View] {} · H1 {} · state {} · msg_id={}",
-                        if daily_due { "DAILY PLAN" } else { "H1 change" },
-                        h1_timestamp,
+                        "🧭 [Market View] DAILY {:02}:00 VN · state {} · confidence {}% · ai={} · msg_id={}",
+                        slot,
                         outlook.bot_state.as_str(),
+                        outlook
+                            .primary
+                            .as_ref()
+                            .map(|primary| primary.confidence)
+                            .unwrap_or(0),
+                        outlook.strategist.is_some(),
                         msg_id
                     );
-                    if daily_due {
-                        last_daily_plan_date = Some(today);
-                    }
-                    last_key = Some(key);
-                    last_sent = Some(now);
                 }
-                Err(err) => warn!("⚠️ [Market View] Không gửi được Telegram: {}", err),
+                Err(err) => warn!(
+                    "⚠️ [Market View] Không gửi được Daily View {:02}:00: {}",
+                    slot, err
+                ),
             }
         }
     });
-}
-
-fn outlook_key(outlook: &MarketOutlook) -> String {
-    let primary = outlook
-        .primary
-        .as_ref()
-        .map(|primary| {
-            format!(
-                "{}:{:.2}:{:.2}",
-                primary.scenario_id, primary.zone_low, primary.zone_high
-            )
-        })
-        .unwrap_or_default();
-    let alternative = outlook
-        .alternative
-        .as_ref()
-        .map(|alternative| alternative.invalidation.clone())
-        .unwrap_or_default();
-    let strategist = outlook
-        .strategist
-        .as_ref()
-        .map(|view| {
-            format!(
-                "{}:{}:{}",
-                view.primary_scenario_id.as_deref().unwrap_or(""),
-                view.primary_action.as_deref().unwrap_or(""),
-                view.market_view
-            )
-        })
-        .unwrap_or_default();
-    format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}",
-        outlook.bot_state.as_str(),
-        outlook.structure,
-        primary,
-        alternative,
-        outlook.no_trade_reason.clone().unwrap_or_default(),
-        outlook.d1_bias,
-        outlook.h4_bias,
-        strategist
-    )
 }
 
 #[cfg(test)]
@@ -167,23 +150,64 @@ mod tests {
     use chrono::TimeZone;
 
     fn vn_at(y: i32, m: u32, d: u32, hour: u32, minute: u32) -> DateTime<Utc> {
-        // The helper expects Vietnam local time expressed in a UTC-shaped value.
         Utc.with_ymd_and_hms(y, m, d, hour, minute, 0)
             .single()
             .expect("valid Vietnam local time")
     }
 
     #[test]
-    fn daily_plan_is_due_at_or_after_13_vn_on_weekdays() {
-        let monday = vn_at(2026, 11, 16, 13, 0);
-        assert!(daily_plan_due(monday, None));
-        assert!(!daily_plan_due(vn_at(2026, 11, 16, 12, 59), None));
-        assert!(!daily_plan_due(monday, Some(monday.date_naive())));
+    fn daily_slot_is_the_latest_due_slot() {
+        assert_eq!(
+            daily_plan_slot(vn_at(2026, 11, 16, 6, 59), &HashMap::new()),
+            None
+        );
+        assert_eq!(
+            daily_plan_slot(vn_at(2026, 11, 16, 7, 0), &HashMap::new()),
+            Some(7)
+        );
+        assert_eq!(
+            daily_plan_slot(vn_at(2026, 11, 16, 13, 0), &HashMap::new()),
+            Some(13)
+        );
+        assert_eq!(
+            daily_plan_slot(vn_at(2026, 11, 16, 19, 0), &HashMap::new()),
+            Some(19)
+        );
+        assert_eq!(
+            daily_plan_slot(vn_at(2026, 11, 16, 23, 0), &HashMap::new()),
+            Some(19)
+        );
     }
 
     #[test]
-    fn daily_plan_is_not_due_on_weekends() {
-        assert!(!daily_plan_due(vn_at(2026, 11, 14, 13, 0), None)); // Saturday
-        assert!(!daily_plan_due(vn_at(2026, 11, 15, 13, 0), None)); // Sunday
+    fn sent_slot_is_not_sent_again() {
+        let now = vn_at(2026, 11, 16, 13, 5);
+        let mut sent = HashMap::new();
+        sent.insert("2026-11-16:13".to_string(), now);
+        assert_eq!(daily_plan_slot(now, &sent), None);
+        assert_eq!(daily_plan_slot(vn_at(2026, 11, 16, 19, 1), &sent), Some(19));
+    }
+
+    #[test]
+    fn weekends_have_no_daily_slot() {
+        assert_eq!(
+            daily_plan_slot(vn_at(2026, 11, 14, 13, 0), &HashMap::new()),
+            None
+        );
+        assert_eq!(
+            daily_plan_slot(vn_at(2026, 11, 15, 19, 0), &HashMap::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn prune_removes_old_slots() {
+        let now = vn_at(2026, 11, 16, 13, 0);
+        let mut sent = HashMap::new();
+        sent.insert("2026-11-01:07".to_string(), now - Duration::days(15));
+        sent.insert("2026-11-16:07".to_string(), now - Duration::hours(6));
+        prune_daily_view_sent(&mut sent, now);
+        assert!(!sent.contains_key("2026-11-01:07"));
+        assert!(sent.contains_key("2026-11-16:07"));
     }
 }

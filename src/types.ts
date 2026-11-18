@@ -334,6 +334,8 @@ export interface OutlookScenario {
   role: string;
   scenario_id: string;
   action: 'WATCH_SELL' | 'WATCH_BUY' | 'STAND_ASIDE' | string;
+  /** Scenario passed level ordering, R:R and risk validation. */
+  valid: boolean;
   zone_low: number;
   zone_high: number;
   trigger: string;

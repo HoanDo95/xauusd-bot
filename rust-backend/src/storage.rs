@@ -26,6 +26,9 @@ pub struct PersistentState {
     /// Backstop cooldown theo vùng trigger (scenario + direction + zone bucket).
     #[serde(default)]
     pub action_watch_last_sent: HashMap<String, DateTime<Utc>>,
+    /// Các slot Daily View đã gửi, key `YYYY-MM-DD:HH` theo giờ Việt Nam.
+    #[serde(default)]
+    pub daily_view_sent: HashMap<String, DateTime<Utc>>,
 }
 
 /// Bộ lưu trữ JSON nguyên tử (atomic write) cho server chạy 24/7.
