@@ -14,7 +14,7 @@
 use chrono::{DateTime, Days, FixedOffset, NaiveDate, SecondsFormat, Timelike, Utc};
 use gold_signal_bot::analyzer::GoldMarketAnalyzer;
 use gold_signal_bot::macro_flow::{MacroFlowScorecard, MacroFlowSnapshot};
-use gold_signal_bot::market_context::build_market_context;
+use gold_signal_bot::market_context::{build_market_context, htf_allows_signal};
 use gold_signal_bot::models::{BotConfig, Candle, MacroBias, SignalType, Timeframe};
 use gold_signal_bot::scenarios::{build_scenarios, scenario_triggered, Scenario, ScenarioResponse};
 use serde::Serialize;
@@ -1508,6 +1508,7 @@ struct Funnel {
     setups_evaluated: usize,
     primary_valid: usize,
     primary_skipped_counter: usize,
+    htf_filter_skipped: usize,
     buy_rsi_h1_skipped: usize,
     trigger_found: usize,
     trigger_confirmation_skipped: usize,
@@ -1528,6 +1529,7 @@ struct VariantConfig {
     description: String,
     anti_chase_filter_enabled: bool,
     aligned_only: bool,
+    htf_filters: bool,
     buy_rsi_h1_guard: bool,
     bearish_rejection_enabled: bool,
     htf_levels_enabled: bool,
@@ -1917,6 +1919,12 @@ fn write_funnel_markdown(output: &mut String, funnel: &Funnel, trigger_wait_bars
     .expect("write to string");
     writeln!(
         output,
+        "| PRIMARY skipped by HTF H4/D1 filter | {} |",
+        funnel.htf_filter_skipped
+    )
+    .expect("write to string");
+    writeln!(
+        output,
         "| BUY skipped by RSI H1 < 30 | {} |",
         funnel.buy_rsi_h1_skipped
     )
@@ -2241,6 +2249,7 @@ fn print_summary(report: &Report) {
 struct RunOptions {
     anti_chase_filter_enabled: bool,
     aligned_only: bool,
+    htf_filters: bool,
     buy_rsi_h1_guard: bool,
     bearish_rejection_enabled: bool,
     htf_levels_enabled: bool,
@@ -2331,6 +2340,14 @@ fn run_variant(
             continue;
         };
         funnel.primary_valid += 1;
+
+        if options.htf_filters {
+            let (allowed, _reason) = htf_allows_signal(side.as_str(), &context, true, true);
+            if !allowed {
+                funnel.htf_filter_skipped += 1;
+                continue;
+            }
+        }
 
         let rsi_h1 = context.rsi_h1.as_ref().and_then(|snapshot| snapshot.value);
         if options.buy_rsi_h1_guard
@@ -2651,6 +2668,7 @@ async fn run() -> Result<()> {
             RunOptions {
                 anti_chase_filter_enabled: anti_chase,
                 aligned_only,
+                htf_filters: false,
                 buy_rsi_h1_guard,
                 bearish_rejection_enabled,
                 htf_levels_enabled,
@@ -2669,6 +2687,7 @@ async fn run() -> Result<()> {
                     description: description.to_string(),
                     anti_chase_filter_enabled: anti_chase,
                     aligned_only,
+                    htf_filters: false,
                     buy_rsi_h1_guard,
                     bearish_rejection_enabled,
                     htf_levels_enabled,
@@ -2696,6 +2715,7 @@ async fn run() -> Result<()> {
         RunOptions {
             anti_chase_filter_enabled: true,
             aligned_only: false,
+            htf_filters: false,
             buy_rsi_h1_guard: true,
             bearish_rejection_enabled: false,
             htf_levels_enabled: true,
@@ -2716,6 +2736,7 @@ async fn run() -> Result<()> {
                         .to_string(),
                 anti_chase_filter_enabled: true,
                 aligned_only: false,
+                htf_filters: false,
                 buy_rsi_h1_guard: true,
                 bearish_rejection_enabled: false,
                 htf_levels_enabled: true,
@@ -2742,6 +2763,7 @@ async fn run() -> Result<()> {
         RunOptions {
             anti_chase_filter_enabled: true,
             aligned_only: false,
+            htf_filters: false,
             buy_rsi_h1_guard: true,
             bearish_rejection_enabled: false,
             htf_levels_enabled: true,
@@ -2762,6 +2784,7 @@ async fn run() -> Result<()> {
                         .to_string(),
                 anti_chase_filter_enabled: true,
                 aligned_only: false,
+                htf_filters: false,
                 buy_rsi_h1_guard: true,
                 bearish_rejection_enabled: false,
                 htf_levels_enabled: true,
@@ -2777,6 +2800,53 @@ async fn run() -> Result<()> {
         },
     );
 
+    println!("Running variant quantum_v3_htf...");
+    let quantum_v3_htf = run_variant(
+        &m15,
+        &h1_all,
+        &h4_all,
+        &d1_all,
+        start_idx,
+        end_idx,
+        RunOptions {
+            anti_chase_filter_enabled: true,
+            aligned_only: false,
+            htf_filters: true,
+            buy_rsi_h1_guard: true,
+            bearish_rejection_enabled: false,
+            htf_levels_enabled: true,
+            structural_sl_atr_cap: 1.0,
+            quantum_weighted_score_enabled: true,
+            quantum_trigger_confirmation_enabled: true,
+            quantum_volume_confirm_ratio: 1.2,
+            cost_r: args.cost_r,
+        },
+    );
+    variants.insert(
+        "quantum_v3_htf".to_string(),
+        VariantReport {
+            config: VariantConfig {
+                name: "quantum_v3_htf".to_string(),
+                description: "quantum_v3 + production HTF H4/D1 filters (no counter-HTF entries)."
+                    .to_string(),
+                anti_chase_filter_enabled: true,
+                aligned_only: false,
+                htf_filters: true,
+                buy_rsi_h1_guard: true,
+                bearish_rejection_enabled: false,
+                htf_levels_enabled: true,
+                structural_sl_atr_cap: 1.0,
+                quantum_weighted_score_enabled: true,
+                quantum_trigger_confirmation_enabled: true,
+                quantum_volume_confirm_ratio: 1.2,
+            },
+            funnel: quantum_v3_htf.funnel,
+            overall: quantum_v3_htf.overall,
+            breakdowns: quantum_v3_htf.breakdowns,
+            trades: quantum_v3_htf.trades,
+        },
+    );
+
     let comparison: Vec<ComparisonRow> = [
         "legacy",
         "htf_only",
@@ -2784,6 +2854,7 @@ async fn run() -> Result<()> {
         "current",
         "quantum_v2",
         "quantum_v3",
+        "quantum_v3_htf",
         "anti_chase_off",
         "aligned_only",
         "aligned_only_no_anti_chase",
