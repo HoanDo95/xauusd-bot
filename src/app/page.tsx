@@ -646,9 +646,6 @@ export default function DashboardPage() {
           }
         />
 
-        {/* Advisory news-impact/reaction journal (no signal effect) */}
-        <NewsImpactCard data={newsImpact} />
-
         {/* KPI, Sniper Quota & Free Live Feed Bar */}
         <MetricCards
           signals={signals}
@@ -668,15 +665,11 @@ export default function DashboardPage() {
         {/* Tab 1: Live Trading Desk & Candlestick Monitor */}
         {currentTab === 'monitor' && (
           <div className="flex flex-col gap-6">
-            {/* Always-on H1 Market View — structure + primary/alternative zones */}
+            {/* Compact discretionary plan + verdict + scanner preview */}
             <TradePlanCard data={marketView} />
 
-            <MarketViewCard data={marketView} onRefreshStrategist={handleRefreshStrategist} />
-
-            {/* Top-level "Should I enter now?" verdict (read-only, no quota) */}
             <ActionCard data={actionView} aiDecision={actionView?.aiDecision ?? aiDecision} />
 
-            {/* Live setup preview + Start/Stop scanner (read-only, quota-free) */}
             <LiveSetupCard
               config={config}
               liveView={liveView}
@@ -690,38 +683,44 @@ export default function DashboardPage() {
               }}
             />
 
-            {/* Read-only macro/flow context (FRED/Yahoo/CFTC) */}
-            <MacroFlowCard data={macroFlow} enabled={config.macro_flow_enabled ?? true} />
+            {/* Advanced reference panels stay collapsed by default to keep the desk clean. */}
+            <details className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
+              <summary className="cursor-pointer select-none text-xs font-bold uppercase tracking-wider text-neutral-300">
+                ⚙️ Advanced — Scenario / Macro / Divergence / News / H4 / Simulation
+              </summary>
+              <div className="flex flex-col gap-6 pt-4">
+                <MarketViewCard data={marketView} onRefreshStrategist={handleRefreshStrategist} />
 
-            {/* Read-only D1/H4/H1 "view toàn cảnh" context */}
-            <MacroContextCard context={marketContext} volumeDelta={volumeDelta} />
+                <MacroFlowCard data={macroFlow} enabled={config.macro_flow_enabled ?? true} />
 
-            {/* 4 read-only reference scenarios — never an entry confirmation */}
-            <ScenarioCard
-              data={scenarios}
-              onRefresh={() => {
-                void loadScenarios();
-              }}
-              onSendTelegram={handleSendScenariosTelegram}
-            />
+                <MacroContextCard context={marketContext} volumeDelta={volumeDelta} />
 
-            {/* Standalone RSI divergence alerts — advisory, never an entry */}
-            <DivergenceAlertsCard
-              context={marketContext}
-              enabled={divergenceAlerts.enabled}
-              timeframes={divergenceAlerts.timeframes}
-              alerts={divergenceAlerts.alerts}
-            />
+                <ScenarioCard
+                  data={scenarios}
+                  onRefresh={() => {
+                    void loadScenarios();
+                  }}
+                  onSendTelegram={handleSendScenariosTelegram}
+                />
 
-            {/* Closed H4 candles — context only, never an entry trigger */}
-            <HtfChartCard />
+                <DivergenceAlertsCard
+                  context={marketContext}
+                  enabled={divergenceAlerts.enabled}
+                  timeframes={divergenceAlerts.timeframes}
+                  alerts={divergenceAlerts.alerts}
+                />
 
-            {/* Manual Simulation Controls (explicitly quota-free) */}
-            <SimulateToolbar
-              onSimulate={handleSimulate}
-              isLoading={isLoading}
-              statusMessage={statusMessage}
-            />
+                <HtfChartCard />
+
+                <NewsImpactCard data={newsImpact} />
+
+                <SimulateToolbar
+                  onSimulate={handleSimulate}
+                  isLoading={isLoading}
+                  statusMessage={statusMessage}
+                />
+              </div>
+            </details>
 
             {/* Split View: Candlestick Chart (2/3) + Real-time Signal Feed (1/3) */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
