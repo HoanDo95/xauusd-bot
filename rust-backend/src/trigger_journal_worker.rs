@@ -48,6 +48,19 @@ pub fn spawn_trigger_journal_worker(state: AppState) {
                         event.bars_to_outcome = Some(0);
                         event.reason =
                             Some("trigger candle not found in candle history".to_string());
+                        event.decision_id = trigger.decision_id.clone();
+                        event.strategy_version = trigger.strategy_version.clone();
+                        event.config_hash = trigger.config_hash.clone();
+                        event.snapshot_hash = trigger.snapshot_hash.clone();
+                        event.gate = trigger.gate.clone();
+                        event.gate_subreason = trigger.gate_subreason.clone();
+                        event.score = trigger.score;
+                        event.trigger_to_gate_ms = trigger.trigger_to_gate_ms;
+                        event.drift_at_gate = trigger.drift_at_gate;
+                        event.distance_ema_atr = trigger.distance_ema_atr;
+                        event.shadow = Some(trigger.shadow);
+                        event.shadow_outcome = Some("DATA_GAP".to_string());
+                        event.shadow_r = Some(0.0);
                         event
                     }
                     OutcomeEvaluation::Complete(outcome) => {
@@ -65,6 +78,19 @@ pub fn spawn_trigger_journal_worker(state: AppState) {
                         event.mae_8_r = outcome.mae_8_r;
                         event.mfe_24_r = outcome.mfe_24_r;
                         event.mae_24_r = outcome.mae_24_r;
+                        event.decision_id = trigger.decision_id.clone();
+                        event.strategy_version = trigger.strategy_version.clone();
+                        event.config_hash = trigger.config_hash.clone();
+                        event.snapshot_hash = trigger.snapshot_hash.clone();
+                        event.gate = trigger.gate.clone();
+                        event.gate_subreason = trigger.gate_subreason.clone();
+                        event.score = trigger.score;
+                        event.trigger_to_gate_ms = trigger.trigger_to_gate_ms;
+                        event.drift_at_gate = trigger.drift_at_gate;
+                        event.distance_ema_atr = trigger.distance_ema_atr;
+                        event.shadow = Some(trigger.shadow);
+                        event.shadow_outcome = event.outcome.clone();
+                        event.shadow_r = event.r_multiple;
                         event
                     }
                 };

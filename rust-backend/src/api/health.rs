@@ -1,4 +1,5 @@
 use super::{price_source_label, AppState};
+use crate::decision_trace::{config_hash, STRATEGY_VERSION};
 use crate::models::Timeframe;
 use crate::storage::PersistentStore;
 use axum::{extract::State, response::IntoResponse, Json};
@@ -91,6 +92,8 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "engine": "Tokio 1.40 / Axum 0.7 High Performance",
         "asset": "XAU/USD",
         "version": "1.3.0",
+        "strategyVersion": STRATEGY_VERSION,
+        "configHash": config_hash(&config),
         "symbol": config.symbol,
         "timeframe": config.timeframe,
         "isActive": config.is_active,

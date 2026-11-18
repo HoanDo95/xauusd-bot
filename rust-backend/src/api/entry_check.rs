@@ -12,6 +12,7 @@ use crate::ai_decision::{
     ai_decision_enabled, relaxed_candidate_config, review_market_decision, AiDecision,
 };
 use crate::analyzer::GoldMarketAnalyzer;
+use crate::macro_flow::align_signal_with_macro_flow;
 use crate::market_panorama::{build_market_panorama, MarketPanorama};
 use crate::market_strategist::StrategistView;
 use crate::models::{BotConfig, Signal, SignalType};
@@ -350,7 +351,7 @@ pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult
     // unavailable. This is the primary product of `/start-entry`.
     let panorama = Some(build_market_panorama(state).await);
 
-    let decision = if ai_decision_enabled(&config) {
+    let mut decision = if ai_decision_enabled(&config) {
         review_market_decision(
             candidate.as_ref(),
             context.as_ref(),
@@ -389,6 +390,38 @@ pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult
             model: "disabled".to_string(),
         }
     };
+
+    // Keep one macro snapshot for both the AI decision and the panorama.
+    // If the AI omitted the alignment, derive it from the PRIMARY scenario
+    // direction and the same macro snapshot used by the panorama.
+    let needs_macro_alignment = decision
+        .macro_flow_alignment
+        .as_deref()
+        .map(|value| value.trim().is_empty() || value.eq_ignore_ascii_case("UNKNOWN"))
+        .unwrap_or(true);
+    if needs_macro_alignment {
+        if let Some(macro_flow) = macro_flow.as_ref() {
+            let primary_bias = scenarios
+                .scenarios
+                .iter()
+                .find(|scenario| scenario.role.eq_ignore_ascii_case("PRIMARY"))
+                .map(|scenario| scenario.bias.trim().to_uppercase());
+            if let Some(bias) = primary_bias {
+                let side = match bias.as_str() {
+                    "BEARISH" => Some("SELL"),
+                    "BULLISH" => Some("BUY"),
+                    _ => None,
+                };
+                if let Some(side) = side {
+                    let alignment = align_signal_with_macro_flow(side, Some(macro_flow));
+                    decision.macro_flow_alignment = Some(alignment.alignment.clone());
+                    if decision.macro_flow_note.is_none() {
+                        decision.macro_flow_note = Some(alignment.note);
+                    }
+                }
+            }
+        }
+    }
 
     // Deliberately do NOT write `state.last_ai_decision`: this is a manual
     // market view, not a scanner signal. Writing it would make Action View

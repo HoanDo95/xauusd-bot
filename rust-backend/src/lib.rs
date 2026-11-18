@@ -4,6 +4,8 @@ pub mod action_alerts;
 pub mod ai_decision;
 pub mod analyzer;
 pub mod api;
+pub mod decision_gates;
+pub mod decision_trace;
 pub mod divergence_alerts;
 pub mod exness_feed;
 pub mod macro_flow;

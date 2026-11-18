@@ -25,8 +25,9 @@ use std::path::{Path, PathBuf};
 use tracing::warn;
 
 pub const TRIGGER_JOURNAL_SCHEMA: u8 = 1;
-/// Forward window for the hypothetical trigger outcome (24 M15 bars = 6h).
-pub const TRIGGER_OUTCOME_MAX_BARS: usize = 24;
+/// Forward window for the hypothetical trigger outcome (96 M15 bars = 24h),
+/// matching the backtest simulator for shadow/A-B comparability.
+pub const TRIGGER_OUTCOME_MAX_BARS: usize = 96;
 
 /// One journal line. Optional fields are omitted from JSON when `None` to keep
 /// the file compact; `#[serde(default)]` keeps old/new lines compatible.
@@ -103,6 +104,35 @@ pub struct TriggerEvent {
     pub confirmation_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confirmation_type: Option<String>,
+    /// Decision identity/versioning for replay and governance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_hash: Option<String>,
+    /// Gate that blocked/allowed the decision, with a specific sub-reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate_subreason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger_to_gate_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drift_at_gate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance_ema_atr: Option<f64>,
+    /// Shadow research: blocked decision tracked with the same exit simulator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_outcome: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_r: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_action: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -256,7 +286,7 @@ impl TriggerJournal {
 }
 
 /// A triggered setup that still needs a hypothetical outcome.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct OpenTrigger {
     pub setup_id: String,
     pub signal_id: Option<String>,
@@ -267,6 +297,19 @@ pub struct OpenTrigger {
     pub take_profit_1: f64,
     pub trigger_candle_timestamp: i64,
     pub triggered_at: DateTime<Utc>,
+    pub decision_id: Option<String>,
+    pub strategy_version: Option<String>,
+    pub config_hash: Option<String>,
+    pub snapshot_hash: Option<String>,
+    pub gate: Option<String>,
+    pub gate_subreason: Option<String>,
+    pub score: Option<u8>,
+    pub trigger_to_gate_ms: Option<i64>,
+    pub drift_at_gate: Option<f64>,
+    pub distance_ema_atr: Option<f64>,
+    /// True when the trigger was blocked by confirmation/AI/risk and is tracked
+    /// as research rather than a live signal.
+    pub shadow: bool,
 }
 
 impl OpenTrigger {
@@ -293,6 +336,17 @@ impl OpenTrigger {
             take_profit_1: event.take_profit_1?,
             trigger_candle_timestamp: event.candle_timestamp?,
             triggered_at: event.created_at.unwrap_or_else(Utc::now),
+            decision_id: event.decision_id.clone(),
+            strategy_version: event.strategy_version.clone(),
+            config_hash: event.config_hash.clone(),
+            snapshot_hash: event.snapshot_hash.clone(),
+            gate: event.gate.clone(),
+            gate_subreason: event.gate_subreason.clone(),
+            score: event.score,
+            trigger_to_gate_ms: event.trigger_to_gate_ms,
+            drift_at_gate: event.drift_at_gate,
+            distance_ema_atr: event.distance_ema_atr,
+            shadow: event.confirmation_pass != Some(true),
         })
     }
 }
@@ -306,6 +360,11 @@ pub fn open_triggers_from_events(events: &[TriggerEvent]) -> Vec<OpenTrigger> {
             }
         }
     }
+    let ai_blocked: HashSet<String> = events
+        .iter()
+        .filter(|event| event.event == "ai_review" && event.ai_blocked == Some(true))
+        .filter_map(|event| event.setup_id.clone())
+        .collect();
     let mut seen = HashSet::new();
     let mut open = Vec::new();
     for event in events {
@@ -318,7 +377,10 @@ pub fn open_triggers_from_events(events: &[TriggerEvent]) -> Vec<OpenTrigger> {
         if completed.contains(setup_id) || !seen.insert(setup_id.clone()) {
             continue;
         }
-        if let Some(trigger) = OpenTrigger::from_event(event) {
+        if let Some(mut trigger) = OpenTrigger::from_event(event) {
+            if ai_blocked.contains(setup_id) {
+                trigger.shadow = true;
+            }
             open.push(trigger);
         }
     }
@@ -905,6 +967,57 @@ mod tests {
     }
 
     #[test]
+    fn telemetry_fields_roundtrip_and_legacy_defaults() {
+        let mut event = TriggerEvent::new("decision_trace");
+        event.decision_id = Some("D1".to_string());
+        event.strategy_version = Some("2026-11-19.1".to_string());
+        event.config_hash = Some("cfg".to_string());
+        event.snapshot_hash = Some("snap".to_string());
+        event.gate = Some("confirmation".to_string());
+        event.gate_subreason = Some("volume".to_string());
+        event.trigger_to_gate_ms = Some(1200);
+        event.drift_at_gate = Some(0.4);
+        event.score = Some(75);
+        event.distance_ema_atr = Some(1.2);
+        event.shadow = Some(true);
+        event.shadow_outcome = Some("TP1".to_string());
+        event.shadow_r = Some(2.0);
+
+        let json = serde_json::to_string(&event).expect("serialize telemetry");
+        let decoded: TriggerEvent = serde_json::from_str(&json).expect("deserialize telemetry");
+        assert_eq!(decoded.decision_id.as_deref(), Some("D1"));
+        assert_eq!(decoded.gate.as_deref(), Some("confirmation"));
+        assert_eq!(decoded.trigger_to_gate_ms, Some(1200));
+        assert_eq!(decoded.shadow_r, Some(2.0));
+
+        let legacy: TriggerEvent =
+            serde_json::from_str(r#"{"schema":1,"event":"triggered"}"#).expect("legacy event");
+        assert!(legacy.decision_id.is_none());
+        assert!(legacy.shadow.is_none());
+    }
+
+    #[test]
+    fn blocked_triggers_are_marked_as_shadow() {
+        let path = temp_path();
+        let journal = TriggerJournal::new(&path);
+        let mut confirmation_blocked = triggered_event("S1", "BEARISH", 100.0, 105.0, 90.0);
+        confirmation_blocked.confirmation_pass = Some(false);
+        journal.append(&confirmation_blocked).expect("append");
+        journal
+            .append(&triggered_event("S2", "BEARISH", 100.0, 105.0, 90.0))
+            .expect("append");
+        let mut ai_review = TriggerEvent::new("ai_review");
+        ai_review.setup_id = Some("S2".to_string());
+        ai_review.ai_blocked = Some(true);
+        journal.append(&ai_review).expect("append");
+
+        let open = journal.open_triggers();
+        assert_eq!(open.len(), 2);
+        assert!(open.iter().all(|trigger| trigger.shadow));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn open_triggers_excludes_completed_setups() {
         let path = temp_path();
         let journal = TriggerJournal::new(&path);
@@ -934,6 +1047,7 @@ mod tests {
             take_profit_1: 90.0,
             trigger_candle_timestamp: 0,
             triggered_at: Utc::now(),
+            ..Default::default()
         };
         let candles = vec![
             candle(0, 101.0, 99.0, 100.0),
@@ -959,6 +1073,7 @@ mod tests {
             take_profit_1: 90.0,
             trigger_candle_timestamp: 0,
             triggered_at: Utc::now(),
+            ..Default::default()
         };
         let candles = vec![
             candle(0, 101.0, 99.0, 100.0),
@@ -982,6 +1097,7 @@ mod tests {
             take_profit_1: 110.0,
             trigger_candle_timestamp: 0,
             triggered_at: Utc::now(),
+            ..Default::default()
         };
         let candles = vec![
             candle(0, 101.0, 99.0, 100.0),
@@ -1005,6 +1121,7 @@ mod tests {
             take_profit_1: 80.0,
             trigger_candle_timestamp: 0,
             triggered_at: Utc::now(),
+            ..Default::default()
         };
         let mut candles = vec![candle(0, 101.0, 99.0, 100.0)];
         for index in 1..=24 {
@@ -1028,6 +1145,7 @@ mod tests {
             take_profit_1: 90.0,
             trigger_candle_timestamp: 999,
             triggered_at: Utc::now(),
+            ..Default::default()
         };
         let candles = vec![candle(0, 101.0, 99.0, 100.0)];
         assert!(matches!(

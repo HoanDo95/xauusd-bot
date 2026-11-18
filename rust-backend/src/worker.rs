@@ -5,6 +5,9 @@ use crate::ai_decision::{
 };
 use crate::analyzer::GoldMarketAnalyzer;
 use crate::api::{attach_macro_flow_alignment, persist_state, AppState};
+use crate::decision_gates::confirmed_signal_with_gates;
+use crate::decision_trace::{config_hash, decision_id, snapshot_hash, STRATEGY_VERSION};
+use crate::macro_flow::MacroFlowSnapshot;
 use crate::market_context::{
     build_market_context, htf_allows_signal, shift_candles_prices, MarketContext,
 };
@@ -14,15 +17,14 @@ use crate::market_feed::{
 };
 use crate::market_view::{score_market, score_scenario, MarketScore};
 use crate::models::{BotConfig, Candle, Signal, Timeframe};
+use crate::news_filter::EconomicEvent;
 use crate::news_filter::ImpactLevel;
 use crate::risk_guardrails::{
     buy_rsi_h1_block_reason, counter_macro_block_reason, evaluate_risk_guardrails,
 };
 use crate::risk_manager::PositionSizer;
 use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot};
-use crate::scenario_signal::{
-    best_confirmed_scenario, confirmed_signal_from_scenario, rsi_extreme_blocks_confirmed,
-};
+use crate::scenario_signal::best_confirmed_scenario;
 use crate::scenarios::WATCH_SETUP_MAX_BARS;
 use crate::scenarios::{
     anti_chase_blocks_breakout, build_scenarios, Scenario, ScenarioResponse, WatchedSetup,
@@ -32,9 +34,7 @@ use crate::session_alerts::evaluate_and_dispatch;
 use crate::signal_review::{review_blocks_signal, review_signal};
 use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
 use crate::storage::PersistentStore;
-use crate::tracker::{
-    evaluate_active_signals, pending_confirmation, ConfirmationType, PendingConfirmation,
-};
+use crate::tracker::{evaluate_active_signals, PendingConfirmation};
 use crate::trigger_journal::{record, regime_label, TriggerEvent};
 use crate::volume_delta::{compute_delta, delta_allows_signal};
 use chrono::{DateTime, Utc};
@@ -254,75 +254,6 @@ struct ConfirmedCandidate {
     setup_id: String,
 }
 
-/// Run the deterministic confirmation gates for one scenario and build the
-/// filled MARKET signal. Shared by the stored active setup and the normal
-/// pre-close scenario path. Returns `(signal, reason)` so the trigger journal
-/// can record rejected triggers too.
-fn confirmed_signal_with_gates(
-    scenario: &Scenario,
-    config: &BotConfig,
-    candles: &[Candle],
-    live_price: Option<f64>,
-    rsi_value: Option<f64>,
-    now: DateTime<Utc>,
-) -> (Option<Signal>, String, Option<ConfirmationType>) {
-    if rsi_extreme_blocks_confirmed(
-        &scenario.bias,
-        rsi_value,
-        config.rsi_oversold,
-        config.rsi_overbought,
-    ) {
-        info!(
-            "⏳ [Confirmed Signal] {} bị chặn: RSI M15 {:.1} đã quá bán/quá mua — chờ hồi, không đuổi.",
-            scenario.id,
-            rsi_value.unwrap_or_default()
-        );
-        return (None, "rsi_extreme".to_string(), None);
-    }
-
-    let Some(mut signal) =
-        confirmed_signal_from_scenario(scenario, config, candles, live_price, now)
-    else {
-        info!(
-            "⏳ [Confirmed Signal] {} levels không hợp lệ hoặc giá đã đi quá xa entry — bỏ qua.",
-            scenario.id
-        );
-        return (None, "invalid_levels".to_string(), None);
-    };
-    let last_index = candles.len().saturating_sub(1);
-    let mut confirmation_type = None;
-    if config.quantum_trigger_confirmation_enabled {
-        match pending_confirmation(
-            &signal,
-            candles,
-            last_index,
-            config.quantum_volume_confirm_ratio,
-        ) {
-            Some(kind) => {
-                signal.management_note = Some(format!("M15 confirmation: {}", kind.as_str()));
-                confirmation_type = Some(kind);
-            }
-            None => {
-                info!(
-                    "⏳ [Confirmed Signal] {} trigger chưa xác nhận volume/pattern — chờ nến sau.",
-                    scenario.id
-                );
-                return (None, "confirmation_failed".to_string(), None);
-            }
-        }
-    }
-
-    info!(
-        "🚨 [Confirmed Signal] Scenario {} ({}) confidence {}% — entry {:.2} MARKET sau M15 close {:.2}.",
-        scenario.role,
-        scenario.id,
-        scenario.confidence,
-        signal.entry_price,
-        candles.last().map(|candle| candle.close).unwrap_or_default()
-    );
-    (Some(signal), "confirmed".to_string(), confirmation_type)
-}
-
 async fn clear_active_watch_setup(state: &AppState) {
     let had_setup = state.active_watch_setup.write().await.take().is_some();
     if had_setup {
@@ -358,6 +289,7 @@ fn single_scenario_response(
 fn record_trigger_event(
     state: &AppState,
     config: &BotConfig,
+    candles: &[Candle],
     setup_id: &str,
     scenario: &Scenario,
     signal: Option<&Signal>,
@@ -368,6 +300,8 @@ fn record_trigger_event(
     now: DateTime<Utc>,
     source: &str,
     context: Option<&MarketContext>,
+    macro_flow: Option<&MacroFlowSnapshot>,
+    news_events: &[EconomicEvent],
 ) {
     if !config.trigger_journal_enabled {
         return;
@@ -422,6 +356,44 @@ fn record_trigger_event(
         event.score_trigger = Some(score.trigger);
         event.score_macro = Some(score.macro_score);
     }
+
+    // Decision identity/versioning + gate telemetry.
+    let cfg_hash = config_hash(config);
+    let snap_hash = snapshot_hash(&cfg_hash, candles, context, macro_flow, news_events);
+    event.decision_id = Some(decision_id(now, &snap_hash));
+    event.strategy_version = Some(STRATEGY_VERSION.to_string());
+    event.config_hash = Some(cfg_hash);
+    event.snapshot_hash = Some(snap_hash);
+    let gate = match confirmation_reason {
+        "rsi_extreme" => "rsi_extreme",
+        "invalid_levels" => "levels",
+        "confirmation_failed" => "confirmation",
+        _ => "confirmation",
+    };
+    event.gate = Some(gate.to_string());
+    event.gate_subreason = Some(confirmation_reason.to_string());
+    let close_time = last_candle
+        .timestamp
+        .saturating_add(last_candle.timeframe.duration_millis());
+    event.trigger_to_gate_ms = Some((now.timestamp_millis() - close_time).max(0));
+    let entry = signal
+        .map(|signal| signal.entry_price)
+        .or(scenario.entry)
+        .or(scenario.trigger_price);
+    event.drift_at_gate = entry.map(|entry| {
+        let reference = signal
+            .and_then(|signal| signal.live_market_price)
+            .unwrap_or(last_candle.close);
+        (reference - entry).abs()
+    });
+    event.score = score.map(|score| score.total);
+    let ema50 = GoldMarketAnalyzer::calculate_ema(candles, 50);
+    let atr = context
+        .map(|context| context.h4.atr14)
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(1.0);
+    event.distance_ema_atr =
+        Some((((last_candle.close - ema50).abs() / atr) * 100.0).round() / 100.0);
     record(
         &state.trigger_journal,
         config.trigger_journal_enabled,
@@ -524,6 +496,7 @@ async fn build_confirmed_scenario_signal(
         context.rsi_m15 = Some(rsi);
     }
     let macro_flow = state.macro_flow.read().await.clone();
+    let news_events = state.news_filter.read().await.calendar_events.clone();
     let active_data_source = state.active_data_source.read().await.clone();
     let active_volume_source = state.active_volume_source.read().await.clone();
 
@@ -532,7 +505,7 @@ async fn build_confirmed_scenario_signal(
     let active_setup = state.active_watch_setup.read().await.clone();
     if let Some(setup) = active_setup {
         if setup.is_triggered(last_candle) {
-            let (signal, reason, confirmation_type) = confirmed_signal_with_gates(
+            let evaluation = confirmed_signal_with_gates(
                 &setup.scenario,
                 config,
                 candles,
@@ -540,12 +513,18 @@ async fn build_confirmed_scenario_signal(
                 rsi_value,
                 now,
             );
+            let (signal, reason, confirmation_type) = (
+                evaluation.signal,
+                evaluation.reason,
+                evaluation.confirmation_type,
+            );
             let setup_id = setup.effective_setup_id();
             let volume_ratio = crate::market_strategist::volume_surge_ratio(candles, 20);
             let score = score_scenario(&setup.scenario, context.as_ref(), volume_ratio);
             record_trigger_event(
                 state,
                 config,
+                candles,
                 &setup_id,
                 &setup.scenario,
                 signal.as_ref(),
@@ -556,6 +535,8 @@ async fn build_confirmed_scenario_signal(
                 now,
                 "watching_setup",
                 context.as_ref(),
+                macro_flow.as_ref(),
+                &news_events,
             );
             record_setup_closed_event(state, config, &setup, last_candle, now, "triggered");
             clear_active_watch_setup(state).await;
@@ -602,13 +583,19 @@ async fn build_confirmed_scenario_signal(
     );
     let scenario = best_confirmed_scenario(&scenarios, last_candle)?;
     let setup_id = format!("SETUP-{}-{}", last_candle.timestamp, scenario.id);
-    let (signal, reason, confirmation_type) =
+    let evaluation =
         confirmed_signal_with_gates(scenario, config, candles, live_price, rsi_value, now);
+    let (signal, reason, confirmation_type) = (
+        evaluation.signal,
+        evaluation.reason,
+        evaluation.confirmation_type,
+    );
     let volume_ratio = crate::market_strategist::volume_surge_ratio(candles, 20);
     let score = score_market(&scenarios, context.as_ref(), volume_ratio);
     record_trigger_event(
         state,
         config,
+        candles,
         &setup_id,
         scenario,
         signal.as_ref(),
@@ -619,6 +606,8 @@ async fn build_confirmed_scenario_signal(
         now,
         "scanner_confirmed",
         context.as_ref(),
+        macro_flow.as_ref(),
+        &news_events,
     );
     signal.map(|signal| ConfirmedCandidate {
         signal,

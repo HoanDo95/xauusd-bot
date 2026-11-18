@@ -621,7 +621,7 @@ export const ConfigPanel: React.FC<Props> = ({
                     className="accent-amber-500 w-4 h-4 rounded cursor-pointer mt-0.5"
                   />
                   <span className="text-[11px] text-neutral-300 leading-snug">
-                    Quantum score v2 (A/B)
+                    Weighted score v2 (A/B)
                     <span className="block text-[10px] text-neutral-500">
                       30/25/20/15/10 · mặc định tắt
                     </span>
@@ -648,7 +648,7 @@ export const ConfigPanel: React.FC<Props> = ({
                 </label>
                 <div className="flex flex-col gap-1">
                   <label className="text-[10px] font-semibold text-neutral-400">
-                    Quantum volume ratio
+                    Confirmation volume ratio
                   </label>
                   <input
                     type="number"

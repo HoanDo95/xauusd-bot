@@ -1050,8 +1050,8 @@ fn build_retest_levels(
                         ScenarioLevels {
                             entry,
                             stop_loss,
-                            take_profit_1: entry - risk * 2.0,
-                            take_profit_2: entry - risk * 3.0,
+                            take_profit_1: entry - (risk * 2.0 + 0.01),
+                            take_profit_2: entry - (risk * 3.0 + 0.01),
                             risk_reward: 2.0,
                         },
                     ));
@@ -1072,8 +1072,8 @@ fn build_retest_levels(
                         ScenarioLevels {
                             entry,
                             stop_loss,
-                            take_profit_1: entry + risk * 2.0,
-                            take_profit_2: entry + risk * 3.0,
+                            take_profit_1: entry + (risk * 2.0 + 0.01),
+                            take_profit_2: entry + (risk * 3.0 + 0.01),
                             risk_reward: 2.0,
                         },
                     ));

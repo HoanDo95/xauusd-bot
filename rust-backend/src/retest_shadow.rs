@@ -195,8 +195,8 @@ impl RetestWatch {
                     Some(RetestLevels {
                         entry,
                         stop_loss,
-                        take_profit_1: entry - risk * 2.0,
-                        take_profit_2: entry - risk * 3.0,
+                        take_profit_1: entry - (risk * 2.0 + 0.01),
+                        take_profit_2: entry - (risk * 3.0 + 0.01),
                         risk_reward: 2.0,
                     })
                 } else {
@@ -213,8 +213,8 @@ impl RetestWatch {
                     Some(RetestLevels {
                         entry,
                         stop_loss,
-                        take_profit_1: entry + risk * 2.0,
-                        take_profit_2: entry + risk * 3.0,
+                        take_profit_1: entry + (risk * 2.0 + 0.01),
+                        take_profit_2: entry + (risk * 3.0 + 0.01),
                         risk_reward: 2.0,
                     })
                 } else {
@@ -633,6 +633,25 @@ mod tests {
         assert!(watch
             .retest_levels(&candle(3805.0, 3808.0, 3799.0, 3798.0))
             .is_none());
+    }
+
+    #[test]
+    fn retest_tp1_keeps_min_rr_after_price_rounding() {
+        let bearish = watch("BEARISH", 3800.0, 3810.0);
+        let levels = bearish
+            .retest_levels(&candle(3799.0, 3801.0, 3790.0, 3797.0))
+            .expect("bearish retest");
+        let risk = (levels.entry - levels.stop_loss).abs();
+        let reward = (levels.entry - levels.take_profit_1).abs();
+        assert!(reward / risk >= 2.0);
+
+        let bullish = watch("BULLISH", 3800.0, 3790.0);
+        let levels = bullish
+            .retest_levels(&candle(3802.0, 3808.0, 3799.0, 3804.0))
+            .expect("bullish retest");
+        let risk = (levels.entry - levels.stop_loss).abs();
+        let reward = (levels.take_profit_1 - levels.entry).abs();
+        assert!(reward / risk >= 2.0);
     }
 
     #[test]

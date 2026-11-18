@@ -909,11 +909,11 @@ export interface BotConfig {
   early_entry_min_confidence?: number;
   /** Max distance from live price to trigger for early entry, in R (0 = off). Default 1.0. */
   early_entry_max_distance_r?: number;
-  /** Enable weighted confluence v2 (quantum 30/25/20/15/10). Default false until A/B. */
+  /** Enable weighted confluence v2 (30/25/20/15/10). Default false until A/B. */
   quantum_weighted_score_enabled?: boolean;
   /** Allow engulfing as a trigger pattern in addition to pinbar. Default false. */
   quantum_trigger_confirmation_enabled?: boolean;
-  /** Volume ratio used by the quantum confirmation score. Default 1.2. */
+  /** Volume ratio used by the trigger confirmation score. Default 1.2. */
   quantum_volume_confirm_ratio?: number;
   /** Block breakout/breakdown entries after an exhausted daily move. Default true. */
   anti_chase_filter_enabled?: boolean;
