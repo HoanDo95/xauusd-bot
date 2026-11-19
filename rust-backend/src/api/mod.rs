@@ -264,7 +264,7 @@ pub(crate) async fn evaluate_outcomes(state: &AppState) -> usize {
             &mut signals,
             &candles,
             PendingConfirmation {
-                enabled: config.quantum_trigger_confirmation_enabled,
+                enabled: config.trigger_confirmation_enabled,
                 volume_ratio: config.quantum_volume_confirm_ratio,
             },
         )

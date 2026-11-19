@@ -186,7 +186,7 @@ fn base_config() -> BotConfig {
         symbol: "XAU/USD".to_string(),
         min_risk_reward: 2.0,
         early_entry_max_distance_r: 10.0,
-        quantum_trigger_confirmation_enabled: false,
+        trigger_confirmation_enabled: false,
         htf_h4_filter_enabled: true,
         htf_d1_filter_enabled: true,
         counter_macro_filter_enabled: true,
@@ -205,7 +205,7 @@ fn signal_without_rsi_confirmation(
     let mut permissive = config.clone();
     permissive.rsi_oversold = 0.0;
     permissive.rsi_overbought = 100.0;
-    permissive.quantum_trigger_confirmation_enabled = false;
+    permissive.trigger_confirmation_enabled = false;
     confirmed_signal_with_gates(
         scenario,
         &permissive,
@@ -427,7 +427,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let confirmation = confirmed_signal_with_gates(
             &scenario,
             &BotConfig {
-                quantum_trigger_confirmation_enabled: true,
+                trigger_confirmation_enabled: true,
                 ..permissive.clone()
             },
             m15,

@@ -343,10 +343,10 @@ impl GoldMarketAnalyzer {
             .last()
             .map(|previous| Self::check_engulfing(previous, current_candle))
             .unwrap_or((false, false));
-        let bullish_trigger = is_bullish_pinbar
-            || (config.quantum_trigger_confirmation_enabled && is_bullish_engulfing);
-        let bearish_trigger = is_bearish_pinbar
-            || (config.quantum_trigger_confirmation_enabled && is_bearish_engulfing);
+        let bullish_trigger =
+            is_bullish_pinbar || (config.trigger_confirmation_enabled && is_bullish_engulfing);
+        let bearish_trigger =
+            is_bearish_pinbar || (config.trigger_confirmation_enabled && is_bearish_engulfing);
 
         // Biên độ chấp nhận kiểm tra lại vùng cản (Zone Retest Tolerance)
         let zone_touch_tolerance = 2.5; // Trong phạm vi 2.5$

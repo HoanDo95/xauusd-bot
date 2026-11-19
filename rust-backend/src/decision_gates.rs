@@ -92,7 +92,7 @@ pub fn confirmed_signal_with_gates(
 
     let last_index = candles.len().saturating_sub(1);
     let mut confirmation_type = None;
-    if config.quantum_trigger_confirmation_enabled {
+    if config.trigger_confirmation_enabled {
         match pending_confirmation_detail(
             &signal,
             candles,
@@ -262,7 +262,7 @@ mod tests {
             risk_percentage: 1.0,
             account_leverage: 100.0,
             min_risk_reward: 2.0,
-            quantum_trigger_confirmation_enabled: false,
+            trigger_confirmation_enabled: false,
             ..BotConfig::default()
         }
     }

@@ -360,10 +360,15 @@ pub struct BotConfig {
     /// Mặc định TẮT — chỉ bật sau A/B backtest.
     #[serde(default)]
     pub quantum_weighted_score_enabled: bool,
-    /// Bật trigger confirmation bằng engulfing (quantum). Mặc định TẮT.
-    #[serde(default)]
-    pub quantum_trigger_confirmation_enabled: bool,
-    /// Volume ratio cho quantum confirmation. Mặc định 1.2.
+    /// Bật trigger confirmation (volume + directional close/pinbar/engulfing/RSI cross).
+    /// Mặc định BẬT. Alias cũ `quantum_trigger_confirmation_enabled` được giữ để
+    /// đọc config legacy.
+    #[serde(
+        default = "default_true",
+        alias = "quantum_trigger_confirmation_enabled"
+    )]
+    pub trigger_confirmation_enabled: bool,
+    /// Volume ratio cho trigger confirmation. Mặc định 1.2.
     #[serde(default = "default_quantum_volume_confirm_ratio")]
     pub quantum_volume_confirm_ratio: f64,
     /// Bật bộ lọc khung giờ thanh khoản Âu-Mỹ 13:00-23:00 GMT+7
@@ -800,7 +805,7 @@ impl Default for BotConfig {
             structural_sl_atr_cap: default_structural_sl_atr_cap(),
             yahoo_futures_volume_enabled: true,
             quantum_weighted_score_enabled: false,
-            quantum_trigger_confirmation_enabled: false,
+            trigger_confirmation_enabled: true,
             quantum_volume_confirm_ratio: default_quantum_volume_confirm_ratio(),
             session_filter_enabled: default_session_filter_enabled(),
             data_source: default_data_source(),
@@ -1124,7 +1129,7 @@ mod tests {
         assert_eq!(defaults.structural_sl_atr_cap, 1.0);
         assert!(defaults.yahoo_futures_volume_enabled);
         assert!(!defaults.quantum_weighted_score_enabled);
-        assert!(!defaults.quantum_trigger_confirmation_enabled);
+        assert!(defaults.trigger_confirmation_enabled);
         assert_eq!(defaults.quantum_volume_confirm_ratio, 1.2);
 
         let mut value = serde_json::to_value(BotConfig::default()).expect("serialize config");
@@ -1137,7 +1142,7 @@ mod tests {
             "structural_sl_atr_cap",
             "yahoo_futures_volume_enabled",
             "quantum_weighted_score_enabled",
-            "quantum_trigger_confirmation_enabled",
+            "trigger_confirmation_enabled",
             "quantum_volume_confirm_ratio",
         ] {
             object.remove(key);
@@ -1151,8 +1156,21 @@ mod tests {
         assert_eq!(config.structural_sl_atr_cap, 1.0);
         assert!(config.yahoo_futures_volume_enabled);
         assert!(!config.quantum_weighted_score_enabled);
-        assert!(!config.quantum_trigger_confirmation_enabled);
+        assert!(config.trigger_confirmation_enabled);
         assert_eq!(config.quantum_volume_confirm_ratio, 1.2);
+
+        // Old key still maps to the renamed flag.
+        let mut legacy_alias =
+            serde_json::to_value(BotConfig::default()).expect("serialize config");
+        let object = legacy_alias.as_object_mut().expect("config object");
+        object.remove("trigger_confirmation_enabled");
+        object.insert(
+            "quantum_trigger_confirmation_enabled".to_string(),
+            serde_json::Value::Bool(false),
+        );
+        let alias_config: BotConfig =
+            serde_json::from_value(legacy_alias).expect("deserialize alias config");
+        assert!(!alias_config.trigger_confirmation_enabled);
 
         let clamped = BotConfig {
             min_rsi_h1_for_buy: 99.0,

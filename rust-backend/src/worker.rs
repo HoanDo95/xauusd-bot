@@ -759,7 +759,7 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                         &mut signals,
                         &fresh_candles,
                         PendingConfirmation {
-                            enabled: config.quantum_trigger_confirmation_enabled,
+                            enabled: config.trigger_confirmation_enabled,
                             volume_ratio: config.quantum_volume_confirm_ratio,
                         },
                     )

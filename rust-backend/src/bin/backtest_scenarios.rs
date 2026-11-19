@@ -174,7 +174,7 @@ fn print_usage() {
            --cache <PATH>          JSONL candle cache path\n\
            --csv <PATH>            Read M15 CSV (timestamp,open,high,low,close,volume) instead of Binance\n\
            --cost-r <R>            Subtract R cost per trade (default: 0.0)\n\
-           --quantum-volume-ratio <R>  Quantum confirmation volume threshold (default: 1.2)\n\
+           --quantum-volume-ratio <R>  Trigger confirmation volume threshold (default: 1.2)\n\
            --confirmation-mode <MODE>  volume | directional | directional_close | directional_body (default: directional)\n\
            --out-json <PATH>       JSON report path (default: rust-backend/report_scenarios.json)\n\
            --out-md <PATH>         Markdown report path (default: rust-backend/report_scenarios.md)\n\
@@ -959,7 +959,7 @@ enum FillOutcome {
 /// ABOVE/BELOW BREAKOUT: the level fills at `scenario.entry` unless the trigger
 /// candle opens beyond it. A gap fill at the candle open is accepted only when
 /// slippage is at most `0.5R`; otherwise the trade is skipped.
-/// Quantum trigger confirmation: require a directional close/rejection and a
+/// Trigger confirmation: require a directional close/rejection and a
 /// volume expansion before a scenario trigger is accepted.
 fn trigger_confirmation_ok(
     side: SignalType,
@@ -1716,7 +1716,7 @@ struct VariantConfig {
     htf_levels_enabled: bool,
     structural_sl_atr_cap: f64,
     quantum_weighted_score_enabled: bool,
-    quantum_trigger_confirmation_enabled: bool,
+    trigger_confirmation_enabled: bool,
     quantum_volume_confirm_ratio: f64,
     confirmation_mode: String,
 }
@@ -2119,7 +2119,7 @@ fn write_funnel_markdown(output: &mut String, funnel: &Funnel, trigger_wait_bars
     .expect("write to string");
     writeln!(
         output,
-        "| Triggers skipped by quantum confirmation | {} |",
+        "| Triggers skipped by trigger confirmation | {} |",
         funnel.trigger_confirmation_skipped
     )
     .expect("write to string");
@@ -2467,7 +2467,7 @@ struct RunOptions {
     htf_levels_enabled: bool,
     structural_sl_atr_cap: f64,
     quantum_weighted_score_enabled: bool,
-    quantum_trigger_confirmation_enabled: bool,
+    trigger_confirmation_enabled: bool,
     quantum_volume_confirm_ratio: f64,
     confirmation_mode: ConfirmationMode,
     cost_r: f64,
@@ -2498,7 +2498,7 @@ fn run_variant(
         htf_levels_enabled: options.htf_levels_enabled,
         structural_sl_atr_cap: options.structural_sl_atr_cap,
         quantum_weighted_score_enabled: options.quantum_weighted_score_enabled,
-        quantum_trigger_confirmation_enabled: options.quantum_trigger_confirmation_enabled,
+        trigger_confirmation_enabled: options.trigger_confirmation_enabled,
         quantum_volume_confirm_ratio: options.quantum_volume_confirm_ratio,
         min_rsi_h1_for_buy: if options.buy_rsi_h1_guard { 30.0 } else { 0.0 },
         early_entry_enabled: true,
@@ -2583,7 +2583,7 @@ fn run_variant(
         let mut trigger_index: Option<usize> = None;
         for (j, candle) in m15.iter().enumerate().take(last_trigger + 1).skip(i + 1) {
             if scenario_triggered(scenario, candle) {
-                if options.quantum_trigger_confirmation_enabled
+                if options.trigger_confirmation_enabled
                     && !trigger_confirmation_ok(
                         side,
                         &scenario.trigger_direction,
@@ -2961,7 +2961,7 @@ async fn run() -> Result<()> {
                 htf_levels_enabled,
                 structural_sl_atr_cap,
                 quantum_weighted_score_enabled: false,
-                quantum_trigger_confirmation_enabled: false,
+                trigger_confirmation_enabled: false,
                 quantum_volume_confirm_ratio: args.quantum_volume_ratio,
                 confirmation_mode: args.confirmation_mode,
                 cost_r: args.cost_r,
@@ -2983,7 +2983,7 @@ async fn run() -> Result<()> {
                     htf_levels_enabled,
                     structural_sl_atr_cap,
                     quantum_weighted_score_enabled: false,
-                    quantum_trigger_confirmation_enabled: false,
+                    trigger_confirmation_enabled: false,
                     quantum_volume_confirm_ratio: args.quantum_volume_ratio,
                     confirmation_mode: args.confirmation_mode.as_str().to_string(),
                 },
@@ -3013,7 +3013,7 @@ async fn run() -> Result<()> {
             htf_levels_enabled: true,
             structural_sl_atr_cap: 1.0,
             quantum_weighted_score_enabled: true,
-            quantum_trigger_confirmation_enabled: false,
+            trigger_confirmation_enabled: false,
             quantum_volume_confirm_ratio: args.quantum_volume_ratio,
             confirmation_mode: args.confirmation_mode,
             cost_r: args.cost_r,
@@ -3037,7 +3037,7 @@ async fn run() -> Result<()> {
                 htf_levels_enabled: true,
                 structural_sl_atr_cap: 1.0,
                 quantum_weighted_score_enabled: true,
-                quantum_trigger_confirmation_enabled: false,
+                trigger_confirmation_enabled: false,
                 quantum_volume_confirm_ratio: args.quantum_volume_ratio,
                 confirmation_mode: args.confirmation_mode.as_str().to_string(),
             },
@@ -3066,7 +3066,7 @@ async fn run() -> Result<()> {
             htf_levels_enabled: true,
             structural_sl_atr_cap: 1.0,
             quantum_weighted_score_enabled: true,
-            quantum_trigger_confirmation_enabled: true,
+            trigger_confirmation_enabled: true,
             quantum_volume_confirm_ratio: args.quantum_volume_ratio,
             confirmation_mode: args.confirmation_mode,
             cost_r: args.cost_r,
@@ -3090,7 +3090,7 @@ async fn run() -> Result<()> {
                 htf_levels_enabled: true,
                 structural_sl_atr_cap: 1.0,
                 quantum_weighted_score_enabled: true,
-                quantum_trigger_confirmation_enabled: true,
+                trigger_confirmation_enabled: true,
                 quantum_volume_confirm_ratio: args.quantum_volume_ratio,
                 confirmation_mode: args.confirmation_mode.as_str().to_string(),
             },
@@ -3119,7 +3119,7 @@ async fn run() -> Result<()> {
             htf_levels_enabled: true,
             structural_sl_atr_cap: 1.0,
             quantum_weighted_score_enabled: true,
-            quantum_trigger_confirmation_enabled: true,
+            trigger_confirmation_enabled: true,
             quantum_volume_confirm_ratio: args.quantum_volume_ratio,
             confirmation_mode: args.confirmation_mode,
             cost_r: args.cost_r,
@@ -3142,7 +3142,7 @@ async fn run() -> Result<()> {
                 htf_levels_enabled: true,
                 structural_sl_atr_cap: 1.0,
                 quantum_weighted_score_enabled: true,
-                quantum_trigger_confirmation_enabled: true,
+                trigger_confirmation_enabled: true,
                 quantum_volume_confirm_ratio: args.quantum_volume_ratio,
                 confirmation_mode: args.confirmation_mode.as_str().to_string(),
             },
@@ -3171,7 +3171,7 @@ async fn run() -> Result<()> {
             htf_levels_enabled: true,
             structural_sl_atr_cap: 1.0,
             quantum_weighted_score_enabled: true,
-            quantum_trigger_confirmation_enabled: true,
+            trigger_confirmation_enabled: true,
             quantum_volume_confirm_ratio: args.quantum_volume_ratio,
             confirmation_mode: args.confirmation_mode,
             cost_r: args.cost_r,
@@ -3198,7 +3198,7 @@ async fn run() -> Result<()> {
                 htf_levels_enabled: true,
                 structural_sl_atr_cap: 1.0,
                 quantum_weighted_score_enabled: true,
-                quantum_trigger_confirmation_enabled: true,
+                trigger_confirmation_enabled: true,
                 quantum_volume_confirm_ratio: args.quantum_volume_ratio,
                 confirmation_mode: args.confirmation_mode.as_str().to_string(),
             },

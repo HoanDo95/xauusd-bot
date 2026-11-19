@@ -630,19 +630,19 @@ export const ConfigPanel: React.FC<Props> = ({
                 <label className="flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
-                    checked={formData.quantum_trigger_confirmation_enabled ?? false}
+                    checked={formData.trigger_confirmation_enabled ?? true}
                     onChange={(e) =>
                       setFormData({
                         ...formData,
-                        quantum_trigger_confirmation_enabled: e.target.checked,
+                        trigger_confirmation_enabled: e.target.checked,
                       })
                     }
                     className="accent-amber-500 w-4 h-4 rounded cursor-pointer mt-0.5"
                   />
                   <span className="text-[11px] text-neutral-300 leading-snug">
-                    Engulfing confirmation (A/B)
+                    Trigger confirmation (volume + body/pattern)
                     <span className="block text-[10px] text-neutral-500">
-                      Pinbar OR engulfing · mặc định tắt
+                      Volume ≥ 1.2× + directional close/pinbar/engulfing/RSI cross · mặc định bật
                     </span>
                   </span>
                 </label>
