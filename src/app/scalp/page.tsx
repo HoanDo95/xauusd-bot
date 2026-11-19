@@ -31,6 +31,27 @@ type ScalpConfig = {
   timeframe?: string;
 };
 
+type JournalEvent = {
+  event?: string;
+  setup_id?: string;
+  created_at?: string;
+  scenario_id?: string;
+  scenario_name?: string;
+  direction?: string;
+  bias?: string;
+  entry?: number;
+  stop_loss?: number;
+  take_profit_1?: number;
+  take_profit_2?: number;
+  risk_points?: number;
+  close?: number;
+  r_multiple?: number;
+  bars_open?: number;
+  source?: string;
+  reason?: string;
+  notes?: string;
+};
+
 async function fetchJson<T>(path: string): Promise<T> {
   const response = await fetch(path, { cache: 'no-store' });
   if (!response.ok) {
@@ -39,22 +60,50 @@ async function fetchJson<T>(path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+function formatTime(value?: string): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('vi-VN', { hour12: false });
+}
+
+function formatNumber(value?: number, digits = 2): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value.toFixed(digits)
+    : '—';
+}
+
+function formatR(value?: number): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? `${value >= 0 ? '+' : ''}${value.toFixed(2)}R`
+    : '—';
+}
+
+function noteValue(notes: string | undefined, key: string): string | null {
+  if (!notes) return null;
+  const match = notes.match(new RegExp(`${key}=([^;]+)`));
+  return match ? match[1] : null;
+}
+
 export default function ScalpPage() {
   const [health, setHealth] = useState<ScalpHealth | null>(null);
   const [config, setConfig] = useState<ScalpConfig | null>(null);
+  const [journal, setJournal] = useState<JournalEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
-        const [h, c] = await Promise.all([
+        const [h, c, j] = await Promise.all([
           fetchJson<ScalpHealth>('/scalp-api/api/health'),
           fetchJson<ScalpConfig>('/scalp-api/api/config'),
+          fetchJson<JournalEvent[]>('/scalp-api/api/trigger-journal?limit=1000'),
         ]);
         if (!cancelled) {
           setHealth(h);
           setConfig(c);
+          setJournal(j);
           setError(null);
         }
       } catch (err) {
@@ -72,10 +121,25 @@ export default function ScalpPage() {
   }, []);
 
   const warnings = health?.configWarnings ?? [];
+  const scalpEvents = journal.filter((event) =>
+    (event.event ?? '').startsWith('scalp_ob_')
+  );
+  const alerts = scalpEvents
+    .filter((event) => event.event === 'scalp_ob_alert')
+    .slice()
+    .reverse();
+  const outcomes = new Map<string, JournalEvent>();
+  const tp1Setups = new Set<string>();
+  for (const event of scalpEvents) {
+    if (!event.setup_id) continue;
+    if (event.event === 'scalp_ob_outcome') outcomes.set(event.setup_id, event);
+    if (event.event === 'scalp_ob_tp1') tp1Setups.add(event.setup_id);
+  }
+  const recentEvents = scalpEvents.slice(-20).reverse();
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-100 p-4 md:p-8">
-      <div className="mx-auto max-w-5xl flex flex-col gap-5">
+      <div className="mx-auto max-w-6xl flex flex-col gap-5">
         <header className="flex flex-col gap-2 border-b border-neutral-800 pb-4">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -92,9 +156,8 @@ export default function ScalpPage() {
             </a>
           </div>
           <p className="text-sm text-neutral-400 max-w-3xl">
-            Service scalp riêng, alert-only. ICT/OB short-swing strategy đang ở giai đoạn
-            research/backtest; chưa gửi alert live. Không auto-trade, không dùng quota
-            GOLD SIGNAL của bot swing.
+            Service scalp riêng, alert-only. OB-filtered retest research. Không auto-trade,
+            không dùng quota GOLD SIGNAL của bot swing.
           </p>
         </header>
 
@@ -169,15 +232,15 @@ export default function ScalpPage() {
             <div className="text-xs font-semibold text-neutral-300">Research state</div>
             <div className="mt-3 flex flex-col gap-2 text-xs text-neutral-400">
               <div className="flex items-center justify-between">
-                <span>ICT/OB strategy</span>
-                <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-amber-200">
-                  research
+                <span>Strategy</span>
+                <span className="rounded-full border border-teal-500/40 bg-teal-500/10 px-2 py-0.5 text-teal-200">
+                  OB retest
                 </span>
               </div>
               <div className="flex items-center justify-between">
-                <span>Live alerts</span>
+                <span>Alerts</span>
                 <span className="rounded-full border border-neutral-700 px-2 py-0.5">
-                  off
+                  research only
                 </span>
               </div>
               <div className="flex items-center justify-between">
@@ -191,6 +254,146 @@ export default function ScalpPage() {
               </div>
             </div>
           </div>
+        </section>
+
+        <section className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs font-semibold text-neutral-300">Scalp OB alerts</div>
+            <div className="text-[11px] text-neutral-500">
+              {alerts.length} alert(s) · journal {journal.length} lines
+            </div>
+          </div>
+
+          {alerts.length === 0 ? (
+            <div className="mt-3 rounded-lg border border-dashed border-neutral-700 p-4 text-xs text-neutral-400">
+              Chưa có alert. Worker đang chờ PRIMARY trigger → retest → OB ≤ 1.0 ATR.
+            </div>
+          ) : (
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[980px] text-left text-xs">
+                <thead className="text-neutral-500">
+                  <tr>
+                    <th className="py-2 pr-3 font-medium">Time</th>
+                    <th className="py-2 pr-3 font-medium">Setup</th>
+                    <th className="py-2 pr-3 font-medium">Dir</th>
+                    <th className="py-2 pr-3 font-medium">Entry</th>
+                    <th className="py-2 pr-3 font-medium">SL</th>
+                    <th className="py-2 pr-3 font-medium">TP1</th>
+                    <th className="py-2 pr-3 font-medium">TP2</th>
+                    <th className="py-2 pr-3 font-medium">OB</th>
+                    <th className="py-2 pr-3 font-medium">Risk / lot</th>
+                    <th className="py-2 pr-3 font-medium">Outcome</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {alerts.map((alert, index) => {
+                    const outcome = alert.setup_id ? outcomes.get(alert.setup_id) : undefined;
+                    const tp1 = alert.setup_id ? tp1Setups.has(alert.setup_id) : false;
+                    const ob = noteValue(alert.notes, 'ob_distance_atr');
+                    const riskUsd = noteValue(alert.notes, 'risk_usd');
+                    const lot = noteValue(alert.notes, 'lot');
+                    return (
+                      <tr
+                        key={`${alert.setup_id ?? 'alert'}-${index}`}
+                        className="border-t border-neutral-800/70"
+                      >
+                        <td className="py-2 pr-3 text-neutral-400">
+                          {formatTime(alert.created_at)}
+                        </td>
+                        <td className="py-2 pr-3 font-mono text-[11px] text-neutral-300">
+                          {alert.setup_id ?? '—'}
+                        </td>
+                        <td className="py-2 pr-3 font-semibold">
+                          {alert.direction ?? '—'}
+                        </td>
+                        <td className="py-2 pr-3 font-mono">{formatNumber(alert.entry)}</td>
+                        <td className="py-2 pr-3 font-mono">
+                          {formatNumber(alert.stop_loss)}
+                        </td>
+                        <td className="py-2 pr-3 font-mono">
+                          {formatNumber(alert.take_profit_1)}
+                        </td>
+                        <td className="py-2 pr-3 font-mono">
+                          {formatNumber(alert.take_profit_2)}
+                        </td>
+                        <td className="py-2 pr-3 font-mono text-teal-300">
+                          {ob ? `${ob}×ATR` : '—'}
+                        </td>
+                        <td className="py-2 pr-3 font-mono text-neutral-400">
+                          {riskUsd ? `$${riskUsd} · ${lot ?? '—'} lot` : '—'}
+                        </td>
+                        <td className="py-2 pr-3">
+                          {outcome ? (
+                            <span
+                              className={
+                                (outcome.r_multiple ?? 0) >= 0
+                                  ? 'text-emerald-300'
+                                  : 'text-rose-300'
+                              }
+                            >
+                              {outcome.reason ?? outcome.event}{' '}
+                              {formatR(outcome.r_multiple)}
+                            </span>
+                          ) : tp1 ? (
+                            <span className="text-amber-300">TP1 / BE</span>
+                          ) : (
+                            <span className="text-neutral-500">OPEN</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
+          <div className="text-xs font-semibold text-neutral-300">Recent scalp events</div>
+          {recentEvents.length === 0 ? (
+            <div className="mt-3 text-xs text-neutral-500">
+              Chưa có event scalp_ob_*.
+            </div>
+          ) : (
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[720px] text-left text-xs">
+                <thead className="text-neutral-500">
+                  <tr>
+                    <th className="py-2 pr-3 font-medium">Time</th>
+                    <th className="py-2 pr-3 font-medium">Event</th>
+                    <th className="py-2 pr-3 font-medium">Setup</th>
+                    <th className="py-2 pr-3 font-medium">Reason</th>
+                    <th className="py-2 pr-3 font-medium">Notes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentEvents.map((event, index) => (
+                    <tr
+                      key={`${event.event ?? 'event'}-${event.setup_id ?? index}-${index}`}
+                      className="border-t border-neutral-800/70"
+                    >
+                      <td className="py-2 pr-3 text-neutral-400">
+                        {formatTime(event.created_at)}
+                      </td>
+                      <td className="py-2 pr-3 font-mono text-[11px] text-neutral-300">
+                        {event.event ?? '—'}
+                      </td>
+                      <td className="py-2 pr-3 font-mono text-[11px] text-neutral-400">
+                        {event.setup_id ?? '—'}
+                      </td>
+                      <td className="py-2 pr-3 text-neutral-400">
+                        {event.reason ?? '—'}
+                      </td>
+                      <td className="py-2 pr-3 text-neutral-500">
+                        {event.notes ?? '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
 
         {warnings.length > 0 && (
