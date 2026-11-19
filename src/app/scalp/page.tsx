@@ -60,6 +60,19 @@ type ScalpStats = {
   skipped: Record<string, number>;
 };
 
+type ScalpVolumeProfile = {
+  poc?: number;
+  val?: number;
+  vah?: number;
+  price?: number;
+  position?: string;
+  bars?: number;
+  lookback?: number;
+  bins?: number;
+  value_area?: number;
+  timeframe?: string;
+};
+
 type JournalEvent = {
   event?: string;
   setup_id?: string;
@@ -122,6 +135,7 @@ export default function ScalpPage() {
   const [filterForm, setFilterForm] = useState<ScalpFilters | null>(null);
   const [filterMessage, setFilterMessage] = useState<string | null>(null);
   const [stats, setStats] = useState<ScalpStats | null>(null);
+  const [volumeProfile, setVolumeProfile] = useState<ScalpVolumeProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const filterDirty = useRef(false);
 
@@ -129,12 +143,15 @@ export default function ScalpPage() {
     let cancelled = false;
     const load = async () => {
       try {
-        const [h, c, j, f, s] = await Promise.all([
+        const [h, c, j, f, s, vp] = await Promise.all([
           fetchJson<ScalpHealth>('/scalp-api/api/health'),
           fetchJson<ScalpConfig>('/scalp-api/api/config'),
           fetchJson<JournalEvent[]>('/scalp-api/api/trigger-journal?limit=1000'),
           fetchJson<ScalpFilters>('/scalp-api/api/scalp-filters'),
           fetchJson<ScalpStats>('/scalp-api/api/scalp-stats'),
+          fetchJson<ScalpVolumeProfile>('/scalp-api/api/scalp-volume-profile').catch(
+            () => null
+          ),
         ]);
         if (!cancelled) {
           setHealth(h);
@@ -142,6 +159,7 @@ export default function ScalpPage() {
           setJournal(j);
           setFilters(f);
           setStats(s);
+          setVolumeProfile(vp);
           if (!filterDirty.current) setFilterForm(f);
           setError(null);
         }
@@ -192,6 +210,21 @@ export default function ScalpPage() {
   };
 
   const warnings = health?.configWarnings ?? [];
+  const vpMarker =
+    typeof volumeProfile?.val === 'number' &&
+    typeof volumeProfile?.vah === 'number' &&
+    typeof volumeProfile?.price === 'number' &&
+    volumeProfile.vah > volumeProfile.val
+      ? Math.min(
+          100,
+          Math.max(
+            0,
+            ((volumeProfile.price - volumeProfile.val) /
+              (volumeProfile.vah - volumeProfile.val)) *
+              100
+          )
+        )
+      : null;
   const scalpEvents = journal.filter((event) =>
     (event.event ?? '').startsWith('scalp_ob_')
   );
@@ -325,6 +358,73 @@ export default function ScalpPage() {
               </div>
             </div>
           </div>
+        </section>
+
+        <section className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
+          <div className="flex items-center justify-between">
+            <div className="text-xs font-semibold text-neutral-300">
+              Volume profile · 24h M15
+            </div>
+            <span className="rounded-full border border-neutral-700 px-2 py-0.5 text-[10px] uppercase tracking-wide text-neutral-400">
+              context only
+            </span>
+          </div>
+          {volumeProfile ? (
+            <div className="mt-3 flex flex-col gap-3">
+              <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+                <div>
+                  <div className="text-neutral-500">POC</div>
+                  <div className="font-mono text-neutral-100">
+                    {formatNumber(volumeProfile.poc)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-neutral-500">VAL</div>
+                  <div className="font-mono text-neutral-100">
+                    {formatNumber(volumeProfile.val)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-neutral-500">VAH</div>
+                  <div className="font-mono text-neutral-100">
+                    {formatNumber(volumeProfile.vah)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-neutral-500">Price</div>
+                  <div className="font-mono text-teal-200">
+                    {formatNumber(volumeProfile.price)}
+                  </div>
+                </div>
+              </div>
+              <div className="relative h-2 rounded-full bg-neutral-800">
+                <div className="absolute inset-y-0 left-[8%] right-[8%] rounded-full bg-teal-500/30" />
+                {vpMarker !== null && (
+                  <div
+                    className="absolute top-1/2 h-3 w-1 -translate-x-1/2 -translate-y-1/2 rounded bg-teal-300"
+                    style={{ left: `${8 + vpMarker * 0.84}%` }}
+                  />
+                )}
+              </div>
+              <div className="flex items-center justify-between text-[10px] text-neutral-500">
+                <span>
+                  {volumeProfile.position === 'above_va'
+                    ? 'above value area'
+                    : volumeProfile.position === 'below_va'
+                      ? 'below value area'
+                      : 'inside value area'}
+                </span>
+                <span>
+                  {volumeProfile.bars ?? '—'} bars · {volumeProfile.bins ?? '—'} bins ·{' '}
+                  {Math.round((volumeProfile.value_area ?? 0.7) * 100)}% VA
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-2 text-xs text-neutral-500">
+              Chưa đủ dữ liệu nến để tính volume profile.
+            </div>
+          )}
         </section>
 
         <section className="grid gap-3 md:grid-cols-3">

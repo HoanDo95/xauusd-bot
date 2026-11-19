@@ -204,6 +204,10 @@ pub fn create_router(state: AppState) -> Router {
             get(scalp_api::get_scalp_filters).post(scalp_api::update_scalp_filters),
         )
         .route("/api/scalp-stats", get(scalp_api::get_scalp_stats))
+        .route(
+            "/api/scalp-volume-profile",
+            get(scalp_api::get_scalp_volume_profile),
+        )
         .route("/api/market-view", get(market_view::get_market_view))
         .route(
             "/api/market-view/strategist",

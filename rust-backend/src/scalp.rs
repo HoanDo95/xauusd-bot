@@ -537,6 +537,12 @@ pub fn spawn_scalp_worker(state: AppState) {
                         config.account_leverage,
                     );
                     let telegram = state.telegram.read().await.clone();
+                    let volume_profile = crate::volume_profile::compute(
+                        &candles,
+                        crate::volume_profile::DEFAULT_LOOKBACK,
+                        crate::volume_profile::DEFAULT_BINS,
+                        crate::volume_profile::DEFAULT_VALUE_AREA,
+                    );
                     if let Err(err) = telegram
                         .send_scalp_ob_alert(
                             &watch.scenario,
@@ -546,6 +552,7 @@ pub fn spawn_scalp_worker(state: AppState) {
                             lot.risk_amount_usd,
                             config.risk_percentage,
                             ob_distance,
+                            volume_profile.as_ref(),
                         )
                         .await
                     {

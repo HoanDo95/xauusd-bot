@@ -6,6 +6,7 @@
 use crate::api::AppState;
 use crate::scalp_config::{ScalpFilterConfig, ScalpFilterStore};
 use crate::trigger_journal::TriggerEvent;
+use crate::volume_profile;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Serialize;
@@ -192,6 +193,72 @@ pub(super) async fn update_scalp_filters(
 pub(super) async fn get_scalp_stats(State(state): State<AppState>) -> impl IntoResponse {
     let events = state.trigger_journal.load(None);
     Json(compute_scalp_stats(&events, Utc::now()))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ScalpVolumeProfile {
+    pub poc: f64,
+    pub val: f64,
+    pub vah: f64,
+    pub price: f64,
+    pub position: String,
+    pub bars: usize,
+    pub lookback: usize,
+    pub bins: usize,
+    pub value_area: f64,
+    pub timeframe: String,
+}
+
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+pub(super) async fn get_scalp_volume_profile(State(state): State<AppState>) -> impl IntoResponse {
+    let candles = state.candles.read().await.clone();
+    let live_price = *state.live_price.read().await;
+    let price = live_price.or_else(|| candles.last().map(|candle| candle.close));
+    let Some(profile) = volume_profile::compute(
+        &candles,
+        volume_profile::DEFAULT_LOOKBACK,
+        volume_profile::DEFAULT_BINS,
+        volume_profile::DEFAULT_VALUE_AREA,
+    ) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"status": "insufficient_data"})),
+        )
+            .into_response();
+    };
+    let Some(price) = price.filter(|value| value.is_finite() && *value > 0.0) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"status": "no_price"})),
+        )
+            .into_response();
+    };
+    let position = if price > profile.vah {
+        "above_va"
+    } else if price < profile.val {
+        "below_va"
+    } else {
+        "inside_va"
+    };
+    (
+        StatusCode::OK,
+        Json(ScalpVolumeProfile {
+            poc: round2(profile.poc),
+            val: round2(profile.val),
+            vah: round2(profile.vah),
+            price: round2(price),
+            position: position.to_string(),
+            bars: profile.bars,
+            lookback: volume_profile::DEFAULT_LOOKBACK,
+            bins: volume_profile::DEFAULT_BINS,
+            value_area: volume_profile::DEFAULT_VALUE_AREA,
+            timeframe: "M15".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 #[cfg(test)]

@@ -829,14 +829,23 @@ impl TelegramNotifier {
         risk_usd: f64,
         risk_pct: f64,
         ob_distance_atr: f64,
+        volume_profile: Option<&crate::volume_profile::VolumeProfile>,
     ) -> String {
         let name = Self::escape_html(&truncate_chars(&scenario.name, 80));
         let direction = Self::escape_html(&truncate_chars(&trade.direction, 8));
+        let vp_line = match volume_profile {
+            Some(profile) => format!(
+                "VP POC {:.2} · VAL {:.2} · VAH {:.2} ({} bars)\n",
+                profile.poc, profile.val, profile.vah, profile.bars
+            ),
+            None => String::new(),
+        };
         format!(
             "🧪 <b>RESEARCH — SCALP OB RETEST</b> — {name}\n\
              XAU/USD · {direction} · M15 close {candle_close:.2}\n\
              Entry <code>{:.2}</code> · SL {:.2} · TP1 {:.2} (1R) · TP2 {:.2} (2R)\n\
              OB distance {ob_distance_atr:.2}×ATR · Risk {risk_pct:.1}% · Lot {lot_size:.2} · Risk ${risk_usd:.2}\n\
+             {vp_line}\
              ⚠️ Alert-only research: OB-filtered retest, không phải GOLD SIGNAL, không quota, không AI, không auto-trade.",
             trade.entry,
             trade.stop_loss,
@@ -855,6 +864,7 @@ impl TelegramNotifier {
         risk_usd: f64,
         risk_pct: f64,
         ob_distance_atr: f64,
+        volume_profile: Option<&crate::volume_profile::VolumeProfile>,
     ) -> Result<i64, String> {
         let message_text = Self::format_scalp_ob_message(
             scenario,
@@ -864,6 +874,7 @@ impl TelegramNotifier {
             risk_usd,
             risk_pct,
             ob_distance_atr,
+            volume_profile,
         );
         self.send_html_message(&message_text).await
     }
@@ -3362,7 +3373,7 @@ mod tests {
             be_active: false,
         };
         let message = TelegramNotifier::format_scalp_ob_message(
-            &scenario, &trade, 3799.5, 0.02, 20.0, 0.2, 0.8,
+            &scenario, &trade, 3799.5, 0.02, 20.0, 0.2, 0.8, None,
         );
         assert!(message.contains("RESEARCH — SCALP OB RETEST"));
         assert!(message.contains("OB distance 0.80×ATR"));
@@ -3371,6 +3382,49 @@ mod tests {
         assert!(message.contains("TP2 3780.00 (2R)"));
         assert!(message.contains("không phải GOLD SIGNAL"));
         assert!(!message.contains("<b>GOLD SIGNAL"));
+    }
+
+    #[test]
+    fn format_scalp_ob_message_includes_volume_profile_context() {
+        let scenario = base_scenario("bearish_breakdown", "Bearish breakdown", "BEARISH");
+        let trade = RetestScalpTrade {
+            setup_id: "SCALPOB-TEST".to_string(),
+            scenario_id: "bearish_breakdown".to_string(),
+            bias: "BEARISH".to_string(),
+            confidence: 70,
+            direction: "SELL".to_string(),
+            entry: 3800.0,
+            stop_loss: 3810.0,
+            take_profit_1: 3790.0,
+            take_profit_2: 3780.0,
+            risk: 10.0,
+            created_at: chrono::Utc::now(),
+            entry_candle_timestamp: 0,
+            tp1_hit: false,
+            be_active: false,
+        };
+        let profile = crate::volume_profile::VolumeProfile {
+            poc: 3803.5,
+            val: 3798.0,
+            vah: 3808.0,
+            window_low: 3790.0,
+            window_high: 3812.0,
+            bars: 96,
+        };
+        let message = TelegramNotifier::format_scalp_ob_message(
+            &scenario,
+            &trade,
+            3799.5,
+            0.02,
+            20.0,
+            0.2,
+            0.8,
+            Some(&profile),
+        );
+        assert!(message.contains("VP POC 3803.50"));
+        assert!(message.contains("VAL 3798.00"));
+        assert!(message.contains("VAH 3808.00"));
+        assert!(message.contains("(96 bars)"));
     }
 
     #[test]
