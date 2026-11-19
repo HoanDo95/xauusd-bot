@@ -3277,6 +3277,65 @@ async fn run() -> Result<()> {
         },
     );
 
+    println!("Running variant scalp_raw_retest...");
+    let scalp_raw_retest = run_variant(
+        &m15,
+        &h1_all,
+        &h4_all,
+        &d1_all,
+        start_idx,
+        end_idx,
+        RunOptions {
+            anti_chase_filter_enabled: false,
+            aligned_only: false,
+            htf_filters: false,
+            breakdown_retest: true,
+            buy_rsi_h1_guard: false,
+            bearish_rejection_enabled: false,
+            htf_levels_enabled: true,
+            structural_sl_atr_cap: 1.0,
+            quantum_weighted_score_enabled: false,
+            trigger_confirmation_enabled: false,
+            quantum_volume_confirm_ratio: args.quantum_volume_ratio,
+            confirmation_mode: args.confirmation_mode,
+            cost_r: args.cost_r,
+            dump_triggers: true,
+        },
+    );
+    if !scalp_raw_retest.triggers.is_empty() {
+        let scalp_dump = args
+            .dump_triggers
+            .with_file_name("exness_scalp_raw_triggers.jsonl");
+        write_trigger_dump(&scalp_dump, &scalp_raw_retest.triggers)?;
+    }
+    variants.insert(
+        "scalp_raw_retest".to_string(),
+        VariantReport {
+            config: VariantConfig {
+                name: "scalp_raw_retest".to_string(),
+                description:
+                    "scalp universe: retest entry, no HTF/RSI/confirmation filters, 8-bar wait."
+                        .to_string(),
+                anti_chase_filter_enabled: false,
+                aligned_only: false,
+                htf_filters: false,
+                breakdown_retest: true,
+                buy_rsi_h1_guard: false,
+                bearish_rejection_enabled: false,
+                htf_levels_enabled: true,
+                structural_sl_atr_cap: 1.0,
+                quantum_weighted_score_enabled: false,
+                trigger_confirmation_enabled: false,
+                quantum_volume_confirm_ratio: args.quantum_volume_ratio,
+                confirmation_mode: args.confirmation_mode.as_str().to_string(),
+            },
+            funnel: scalp_raw_retest.funnel,
+            overall: scalp_raw_retest.overall,
+            breakdowns: scalp_raw_retest.breakdowns,
+            trades: scalp_raw_retest.trades,
+        },
+    );
+
     let comparison: Vec<ComparisonRow> = [
         "legacy",
         "htf_only",
@@ -3286,6 +3345,7 @@ async fn run() -> Result<()> {
         "quantum_v3",
         "quantum_v3_htf",
         "quantum_v3_htf_retest",
+        "scalp_raw_retest",
         "anti_chase_off",
         "aligned_only",
         "aligned_only_no_anti_chase",
