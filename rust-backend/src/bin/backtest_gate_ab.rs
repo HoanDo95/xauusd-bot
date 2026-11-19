@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
 const M15_MS: i64 = 15 * 60 * 1000;
@@ -36,7 +37,7 @@ struct Variant {
     trades: Vec<Trade>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct Trade {
     trigger_time: String,
     scenario_id: String,
@@ -51,6 +52,12 @@ struct Trade {
     r_multiple: f64,
     #[serde(default)]
     risk_reward: Option<f64>,
+    #[serde(default = "default_true")]
+    retest_ok: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -228,6 +235,7 @@ struct TradeAnalysis {
     r_multiple: f64,
     confidence: u8,
     score: u8,
+    retest_ok: bool,
     rsi_h1: Option<f64>,
     rsi_h4: Option<f64>,
     distance_ema_atr: f64,
@@ -238,6 +246,34 @@ struct TradeAnalysis {
     passed: BTreeMap<String, bool>,
 }
 
+fn load_triggers(path: &PathBuf) -> Result<Vec<Trade>, Box<dyn std::error::Error>> {
+    let file = fs::File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut trades = Vec::new();
+    let mut skipped = 0usize;
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(&line)?;
+        let Some(r_multiple) = value.get("r_multiple").and_then(|value| value.as_f64()) else {
+            skipped += 1;
+            continue;
+        };
+        let mut trade: Trade = serde_json::from_value(value)?;
+        trade.r_multiple = r_multiple;
+        trades.push(trade);
+    }
+    println!(
+        "loaded {} triggers from {} (skipped {} without outcome)",
+        trades.len(),
+        path.display(),
+        skipped
+    );
+    Ok(trades)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let mut report_path = PathBuf::from("data/backtest/exness_retest_variant2.json");
@@ -245,6 +281,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut out_path = PathBuf::from("data/backtest/gate_ab.json");
     let mut variant = "quantum_v3_htf_retest".to_string();
     let mut macro_dir: Option<PathBuf> = None;
+    let mut triggers_path: Option<PathBuf> = None;
 
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -255,20 +292,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--macro-dir" => {
                 macro_dir = Some(PathBuf::from(args.next().ok_or("--macro-dir value")?))
             }
+            "--triggers" => {
+                triggers_path = Some(PathBuf::from(args.next().ok_or("--triggers value")?))
+            }
             "--help" => {
-                println!("Usage: backtest_gate_ab [--report PATH] [--cache PATH] [--out PATH] [--variant NAME]");
+                println!("Usage: backtest_gate_ab [--report PATH] [--triggers PATH] [--cache PATH] [--macro-dir PATH] [--out PATH] [--variant NAME]");
                 return Ok(());
             }
             other => return Err(format!("unknown flag {other}").into()),
         }
     }
 
-    let report: Report = serde_json::from_str(&fs::read_to_string(&report_path)?)?;
-    let trades = &report
-        .variants
-        .get(&variant)
-        .ok_or_else(|| format!("variant {variant} not found"))?
-        .trades;
+    let trades: Vec<Trade> = if let Some(path) = triggers_path {
+        load_triggers(&path)?
+    } else {
+        let report: Report = serde_json::from_str(&fs::read_to_string(&report_path)?)?;
+        report
+            .variants
+            .get(&variant)
+            .ok_or_else(|| format!("variant {variant} not found"))?
+            .trades
+            .clone()
+    };
     let candles = load_candles(&cache_path)?;
     if candles.is_empty() {
         return Err("no M15 candles".into());
@@ -305,7 +350,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut base_signal_none = 0usize;
     let mut pending_signal_none = 0usize;
 
-    for trade in trades {
+    for trade in &trades {
         let Some(trigger_close_ms) = parse_ms(&trade.trigger_time) else {
             missing_trigger += 1;
             continue;
@@ -450,6 +495,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             r_multiple: trade.r_multiple,
             confidence: trade.confidence,
             score: score.total,
+            retest_ok: trade.retest_ok,
             rsi_h1,
             rsi_h4,
             distance_ema_atr,

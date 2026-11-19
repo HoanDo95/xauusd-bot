@@ -17,6 +17,7 @@ use gold_signal_bot::macro_flow::{MacroFlowScorecard, MacroFlowSnapshot};
 use gold_signal_bot::market_context::{build_market_context, htf_allows_signal};
 use gold_signal_bot::models::{BotConfig, Candle, MacroBias, SignalType, Timeframe};
 use gold_signal_bot::scenarios::{build_scenarios, scenario_triggered, Scenario, ScenarioResponse};
+use gold_signal_bot::trigger_journal::regime_label;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
@@ -138,6 +139,7 @@ struct Args {
     confirmation_mode: ConfirmationMode,
     out_json: PathBuf,
     out_md: PathBuf,
+    dump_triggers: PathBuf,
 }
 
 impl Default for Args {
@@ -155,6 +157,7 @@ impl Default for Args {
             confirmation_mode: ConfirmationMode::Directional,
             out_json: manifest_dir.join("report_scenarios.json"),
             out_md: manifest_dir.join("report_scenarios.md"),
+            dump_triggers: manifest_dir.join("data/backtest/exness_raw_triggers.jsonl"),
         }
     }
 }
@@ -263,6 +266,9 @@ fn parse_args() -> Result<Args> {
             }
             "--out-md" => {
                 args.out_md = PathBuf::from(require_value(&mut iter, &flag)?);
+            }
+            "--dump-triggers" => {
+                args.dump_triggers = PathBuf::from(require_value(&mut iter, &flag)?);
             }
             "--help" | "-h" => {
                 print_usage();
@@ -619,6 +625,23 @@ fn write_cache(path: &Path, candles: &[Candle]) -> Result<()> {
     }
     writer.flush()?;
     fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+fn write_trigger_dump(path: &Path, triggers: &[TriggerRecord]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+    for trigger in triggers {
+        serde_json::to_writer(&mut writer, trigger)?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()?;
+    println!("Wrote {} ({} raw triggers)", path.display(), triggers.len());
     Ok(())
 }
 
@@ -1491,6 +1514,34 @@ struct TradeRecord {
     early_entry_eligible: bool,
     entry_within_trigger_range: bool,
     period_end_forced_exit: bool,
+}
+
+/// Raw trigger record for gate A/B. Unlike `TradeRecord`, this includes
+/// triggers that later failed retest/fill. It is written to a separate JSONL
+/// file so the main report stays compact.
+#[derive(Debug, Clone, Serialize)]
+struct TriggerRecord {
+    trigger_time: String,
+    scenario_id: String,
+    scenario_name: String,
+    direction: String,
+    trigger_direction: String,
+    confidence: u8,
+    macro_alignment: String,
+    entry: f64,
+    stop_loss: f64,
+    take_profit_1: f64,
+    take_profit_2: f64,
+    risk_reward: f64,
+    retest_ok: bool,
+    exit_reason: Option<ExitReason>,
+    r_multiple: Option<f64>,
+    bars_held: Option<usize>,
+    session: String,
+    macro_bias: String,
+    rsi_h1: Option<f64>,
+    regime: String,
+    h4_atr: f64,
 }
 
 #[derive(Debug, Default)]
@@ -2420,6 +2471,7 @@ struct RunOptions {
     quantum_volume_confirm_ratio: f64,
     confirmation_mode: ConfirmationMode,
     cost_r: f64,
+    dump_triggers: bool,
 }
 
 struct RunResult {
@@ -2427,6 +2479,7 @@ struct RunResult {
     overall: StatsSummary,
     breakdowns: BreakdownReport,
     trades: Vec<TradeRecord>,
+    triggers: Vec<TriggerRecord>,
 }
 
 fn run_variant(
@@ -2461,6 +2514,7 @@ fn run_variant(
     let mut overall = Stats::default();
     let mut breakdowns = Breakdowns::default();
     let mut trades: Vec<TradeRecord> = Vec::new();
+    let mut trigger_records: Vec<TriggerRecord> = Vec::new();
     let mut busy_until: Option<usize> = None;
     let mut seen_triggers: HashSet<(String, i64, usize)> = HashSet::new();
 
@@ -2561,6 +2615,7 @@ fn run_variant(
         funnel.trigger_found += 1;
 
         let mut retest_fill: Option<FillResult> = None;
+        let mut retest_ok = true;
         let retest_direction = scenario.trigger_direction.trim().to_ascii_uppercase();
         if options.breakdown_retest && matches!(retest_direction.as_str(), "BELOW" | "ABOVE") {
             match build_retest_levels(
@@ -2583,9 +2638,45 @@ fn run_variant(
                 }
                 None => {
                     funnel.retest_skipped += 1;
-                    continue;
+                    retest_ok = false;
                 }
             }
+        }
+
+        if options.dump_triggers {
+            let outcome = if trigger_idx < end_idx {
+                let forward_end = (trigger_idx + MAX_HOLD_BARS).min(end_idx);
+                let forward = &m15[trigger_idx + 1..=forward_end];
+                simulate_trade(side, levels, levels.entry, forward)
+            } else {
+                None
+            };
+            trigger_records.push(TriggerRecord {
+                trigger_time: format_ts(m15[trigger_idx].timestamp + M15_MS),
+                scenario_id: scenario.id.clone(),
+                scenario_name: scenario.name.clone(),
+                direction: side.as_str().to_string(),
+                trigger_direction: scenario.trigger_direction.clone(),
+                confidence: scenario.confidence,
+                macro_alignment: scenario.macro_alignment.clone(),
+                entry: levels.entry,
+                stop_loss: levels.stop_loss,
+                take_profit_1: levels.take_profit_1,
+                take_profit_2: levels.take_profit_2,
+                risk_reward: levels.risk_reward,
+                retest_ok,
+                exit_reason: outcome.map(|result| result.exit_reason),
+                r_multiple: outcome.map(|result| result.r_multiple),
+                bars_held: outcome.map(|result| result.bars_held),
+                session: session_bucket(m15[trigger_idx].timestamp + M15_MS).to_string(),
+                macro_bias: macro_flow.scorecard.macro_bias.clone(),
+                rsi_h1: context.rsi_h1.as_ref().and_then(|snapshot| snapshot.value),
+                regime: regime_label(&context.d1.bias, &context.h4.bias, &context.h1.bias),
+                h4_atr: context.h4.atr14,
+            });
+        }
+        if !retest_ok {
+            continue;
         }
 
         let trigger_candle = &m15[trigger_idx];
@@ -2706,6 +2797,7 @@ fn run_variant(
         overall: overall.summary(),
         breakdowns: breakdowns.report(),
         trades,
+        triggers: trigger_records,
     }
 }
 
@@ -2873,6 +2965,7 @@ async fn run() -> Result<()> {
                 quantum_volume_confirm_ratio: args.quantum_volume_ratio,
                 confirmation_mode: args.confirmation_mode,
                 cost_r: args.cost_r,
+                dump_triggers: false,
             },
         );
         variants.insert(
@@ -2924,6 +3017,7 @@ async fn run() -> Result<()> {
             quantum_volume_confirm_ratio: args.quantum_volume_ratio,
             confirmation_mode: args.confirmation_mode,
             cost_r: args.cost_r,
+            dump_triggers: false,
         },
     );
     variants.insert(
@@ -2976,6 +3070,7 @@ async fn run() -> Result<()> {
             quantum_volume_confirm_ratio: args.quantum_volume_ratio,
             confirmation_mode: args.confirmation_mode,
             cost_r: args.cost_r,
+            dump_triggers: false,
         },
     );
     variants.insert(
@@ -3028,6 +3123,7 @@ async fn run() -> Result<()> {
             quantum_volume_confirm_ratio: args.quantum_volume_ratio,
             confirmation_mode: args.confirmation_mode,
             cost_r: args.cost_r,
+            dump_triggers: false,
         },
     );
     variants.insert(
@@ -3079,8 +3175,12 @@ async fn run() -> Result<()> {
             quantum_volume_confirm_ratio: args.quantum_volume_ratio,
             confirmation_mode: args.confirmation_mode,
             cost_r: args.cost_r,
+            dump_triggers: true,
         },
     );
+    if !quantum_v3_htf_retest.triggers.is_empty() {
+        write_trigger_dump(&args.dump_triggers, &quantum_v3_htf_retest.triggers)?;
+    }
     variants.insert(
         "quantum_v3_htf_retest".to_string(),
         VariantReport {
