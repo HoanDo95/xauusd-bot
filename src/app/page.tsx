@@ -120,6 +120,7 @@ const DEFAULT_CONFIG: BotConfig = {
   quantum_weighted_score_enabled: false,
   trigger_confirmation_enabled: true,
   strategy_v2_shadow_enabled: false,
+  session_shadow_enabled: false,
   quantum_volume_confirm_ratio: 1.2,
   anti_chase_filter_enabled: true,
   anti_chase_daily_change_pct: -2.0,

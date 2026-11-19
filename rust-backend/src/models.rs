@@ -371,6 +371,9 @@ pub struct BotConfig {
     /// Bật shadow strategy v2 (breakdown + wide SL) — journal-only, không signal.
     #[serde(default)]
     pub strategy_v2_shadow_enabled: bool,
+    /// Bật session shadow (confirmed scenario, mọi session) — journal-only.
+    #[serde(default)]
+    pub session_shadow_enabled: bool,
     /// Volume ratio cho trigger confirmation. Mặc định 1.2.
     #[serde(default = "default_quantum_volume_confirm_ratio")]
     pub quantum_volume_confirm_ratio: f64,
@@ -810,6 +813,7 @@ impl Default for BotConfig {
             quantum_weighted_score_enabled: false,
             trigger_confirmation_enabled: true,
             strategy_v2_shadow_enabled: false,
+            session_shadow_enabled: false,
             quantum_volume_confirm_ratio: default_quantum_volume_confirm_ratio(),
             session_filter_enabled: default_session_filter_enabled(),
             data_source: default_data_source(),

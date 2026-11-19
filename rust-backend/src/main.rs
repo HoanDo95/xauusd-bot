@@ -229,6 +229,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     gold_signal_bot::retest_shadow::spawn_retest_shadow_worker(state.clone());
     gold_signal_bot::retest_scalp::spawn_retest_scalp_worker(state.clone());
     gold_signal_bot::strategy_v2_shadow::spawn_strategy_v2_shadow_worker(state.clone());
+    gold_signal_bot::session_shadow::spawn_session_shadow_worker(state.clone());
 
     // 6e. Trigger journal outcome worker — hypothetical TP/SL/MFE/MAE for every
     // trigger, including those blocked by confirmation/AI/risk.

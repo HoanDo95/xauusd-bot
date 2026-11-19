@@ -1808,6 +1808,33 @@ export const ConfigPanel: React.FC<Props> = ({
             </label>
           </div>
 
+          {/* SESSION SHADOW — journal only */}
+          <div className="rounded-xl border border-teal-500/30 bg-teal-500/5 p-4 flex flex-col gap-3">
+            <div>
+              <div className="text-xs font-bold text-teal-300 uppercase tracking-wider">
+                🧭 SESSION SHADOW — confirmed scenario, mọi session
+              </div>
+              <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
+                Ghi journal confirmed PRIMARY/ALTERNATE scenario ở mọi session, dùng cùng
+                Entry/SL/TP như live. Chỉ research, không Telegram, không signal, không quota,
+                không AI, không auto-trade. Dùng để so sánh current 13–23 VN vs split vs full 24h.
+              </p>
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+              <input
+                type="checkbox"
+                checked={formData.session_shadow_enabled ?? false}
+                onChange={(e) =>
+                  setFormData({ ...formData, session_shadow_enabled: e.target.checked })
+                }
+                className="accent-teal-500 w-4 h-4 rounded cursor-pointer"
+              />
+              <span className="font-semibold text-teal-200">
+                Bật SESSION SHADOW (mặc định tắt)
+              </span>
+            </label>
+          </div>
+
           {/* MARKET VIEW — always-on outlook */}
           <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 flex flex-col gap-4">
             <div>

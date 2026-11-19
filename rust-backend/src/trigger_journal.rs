@@ -401,7 +401,10 @@ pub fn open_triggers_from_events(events: &[TriggerEvent]) -> Vec<OpenTrigger> {
     let mut seen = HashSet::new();
     let mut open = Vec::new();
     for event in events {
-        if event.event != "triggered" && event.event != "strategy_v2_shadow" {
+        if event.event != "triggered"
+            && event.event != "strategy_v2_shadow"
+            && event.event != "session_shadow"
+        {
             continue;
         }
         let Some(setup_id) = event.setup_id.as_ref() else {
@@ -1081,6 +1084,37 @@ mod tests {
         let trigger = journal.open_triggers().pop().expect("open trigger");
         let mut candles = vec![candle(0, 101.0, 99.0, 100.0)];
         candles.push(candle(15 * 60 * 1000, 100.5, 79.0, 80.0));
+        let OutcomeEvaluation::Complete(outcome) = evaluate_outcome(&trigger, &candles, 24) else {
+            panic!("expected complete outcome");
+        };
+        assert_eq!(outcome.outcome, "TP1");
+        assert!((outcome.r_multiple - 2.0).abs() < 1e-9);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn session_shadow_events_are_open_and_evaluated() {
+        let path = temp_path();
+        let journal = TriggerJournal::new(&path);
+        let mut event = TriggerEvent::new("session_shadow");
+        event.setup_id = Some("SS-TEST".to_string());
+        event.bias = Some("BEARISH".to_string());
+        event.entry = Some(100.0);
+        event.stop_loss = Some(105.0);
+        event.take_profit_1 = Some(90.0);
+        event.take_profit_2 = Some(85.0);
+        event.candle_timestamp = Some(0);
+        event.source = Some("session_shadow".to_string());
+        event.shadow = Some(true);
+        journal.append(&event).expect("append");
+
+        assert!(journal.has_event_for_candle("session_shadow", 0));
+        let trigger = journal.open_triggers().pop().expect("open trigger");
+        assert_eq!(trigger.source.as_deref(), Some("session_shadow"));
+        assert!(trigger.shadow);
+
+        let mut candles = vec![candle(0, 101.0, 99.0, 100.0)];
+        candles.push(candle(15 * 60 * 1000, 100.5, 89.0, 90.0));
         let OutcomeEvaluation::Complete(outcome) = evaluate_outcome(&trigger, &candles, 24) else {
             panic!("expected complete outcome");
         };
