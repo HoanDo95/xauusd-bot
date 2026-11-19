@@ -154,13 +154,30 @@ impl PersistentStore {
             .count()
     }
 
-    /// Đã chạm quota số tín hiệu thật/ngày hay chưa.
+    /// Number of live signals that actually filled today. Pending/cancelled
+    /// alerts do not consume the fill quota.
+    pub fn count_live_fills_today(signals: &[Signal], now: DateTime<Utc>) -> usize {
+        let today = Self::trading_day_key(now);
+        signals
+            .iter()
+            .filter(|signal| {
+                !signal.is_simulated
+                    && signal.is_entry_filled
+                    && Self::trading_day_key(signal.created_at) == today
+            })
+            .count()
+    }
+
+    /// Đã chạm quota số fill thật/ngày hay chưa.
+    ///
+    /// Quota counts fills, not alerts: a pending signal cancelled before entry
+    /// must not consume one of the daily trade slots.
     pub fn has_reached_daily_quota(
         signals: &[Signal],
         max_per_day: usize,
         now: DateTime<Utc>,
     ) -> bool {
-        Self::count_live_signals_today(signals, now) >= max_per_day
+        Self::count_live_fills_today(signals, now) >= max_per_day
     }
 
     /// Quota tùy chọn có cho phép thêm một tín hiệu thật hay không.
@@ -310,6 +327,23 @@ mod tests {
         assert_eq!(PersistentStore::count_live_signals_today(&signals, now), 1);
         assert!(PersistentStore::has_reached_daily_quota(&signals, 1, now));
         assert!(!PersistentStore::has_reached_daily_quota(&signals, 2, now));
+    }
+
+    #[test]
+    fn pending_and_cancelled_alerts_do_not_consume_fill_quota() {
+        let now = at(2026, 11, 9, 12, 0);
+        let mut pending = sample_signal("SIG-PENDING", at(2026, 11, 9, 8, 0), false, "k1");
+        pending.is_entry_filled = false;
+        let mut cancelled = sample_signal("SIG-CANCELLED", at(2026, 11, 9, 9, 0), false, "k2");
+        cancelled.is_entry_filled = false;
+        cancelled.status = SignalStatus::Cancelled;
+        let filled = sample_signal("SIG-FILLED", at(2026, 11, 9, 10, 0), false, "k3");
+        let signals = vec![pending, cancelled, filled];
+
+        assert_eq!(PersistentStore::count_live_signals_today(&signals, now), 3);
+        assert_eq!(PersistentStore::count_live_fills_today(&signals, now), 1);
+        assert!(!PersistentStore::has_reached_daily_quota(&signals, 2, now));
+        assert!(PersistentStore::has_reached_daily_quota(&signals, 1, now));
     }
 
     #[test]

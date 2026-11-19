@@ -4,6 +4,7 @@ pub mod action_alerts;
 pub mod ai_decision;
 pub mod analyzer;
 pub mod api;
+pub mod config_guard;
 pub mod decision_gates;
 pub mod decision_trace;
 pub mod divergence_alerts;

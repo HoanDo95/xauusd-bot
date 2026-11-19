@@ -5,7 +5,7 @@ use crate::telegram::TelegramNotifier;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::Deserialize;
 use serde_json::json;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 /// Xóa toàn bộ secret trước khi trả config ra ngoài API.
 fn redacted_config(mut config: BotConfig) -> BotConfig {
@@ -71,12 +71,23 @@ pub(super) async fn update_config(
     }
 
     info!("⚙️ Cấu hình Bot đã được cập nhật và lưu xuống đĩa!");
+    let config_warnings = crate::config_guard::evaluate(&new_config);
+    let config_guard_ok = !crate::config_guard::has_errors(&config_warnings);
+    for warning in &config_warnings {
+        if warning.severity == "error" {
+            error!("🛡️ [Config Guard] {}: {}", warning.code, warning.message);
+        } else {
+            warn!("🛡️ [Config Guard] {}: {}", warning.code, warning.message);
+        }
+    }
     (
         StatusCode::OK,
         Json(json!({
             "status": "success",
             "message": "Đã lưu thông số cấu hình, quota Sniper và Telegram credentials.",
-            "config": redacted_config(new_config)
+            "config": redacted_config(new_config),
+            "configGuardOk": config_guard_ok,
+            "configWarnings": config_warnings
         })),
     )
 }

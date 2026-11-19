@@ -15,7 +15,7 @@ use std::time::Instant;
 use tokio::sync::RwLock;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tracing::{info, warn, Level};
+use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 #[tokio::main]
@@ -60,6 +60,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.webhook_passphrase = env_webhook_passphrase;
     }
     worker::normalize_data_source(&mut config);
+
+    // Config guard: surface frozen-profile drift at startup, before any worker
+    // can act on a changed timeframe/confirmation/risk profile.
+    for warning in gold_signal_bot::config_guard::evaluate(&config) {
+        if warning.severity == "error" {
+            error!("🛡️ [Config Guard] {}: {}", warning.code, warning.message);
+        } else {
+            warn!("🛡️ [Config Guard] {}: {}", warning.code, warning.message);
+        }
+    }
 
     if config.telegram_bot_token.trim().is_empty() {
         warn!("🔐 Telegram token chưa cấu hình — dashboard sẽ không gửi được alert.");

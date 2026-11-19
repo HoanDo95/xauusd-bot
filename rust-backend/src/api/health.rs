@@ -1,4 +1,5 @@
 use super::{price_source_label, AppState};
+use crate::config_guard;
 use crate::decision_trace::{config_hash, STRATEGY_VERSION};
 use crate::models::Timeframe;
 use crate::storage::PersistentStore;
@@ -60,8 +61,11 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
     };
 
     let signals_today = PersistentStore::count_live_signals_today(&signals, now);
+    let filled_today = PersistentStore::count_live_fills_today(&signals, now);
     let daily_quota_reached = config.daily_quota_enabled
         && PersistentStore::has_reached_daily_quota(&signals, config.max_signals_per_day, now);
+    let config_warnings = config_guard::evaluate(&config);
+    let config_guard_ok = !config_guard::has_errors(&config_warnings);
     let is_market_safe = state
         .news_filter
         .read()
@@ -102,7 +106,10 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "candlesCount": candles_count,
         "signalsCount": signals.len(),
         "signalsToday": signals_today,
+        "filledToday": filled_today,
         "maxSignalsPerDay": config.max_signals_per_day,
+        "configGuardOk": config_guard_ok,
+        "configWarnings": config_warnings,
         "dailyQuotaEnabled": config.daily_quota_enabled,
         "dailyQuotaReached": daily_quota_reached,
         "riskGuardrailsEnabled": config.risk_guardrails_enabled,
