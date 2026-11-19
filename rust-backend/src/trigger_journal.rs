@@ -299,6 +299,13 @@ impl TriggerJournal {
             .iter()
             .any(|event| event.event == "triggered" && event.setup_id.as_deref() == Some(setup_id))
     }
+
+    /// Generic event/setup dedup used by research shadow profiles.
+    pub fn has_event(&self, event_name: &str, setup_id: &str) -> bool {
+        self.load(None)
+            .iter()
+            .any(|event| event.event == event_name && event.setup_id.as_deref() == Some(setup_id))
+    }
 }
 
 /// A triggered setup that still needs a hypothetical outcome.
@@ -313,6 +320,8 @@ pub struct OpenTrigger {
     pub take_profit_1: f64,
     pub trigger_candle_timestamp: i64,
     pub triggered_at: DateTime<Utc>,
+    pub source: Option<String>,
+    pub shadow: bool,
     pub decision_id: Option<String>,
     pub strategy_version: Option<String>,
     pub config_hash: Option<String>,
@@ -323,9 +332,6 @@ pub struct OpenTrigger {
     pub trigger_to_gate_ms: Option<i64>,
     pub drift_at_gate: Option<f64>,
     pub distance_ema_atr: Option<f64>,
-    /// True when the trigger was blocked by confirmation/AI/risk and is tracked
-    /// as research rather than a live signal.
-    pub shadow: bool,
 }
 
 impl OpenTrigger {
@@ -352,6 +358,10 @@ impl OpenTrigger {
             take_profit_1: event.take_profit_1?,
             trigger_candle_timestamp: event.candle_timestamp?,
             triggered_at: event.created_at.unwrap_or_else(Utc::now),
+            source: event.source.clone(),
+            shadow: event
+                .shadow
+                .unwrap_or(event.confirmation_pass != Some(true)),
             decision_id: event.decision_id.clone(),
             strategy_version: event.strategy_version.clone(),
             config_hash: event.config_hash.clone(),
@@ -362,7 +372,6 @@ impl OpenTrigger {
             trigger_to_gate_ms: event.trigger_to_gate_ms,
             drift_at_gate: event.drift_at_gate,
             distance_ema_atr: event.distance_ema_atr,
-            shadow: event.confirmation_pass != Some(true),
         })
     }
 }
@@ -384,7 +393,7 @@ pub fn open_triggers_from_events(events: &[TriggerEvent]) -> Vec<OpenTrigger> {
     let mut seen = HashSet::new();
     let mut open = Vec::new();
     for event in events {
-        if event.event != "triggered" {
+        if event.event != "triggered" && event.event != "strategy_v2_shadow" {
             continue;
         }
         let Some(setup_id) = event.setup_id.as_ref() else {
@@ -1019,6 +1028,28 @@ mod tests {
             serde_json::from_str(r#"{"schema":1,"event":"triggered"}"#).expect("legacy event");
         assert!(legacy.decision_id.is_none());
         assert!(legacy.shadow.is_none());
+    }
+
+    #[test]
+    fn strategy_v2_shadow_events_are_open_triggers() {
+        let path = temp_path();
+        let journal = TriggerJournal::new(&path);
+        let mut event = TriggerEvent::new("strategy_v2_shadow");
+        event.setup_id = Some("V2-TEST".to_string());
+        event.bias = Some("BEARISH".to_string());
+        event.entry = Some(100.0);
+        event.stop_loss = Some(110.0);
+        event.take_profit_1 = Some(80.0);
+        event.candle_timestamp = Some(0);
+        event.source = Some("strategy_v2_shadow".to_string());
+        event.shadow = Some(true);
+        journal.append(&event).expect("append");
+        let open = journal.open_triggers();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].setup_id, "V2-TEST");
+        assert!(open[0].shadow);
+        assert_eq!(open[0].source.as_deref(), Some("strategy_v2_shadow"));
+        let _ = fs::remove_file(path);
     }
 
     #[test]

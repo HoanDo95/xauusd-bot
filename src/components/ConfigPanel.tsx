@@ -1781,6 +1781,33 @@ export const ConfigPanel: React.FC<Props> = ({
             </div>
           </div>
 
+          {/* STRATEGY V2 shadow — journal only */}
+          <div className="rounded-xl border border-sky-500/30 bg-sky-500/5 p-4 flex flex-col gap-3">
+            <div>
+              <div className="text-xs font-bold text-sky-300 uppercase tracking-wider">
+                🧪 STRATEGY V2 SHADOW — raw trigger + wide SL
+              </div>
+              <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
+                Ghi journal mọi PRIMARY trigger với entry tại trigger, SL 1× H4 ATR,
+                TP1 2R / TP2 3R. Chỉ research, không Telegram, không signal, không quota,
+                không AI, không auto-trade. Dùng để forward-test candidate breakdown_wide.
+              </p>
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+              <input
+                type="checkbox"
+                checked={formData.strategy_v2_shadow_enabled ?? false}
+                onChange={(e) =>
+                  setFormData({ ...formData, strategy_v2_shadow_enabled: e.target.checked })
+                }
+                className="accent-sky-500 w-4 h-4 rounded cursor-pointer"
+              />
+              <span className="font-semibold text-sky-200">
+                Bật STRATEGY V2 SHADOW (mặc định tắt)
+              </span>
+            </label>
+          </div>
+
           {/* MARKET VIEW — always-on outlook */}
           <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 flex flex-col gap-4">
             <div>

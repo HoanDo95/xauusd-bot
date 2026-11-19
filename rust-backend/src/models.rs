@@ -368,6 +368,9 @@ pub struct BotConfig {
         alias = "quantum_trigger_confirmation_enabled"
     )]
     pub trigger_confirmation_enabled: bool,
+    /// Bật shadow strategy v2 (breakdown + wide SL) — journal-only, không signal.
+    #[serde(default)]
+    pub strategy_v2_shadow_enabled: bool,
     /// Volume ratio cho trigger confirmation. Mặc định 1.2.
     #[serde(default = "default_quantum_volume_confirm_ratio")]
     pub quantum_volume_confirm_ratio: f64,
@@ -806,6 +809,7 @@ impl Default for BotConfig {
             yahoo_futures_volume_enabled: true,
             quantum_weighted_score_enabled: false,
             trigger_confirmation_enabled: true,
+            strategy_v2_shadow_enabled: false,
             quantum_volume_confirm_ratio: default_quantum_volume_confirm_ratio(),
             session_filter_enabled: default_session_filter_enabled(),
             data_source: default_data_source(),

@@ -48,6 +48,7 @@ pub fn spawn_trigger_journal_worker(state: AppState) {
                         event.bars_to_outcome = Some(0);
                         event.reason =
                             Some("trigger candle not found in candle history".to_string());
+                        event.source = trigger.source.clone();
                         event.decision_id = trigger.decision_id.clone();
                         event.strategy_version = trigger.strategy_version.clone();
                         event.config_hash = trigger.config_hash.clone();
@@ -78,6 +79,7 @@ pub fn spawn_trigger_journal_worker(state: AppState) {
                         event.mae_8_r = outcome.mae_8_r;
                         event.mfe_24_r = outcome.mfe_24_r;
                         event.mae_24_r = outcome.mae_24_r;
+                        event.source = trigger.source.clone();
                         event.decision_id = trigger.decision_id.clone();
                         event.strategy_version = trigger.strategy_version.clone();
                         event.config_hash = trigger.config_hash.clone();
