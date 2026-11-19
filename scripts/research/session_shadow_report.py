@@ -86,6 +86,13 @@ def in_window(hour, name):
     return False
 
 
+SCENARIO_ORDER = [
+    "bearish_breakdown",
+    "bullish_breakout",
+    "bullish_bounce",
+    "bearish_rejection",
+]
+
 WINDOWS = [
     ("current_13_23", "Current 13:00–23:59 VN (live inclusive)"),
     ("current_13_22", "Current 13:00–22:59 VN (backtest bucket)"),
@@ -205,6 +212,36 @@ def fmt_ci(ci):
     return f"{ci[0]:+.3f} … {ci[1]:+.3f}" if ci else "n/a"
 
 
+def scenario_name(trigger):
+    return trigger.get("scenario_id") or "unknown"
+
+
+def scenario_sort_key(name):
+    try:
+        return (0, SCENARIO_ORDER.index(name))
+    except ValueError:
+        return (1, name)
+
+
+def scenario_groups(rows):
+    groups = defaultdict(list)
+    for trigger, value in rows:
+        groups[scenario_name(trigger)].append((trigger, value))
+    return groups
+
+
+def window_cell(rows, window):
+    values = [
+        value
+        for trigger, value in rows
+        if in_window(vn_hour(trigger), window)
+    ]
+    if not values:
+        return "—"
+    summary = stats(values)
+    return f"{summary['avg']:+.3f}R · PF {summary['pf']:.2f} · n={summary['n']}"
+
+
 def render(shadow_rows, live_rows, pending, cost_usd):
     lines = [
         "# Session Shadow — forward report",
@@ -228,6 +265,43 @@ def render(shadow_rows, live_rows, pending, cost_usd):
             f"{summary['total']:+.1f} | {summary['pf']:.2f} | {summary['dd']:.1f} | {fmt_ci(ci)} |"
         )
 
+    groups = scenario_groups(shadow_rows)
+    lines.extend(
+        [
+            "",
+            "## By scenario",
+            "",
+            "| Scenario | n | Win% | Avg R | Total R | PF | MaxDD | Bootstrap 95% CI |",
+            "|---|---:|---:|---:|---:|---:|---:|---|",
+        ]
+    )
+    for name in sorted(groups, key=scenario_sort_key):
+        rows = groups[name]
+        values = [value for _, value in rows]
+        summary = stats(values)
+        lines.append(
+            f"| {name} | {summary['n']} | {summary['win']} | {summary['avg']:+.3f} | "
+            f"{summary['total']:+.1f} | {summary['pf']:.2f} | {summary['dd']:.1f} | "
+            f"{fmt_ci(block_bootstrap(rows))} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Scenario × key windows",
+            "",
+            "| Scenario | Current 13–23 | Split 07–20 + 22–05 | Full 24h |",
+            "|---|---|---|---|",
+        ]
+    )
+    for name in sorted(groups, key=scenario_sort_key):
+        rows = groups[name]
+        lines.append(
+            f"| {name} | {window_cell(rows, 'current_13_23')} | "
+            f"{window_cell(rows, 'split_07_20_22_05')} | "
+            f"{window_cell(rows, 'full_24h')} |"
+        )
+
     live_values = [value for _, value in live_rows]
     live = stats(live_values)
     lines.extend(
@@ -248,6 +322,8 @@ def render(shadow_rows, live_rows, pending, cost_usd):
             "  hour is the only difference.",
             "- The shadow records the confirmed scenario **before AI/news/spread/quota/session**",
             "  gates, so it measures session edge, not the full live pipeline.",
+            "- The scenario breakdown is the evidence gate for filtering `bullish_bounce` or",
+            "  changing the session window; do not filter live without forward evidence.",
             "- Windows overlap by design; compare them as research cuts, not independent samples.",
             "- Promotion requires forward net expectancy > 0, bootstrap CI low > 0, PF > 1.2,",
             "  maxDD ≤ 15R, and consistency across periods/ATR buckets.",
