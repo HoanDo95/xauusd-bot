@@ -53,9 +53,12 @@ services:
       BOT_PROFILE: scalp
       RUST_LOG: info
       TZ: Asia/Ho_Chi_Minh
+      EXNESS_BARS_PATH: /exness-data/exness_bars.json
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     volumes:
       - ./data/scalp:/app/data
+      # Read-only shared Exness export; scalp state stays in ./data/scalp.
+      - ./data:/exness-data:ro
     expose:
       - "8091"
     healthcheck:
