@@ -97,6 +97,7 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "asset": "XAU/USD",
         "version": "1.3.0",
         "strategyVersion": STRATEGY_VERSION,
+        "profile": std::env::var("BOT_PROFILE").unwrap_or_else(|_| "swing".to_string()),
         "configHash": config_hash(&config),
         "symbol": config.symbol,
         "timeframe": config.timeframe,

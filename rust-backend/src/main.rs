@@ -215,50 +215,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         news_impact_store: Arc::new(news_impact_store),
     };
 
-    // 6. Background Scanner 24/7 — quét mỗi 60 giây
+    let profile = std::env::var("BOT_PROFILE").unwrap_or_else(|_| "swing".to_string());
+    let is_scalp = profile.eq_ignore_ascii_case("scalp");
+    info!("🧩 Bot profile: {}", profile);
+
+    // Common workers: market data/context, macro, trigger-journal outcomes.
     worker::spawn_scanner(state.clone(), cached_spot);
-
-    // 6b. HTF Context Worker — refresh D1/H4/H1 mỗi 15 phút (read-only, không vào lệnh).
     worker::spawn_htf_context(state.clone());
-
-    // 7. Daily Cron 07:00 AM — đồng bộ ForexFactory + báo cáo EMA
-    worker::spawn_daily_scheduler(state.clone(), scheduler);
-
-    // 8. Session Pre-Alert Worker — briefing thông tin trước phiên Âu/Mỹ, mỗi 30 giây.
-    worker::spawn_session_alerts(state.clone());
-
-    // 8b. Divergence Alerts Worker — cảnh báo phân kỳ RSI M15/H1/H4, mỗi 60 giây.
-    // Độc lập hoàn toàn với tín hiệu/quota; không lưu vào `signals`.
-    gold_signal_bot::divergence_alerts::spawn_divergence_worker(state.clone());
-
-    // 8c. Action Trigger Worker — cảnh báo khi PRIMARY scenario chạm trigger trên
-    // nến M15 đã đóng. Read-only: không quota, không chèn tín hiệu, không auto-trade.
-    gold_signal_bot::action_alerts::spawn_action_trigger_worker(state.clone());
-
-    // 8c2. Retest shadow research — journal/Telegram only, never a signal/quota.
-    gold_signal_bot::retest_shadow::spawn_retest_shadow_worker(state.clone());
-    gold_signal_bot::retest_scalp::spawn_retest_scalp_worker(state.clone());
-    gold_signal_bot::strategy_v2_shadow::spawn_strategy_v2_shadow_worker(state.clone());
-    gold_signal_bot::session_shadow::spawn_session_shadow_worker(state.clone());
-
-    // 6e. Trigger journal outcome worker — hypothetical TP/SL/MFE/MAE for every
-    // trigger, including those blocked by confirmation/AI/risk.
+    macro_flow::spawn_macro_flow_worker(state.clone());
     gold_signal_bot::trigger_journal_worker::spawn_trigger_journal_worker(state.clone());
 
-    // 6f. H1 MARKET VIEW Telegram worker — dashboard/API stays 24/5; Telegram
-    // only on H1 close during the session and on material change.
-    gold_signal_bot::market_view_worker::spawn_market_view_worker(state.clone());
-
-    // 8d. Macro & Flow Worker — FRED/Yahoo/CFTC read-only, refresh mỗi 15 phút.
-    macro_flow::spawn_macro_flow_worker(state.clone());
-
-    // 8d-2. News Impact Worker — phân loại tin + đo phản ứng vàng + AI analyst
-    // (advisory/measurement-only; không ảnh hưởng tín hiệu).
-    gold_signal_bot::news_impact_worker::spawn_news_impact_worker(state.clone());
-
-    // 8e. Telegram command worker — /start, /stop, /view, /status, /help.
-    // Chỉ admin chat được phép; không quota, không chèn tín hiệu.
-    gold_signal_bot::telegram_commands::spawn_telegram_command_worker(state.clone());
+    if is_scalp {
+        gold_signal_bot::scalp::spawn_scalp_worker(state.clone());
+    } else {
+        // Swing-only workers. The scalp service must not run these.
+        worker::spawn_daily_scheduler(state.clone(), scheduler);
+        worker::spawn_session_alerts(state.clone());
+        gold_signal_bot::divergence_alerts::spawn_divergence_worker(state.clone());
+        gold_signal_bot::action_alerts::spawn_action_trigger_worker(state.clone());
+        gold_signal_bot::retest_shadow::spawn_retest_shadow_worker(state.clone());
+        gold_signal_bot::retest_scalp::spawn_retest_scalp_worker(state.clone());
+        gold_signal_bot::strategy_v2_shadow::spawn_strategy_v2_shadow_worker(state.clone());
+        gold_signal_bot::session_shadow::spawn_session_shadow_worker(state.clone());
+        gold_signal_bot::market_view_worker::spawn_market_view_worker(state.clone());
+        gold_signal_bot::news_impact_worker::spawn_news_impact_worker(state.clone());
+        gold_signal_bot::telegram_commands::spawn_telegram_command_worker(state.clone());
+    }
 
     // 9. CORS + Router
     // Same-origin dashboard không cần CORS; chỉ mở cho các origin được cấu hình.

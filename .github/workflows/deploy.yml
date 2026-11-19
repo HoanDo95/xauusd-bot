@@ -53,7 +53,7 @@ jobs:
         working-directory: ${{ env.DEPLOY_DIR }}
         run: |
           TAG="${{ github.event.workflow_run.head_sha || github.sha }}" \
-            docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull api web
+            docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull api web scalp-api
           TAG="${{ github.event.workflow_run.head_sha || github.sha }}" \
             docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d --remove-orphans
 
@@ -70,6 +70,7 @@ jobs:
           done
           # Check the API directly so optional dashboard Basic auth cannot break deploys.
           docker compose exec -T api curl -fsS http://127.0.0.1:8090/api/health | head -c 240; echo
+          docker compose exec -T scalp-api curl -fsS http://127.0.0.1:8091/api/health | head -c 240; echo
           docker compose ps
 
       - name: Cleanup dangling images (never volumes)

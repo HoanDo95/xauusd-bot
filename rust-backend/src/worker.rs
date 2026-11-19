@@ -701,7 +701,12 @@ async fn record_scanner_gate(
 /// tick đầu tiên không gọi thêm TwelveData ngoài cửa sổ cache 300s.
 pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>) {
     tokio::spawn(async move {
-        info!("⏱️ Sniper Worker 24/7 đã khởi chạy (chu kỳ 60 giây)...");
+        let profile = std::env::var("BOT_PROFILE").unwrap_or_else(|_| "swing".to_string());
+        let is_scalp = profile.eq_ignore_ascii_case("scalp");
+        info!(
+            "⏱️ Scanner 24/7 đã khởi chạy (profile={}, chu kỳ 60 giây)...",
+            profile
+        );
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         let mut cached_spot = initial_spot_cache;
         let mut recorded_gates: HashSet<(i64, String)> = HashSet::new();
@@ -816,6 +821,12 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                         warn!("⚠️ Không lưu được kết quả TP/SL: {}", err);
                     }
                 }
+            }
+
+            // Scalp service: keep candles/live price fresh, but never run the
+            // swing scenario/signal path. The scalp strategy has its own worker.
+            if is_scalp {
+                continue;
             }
 
             // 6.2 Bot đang hoạt động?
