@@ -6,7 +6,9 @@ use crate::ai_decision::{
 use crate::analyzer::GoldMarketAnalyzer;
 use crate::api::{attach_macro_flow_alignment, persist_state, AppState};
 use crate::decision_gates::confirmed_signal_with_gates;
-use crate::decision_trace::{config_hash, decision_id, snapshot_hash, STRATEGY_VERSION};
+use crate::decision_trace::{
+    config_hash, decision_id, h4_atr_percentile, snapshot_hash, wick_body_ratio, STRATEGY_VERSION,
+};
 use crate::macro_flow::MacroFlowSnapshot;
 use crate::market_context::{
     build_market_context, htf_allows_signal, shift_candles_prices, MarketContext,
@@ -297,6 +299,7 @@ fn record_trigger_event(
     confirmation_reason: &str,
     confirmation_type: Option<&str>,
     gate_detail: Option<&str>,
+    rsi_value: Option<f64>,
     score: Option<&MarketScore>,
     last_candle: &Candle,
     now: DateTime<Utc>,
@@ -374,6 +377,25 @@ fn record_trigger_event(
         _ => "confirmation",
     };
     event.gate = Some(gate.to_string());
+    event.entry_type = Some(
+        signal
+            .map(|signal| signal.entry_type.as_str().to_string())
+            .unwrap_or_else(|| "NONE".to_string()),
+    );
+    event.rsi_h1 = context
+        .and_then(|context| context.rsi_h1.as_ref())
+        .and_then(|rsi| rsi.value);
+    event.rsi_m15 = rsi_value;
+    let risk = scenario
+        .entry
+        .zip(scenario.stop_loss)
+        .map(|(entry, stop)| (entry - stop).abs());
+    let h4_atr = context
+        .map(|context| context.h4.atr14)
+        .filter(|value| value.is_finite() && *value > 0.0);
+    event.sl_distance_atr = risk.zip(h4_atr).map(|(risk, atr)| risk / atr);
+    event.atr_percentile = h4_atr_percentile(candles);
+    event.wick_body_ratio = wick_body_ratio(last_candle);
     let close_time = last_candle
         .timestamp
         .saturating_add(last_candle.timeframe.duration_millis());
@@ -533,6 +555,7 @@ async fn build_confirmed_scenario_signal(
                 &reason,
                 confirmation_type.map(|kind| kind.as_str()),
                 evaluation.detail.as_deref(),
+                rsi_value,
                 Some(&score),
                 last_candle,
                 now,
@@ -605,6 +628,7 @@ async fn build_confirmed_scenario_signal(
         &reason,
         confirmation_type.map(|kind| kind.as_str()),
         evaluation.detail.as_deref(),
+        rsi_value,
         score.as_ref(),
         last_candle,
         now,

@@ -628,6 +628,35 @@ fn write_cache(path: &Path, candles: &[Candle]) -> Result<()> {
     Ok(())
 }
 
+fn m15_atr14(candles: &[Candle], index: usize) -> f64 {
+    if index == 0 {
+        return 0.0;
+    }
+    let start = index.saturating_sub(13);
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for i in start..=index {
+        let candle = &candles[i];
+        let prev_close = if i > 0 {
+            candles[i - 1].close
+        } else {
+            candle.close
+        };
+        let tr = (candle.high - candle.low)
+            .max((candle.high - prev_close).abs())
+            .max((candle.low - prev_close).abs());
+        if tr.is_finite() {
+            sum += tr;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        0.0
+    } else {
+        sum / count as f64
+    }
+}
+
 fn write_trigger_dump(path: &Path, triggers: &[TriggerRecord]) -> Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -1522,6 +1551,17 @@ struct TradeRecord {
 #[derive(Debug, Clone, Serialize)]
 struct TriggerRecord {
     trigger_time: String,
+    original_trigger_time: String,
+    retest_time: Option<String>,
+    original_entry: f64,
+    original_stop_loss: f64,
+    original_take_profit_1: f64,
+    original_take_profit_2: f64,
+    retest_entry: Option<f64>,
+    retest_stop_loss: Option<f64>,
+    retest_take_profit_1: Option<f64>,
+    retest_take_profit_2: Option<f64>,
+    m15_atr: f64,
     scenario_id: String,
     scenario_name: String,
     direction: String,
@@ -2614,6 +2654,8 @@ fn run_variant(
         };
         funnel.trigger_found += 1;
 
+        let original_trigger_idx = trigger_idx;
+        let original_levels = levels;
         let mut retest_fill: Option<FillResult> = None;
         let mut retest_ok = true;
         let retest_direction = scenario.trigger_direction.trim().to_ascii_uppercase();
@@ -2653,6 +2695,17 @@ fn run_variant(
             };
             trigger_records.push(TriggerRecord {
                 trigger_time: format_ts(m15[trigger_idx].timestamp + M15_MS),
+                original_trigger_time: format_ts(m15[original_trigger_idx].timestamp + M15_MS),
+                retest_time: retest_ok.then(|| format_ts(m15[trigger_idx].timestamp + M15_MS)),
+                original_entry: original_levels.entry,
+                original_stop_loss: original_levels.stop_loss,
+                original_take_profit_1: original_levels.take_profit_1,
+                original_take_profit_2: original_levels.take_profit_2,
+                retest_entry: retest_ok.then_some(levels.entry),
+                retest_stop_loss: retest_ok.then_some(levels.stop_loss),
+                retest_take_profit_1: retest_ok.then_some(levels.take_profit_1),
+                retest_take_profit_2: retest_ok.then_some(levels.take_profit_2),
+                m15_atr: m15_atr14(m15, original_trigger_idx),
                 scenario_id: scenario.id.clone(),
                 scenario_name: scenario.name.clone(),
                 direction: side.as_str().to_string(),

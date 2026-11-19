@@ -126,6 +126,22 @@ pub struct TriggerEvent {
     pub score: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub distance_ema_atr: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rsi_h1: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rsi_m15: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sl_distance_atr: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub atr_percentile: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wick_body_ratio: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone_touch_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone_width_atr: Option<f64>,
     /// Shadow research: blocked decision tracked with the same exit simulator.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shadow: Option<bool>,
@@ -979,6 +995,12 @@ mod tests {
         event.drift_at_gate = Some(0.4);
         event.score = Some(75);
         event.distance_ema_atr = Some(1.2);
+        event.entry_type = Some("MARKET".to_string());
+        event.rsi_h1 = Some(42.0);
+        event.rsi_m15 = Some(55.0);
+        event.sl_distance_atr = Some(1.1);
+        event.atr_percentile = Some(65.0);
+        event.wick_body_ratio = Some(1.8);
         event.shadow = Some(true);
         event.shadow_outcome = Some("TP1".to_string());
         event.shadow_r = Some(2.0);
@@ -988,6 +1010,9 @@ mod tests {
         assert_eq!(decoded.decision_id.as_deref(), Some("D1"));
         assert_eq!(decoded.gate.as_deref(), Some("confirmation"));
         assert_eq!(decoded.trigger_to_gate_ms, Some(1200));
+        assert_eq!(decoded.entry_type.as_deref(), Some("MARKET"));
+        assert_eq!(decoded.rsi_h1, Some(42.0));
+        assert_eq!(decoded.atr_percentile, Some(65.0));
         assert_eq!(decoded.shadow_r, Some(2.0));
 
         let legacy: TriggerEvent =

@@ -6,7 +6,7 @@
 
 use crate::macro_flow::MacroFlowSnapshot;
 use crate::market_context::MarketContext;
-use crate::models::{BotConfig, Candle, Signal};
+use crate::models::{BotConfig, Candle, Signal, Timeframe};
 use crate::news_filter::EconomicEvent;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -235,6 +235,77 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Upper/lower wick divided by body. High values indicate rejection candles.
+pub fn wick_body_ratio(candle: &Candle) -> Option<f64> {
+    let body = (candle.close - candle.open).abs();
+    if !body.is_finite() {
+        return None;
+    }
+    let upper = candle.high - candle.open.max(candle.close);
+    let lower = candle.open.min(candle.close) - candle.low;
+    let wick = upper.max(lower).max(0.0);
+    Some(wick / body.max(0.01))
+}
+
+/// Percentile (0-100) of the current H4 ATR14 versus the recent H4 ATR14
+/// history built from the supplied M15 candles.
+pub fn h4_atr_percentile(candles: &[Candle]) -> Option<f64> {
+    if candles.len() < 20 {
+        return None;
+    }
+    let h4_ms = Timeframe::H4.duration_millis();
+    let mut h4: Vec<Candle> = Vec::new();
+    for candle in candles {
+        let bucket = candle.timestamp - candle.timestamp.rem_euclid(h4_ms);
+        if h4.last().map(|last| last.timestamp) != Some(bucket) {
+            h4.push(Candle {
+                timestamp: bucket,
+                open: candle.open,
+                high: candle.high,
+                low: candle.low,
+                close: candle.close,
+                volume: candle.volume,
+                taker_buy_volume: 0.0,
+                timeframe: Timeframe::H4,
+            });
+        } else if let Some(last) = h4.last_mut() {
+            last.high = last.high.max(candle.high);
+            last.low = last.low.min(candle.low);
+            last.close = candle.close;
+            last.volume += candle.volume;
+        }
+    }
+    if h4.len() < 16 {
+        return None;
+    }
+    let mut atrs = Vec::new();
+    for index in 14..h4.len() {
+        let start = index.saturating_sub(14);
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for i in start..=index {
+            let candle = &h4[i];
+            let prev_close = if i > 0 { h4[i - 1].close } else { candle.close };
+            let tr = (candle.high - candle.low)
+                .max((candle.high - prev_close).abs())
+                .max((candle.low - prev_close).abs());
+            if tr.is_finite() {
+                sum += tr;
+                count += 1;
+            }
+        }
+        if count > 0 {
+            atrs.push(sum / count as f64);
+        }
+    }
+    let current = *atrs.last()?;
+    if atrs.len() < 2 {
+        return None;
+    }
+    let below = atrs.iter().filter(|value| **value <= current).count();
+    Some(below as f64 / atrs.len() as f64 * 100.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +358,35 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 11, 19, 1, 2, 3).unwrap();
         let id = decision_id(now, "abcdef0123456789");
         assert_eq!(id, "20261119-010203-abcdef01");
+    }
+
+    #[test]
+    fn wick_body_ratio_measures_rejection() {
+        let candle = candle(1, 100.0);
+        let mut candle = candle;
+        candle.open = 100.0;
+        candle.close = 101.0;
+        candle.high = 103.0;
+        candle.low = 99.0;
+        let ratio = wick_body_ratio(&candle).expect("ratio");
+        assert!((ratio - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn h4_atr_percentile_is_bounded() {
+        let candles: Vec<Candle> = (0..20)
+            .map(|index| {
+                let mut candle = candle(index as i64 * 4 * 60 * 60 * 1000, 100.0);
+                candle.high = 105.0;
+                candle.low = 95.0;
+                candle.open = 100.0;
+                candle.close = 100.0;
+                candle
+            })
+            .collect();
+        let percentile = h4_atr_percentile(&candles).expect("percentile");
+        assert!((0.0..=100.0).contains(&percentile));
+        assert!((percentile - 100.0).abs() < 1e-9);
     }
 
     #[test]
