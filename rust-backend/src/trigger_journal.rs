@@ -306,6 +306,14 @@ impl TriggerJournal {
             .iter()
             .any(|event| event.event == event_name && event.setup_id.as_deref() == Some(setup_id))
     }
+
+    /// One research event per closed M15 candle, even if the primary scenario
+    /// id changes between worker ticks.
+    pub fn has_event_for_candle(&self, event_name: &str, candle_timestamp: i64) -> bool {
+        self.load(None).iter().any(|event| {
+            event.event == event_name && event.candle_timestamp == Some(candle_timestamp)
+        })
+    }
 }
 
 /// A triggered setup that still needs a hypothetical outcome.
@@ -1049,6 +1057,8 @@ mod tests {
         assert_eq!(open[0].setup_id, "V2-TEST");
         assert!(open[0].shadow);
         assert_eq!(open[0].source.as_deref(), Some("strategy_v2_shadow"));
+        assert!(journal.has_event_for_candle("strategy_v2_shadow", 0));
+        assert!(!journal.has_event_for_candle("strategy_v2_shadow", 900_000));
         let _ = fs::remove_file(path);
     }
 

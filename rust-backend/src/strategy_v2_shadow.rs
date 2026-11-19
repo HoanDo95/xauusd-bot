@@ -111,7 +111,7 @@ pub fn spawn_strategy_v2_shadow_worker(state: AppState) {
             let setup_id = format!("V2-{}-{}", candle.timestamp, primary.id);
             if state
                 .trigger_journal
-                .has_event("strategy_v2_shadow", &setup_id)
+                .has_event_for_candle("strategy_v2_shadow", candle.timestamp)
             {
                 continue;
             }
