@@ -306,6 +306,21 @@ pub fn h4_atr_percentile(candles: &[Candle]) -> Option<f64> {
     Some(below as f64 / atrs.len() as f64 * 100.0)
 }
 
+/// Simple research proxy for S/R zone quality: count recent M15 candles that
+/// overlap a zone of width 0.25 × H4 ATR around `level`.
+pub fn zone_quality(candles: &[Candle], level: f64, h4_atr: f64) -> Option<(usize, f64)> {
+    if !level.is_finite() || level <= 0.0 || !h4_atr.is_finite() || h4_atr <= 0.0 {
+        return None;
+    }
+    let width = (h4_atr * 0.25).max(0.01);
+    let start = candles.len().saturating_sub(100);
+    let touches = candles[start..]
+        .iter()
+        .filter(|candle| candle.high >= level - width && candle.low <= level + width)
+        .count();
+    Some((touches, 0.25))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,6 +402,14 @@ mod tests {
         let percentile = h4_atr_percentile(&candles).expect("percentile");
         assert!((0.0..=100.0).contains(&percentile));
         assert!((percentile - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zone_quality_counts_overlapping_candles() {
+        let candles = vec![candle(1, 100.0), candle(2, 100.0), candle(3, 110.0)];
+        let (touches, width_atr) = zone_quality(&candles, 100.0, 8.0).expect("zone");
+        assert_eq!(touches, 2);
+        assert!((width_atr - 0.25).abs() < 1e-9);
     }
 
     #[test]

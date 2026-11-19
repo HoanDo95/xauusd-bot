@@ -7,7 +7,8 @@ use crate::analyzer::GoldMarketAnalyzer;
 use crate::api::{attach_macro_flow_alignment, persist_state, AppState};
 use crate::decision_gates::confirmed_signal_with_gates;
 use crate::decision_trace::{
-    config_hash, decision_id, h4_atr_percentile, snapshot_hash, wick_body_ratio, STRATEGY_VERSION,
+    config_hash, decision_id, h4_atr_percentile, snapshot_hash, wick_body_ratio, zone_quality,
+    STRATEGY_VERSION,
 };
 use crate::macro_flow::MacroFlowSnapshot;
 use crate::market_context::{
@@ -396,6 +397,12 @@ fn record_trigger_event(
     event.sl_distance_atr = risk.zip(h4_atr).map(|(risk, atr)| risk / atr);
     event.atr_percentile = h4_atr_percentile(candles);
     event.wick_body_ratio = wick_body_ratio(last_candle);
+    if let (Some(level), Some(atr)) = (scenario.entry.or(scenario.trigger_price), h4_atr) {
+        if let Some((touches, width_atr)) = zone_quality(candles, level, atr) {
+            event.zone_touch_count = Some(touches);
+            event.zone_width_atr = Some(width_atr);
+        }
+    }
     let close_time = last_candle
         .timestamp
         .saturating_add(last_candle.timeframe.duration_millis());

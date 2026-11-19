@@ -250,6 +250,7 @@ def main():
     distances = defaultdict(list)
     rsi_buckets = defaultdict(list)
     atr_buckets = defaultdict(list)
+    zone_cells = defaultdict(list)
     period_cells = defaultdict(list)
 
     for trigger in triggers:
@@ -310,6 +311,8 @@ def main():
                 key = f"{entry_kind}_{sl_kind}"
                 cells[key].append((trigger, r))
                 period_cells[f"{key}_{period}"].append((trigger, r))
+                zone_bucket = "ge2" if (trigger.get("zone_touch_count") or 0) >= 2 else "lt2"
+                zone_cells[f"{key}_{zone_bucket}"].append((trigger, r))
                 distances[f"{entry_kind}_{sl_kind}_{'near' if distance <= 1.5 else 'far'}"].append(
                     (trigger, r)
                 )
@@ -359,6 +362,16 @@ def main():
                 f"| {entry_kind}_{sl_kind} | {stats(near)['avg']:+.3f}R (n={len(near)}) | {stats(far)['avg']:+.3f}R (n={len(far)}) |"
             )
 
+    lines.append("\n## H3 — zone touch quality (≥2 vs <2 touches)\n")
+    lines.append("| Cell | ≥2 touches | <2 touches |")
+    lines.append("|---|---:|---:|")
+    for key in ("breakdown_wide", "retest_structural"):
+        ge2 = [r for _, r in zone_cells[f"{key}_ge2"]]
+        lt2 = [r for _, r in zone_cells[f"{key}_lt2"]]
+        lines.append(
+            f"| {key} | {stats(ge2)['avg']:+.3f}R (n={len(ge2)}) | {stats(lt2)['avg']:+.3f}R (n={len(lt2)}) |"
+        )
+
     lines.append("\n## H4 — RSI H1 buckets (all 2×2 cells)\n")
     lines.append("| Cell | Bucket | n | Avg R | PF |")
     lines.append("|---|---|---:|---:|---:|")
@@ -402,6 +415,12 @@ def main():
         ),
         "structural_vs_wide_retest": permutation_p(
             cells["retest_structural"], cells["retest_wide"]
+        ),
+        "zone_ge2_vs_lt2_breakdown_wide": permutation_p(
+            zone_cells["breakdown_wide_ge2"], zone_cells["breakdown_wide_lt2"]
+        ),
+        "zone_ge2_vs_lt2_retest_structural": permutation_p(
+            zone_cells["retest_structural_ge2"], zone_cells["retest_structural_lt2"]
         ),
         "anti_chase_breakdown_wide": permutation_p(
             distances["breakdown_wide_near"], distances["breakdown_wide_far"]

@@ -13,6 +13,7 @@
 
 use chrono::{DateTime, Days, FixedOffset, NaiveDate, SecondsFormat, Timelike, Utc};
 use gold_signal_bot::analyzer::GoldMarketAnalyzer;
+use gold_signal_bot::decision_trace::zone_quality;
 use gold_signal_bot::macro_flow::{MacroFlowScorecard, MacroFlowSnapshot};
 use gold_signal_bot::market_context::{build_market_context, htf_allows_signal};
 use gold_signal_bot::models::{BotConfig, Candle, MacroBias, SignalType, Timeframe};
@@ -1562,6 +1563,8 @@ struct TriggerRecord {
     retest_take_profit_1: Option<f64>,
     retest_take_profit_2: Option<f64>,
     m15_atr: f64,
+    zone_touch_count: Option<usize>,
+    zone_width_atr: Option<f64>,
     scenario_id: String,
     scenario_name: String,
     direction: String,
@@ -2706,6 +2709,18 @@ fn run_variant(
                 retest_take_profit_1: retest_ok.then_some(levels.take_profit_1),
                 retest_take_profit_2: retest_ok.then_some(levels.take_profit_2),
                 m15_atr: m15_atr14(m15, original_trigger_idx),
+                zone_touch_count: zone_quality(
+                    &m15[..=original_trigger_idx],
+                    original_levels.entry,
+                    context.h4.atr14,
+                )
+                .map(|(touches, _)| touches),
+                zone_width_atr: zone_quality(
+                    &m15[..=original_trigger_idx],
+                    original_levels.entry,
+                    context.h4.atr14,
+                )
+                .map(|(_, width)| width),
                 scenario_id: scenario.id.clone(),
                 scenario_name: scenario.name.clone(),
                 direction: side.as_str().to_string(),
