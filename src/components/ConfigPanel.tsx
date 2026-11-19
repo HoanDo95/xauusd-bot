@@ -1806,6 +1806,23 @@ export const ConfigPanel: React.FC<Props> = ({
                 Bật STRATEGY V2 SHADOW (mặc định tắt)
               </span>
             </label>
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+              <input
+                type="checkbox"
+                checked={formData.strategy_v2_shadow_telegram_enabled ?? false}
+                disabled={!(formData.strategy_v2_shadow_enabled ?? false)}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    strategy_v2_shadow_telegram_enabled: e.target.checked,
+                  })
+                }
+                className="accent-sky-500 w-4 h-4 rounded cursor-pointer disabled:opacity-40"
+              />
+              <span className="text-sky-200">
+                Gửi Telegram research alert (không phải signal)
+              </span>
+            </label>
           </div>
 
           {/* SESSION SHADOW — journal only */}
@@ -1831,6 +1848,23 @@ export const ConfigPanel: React.FC<Props> = ({
               />
               <span className="font-semibold text-teal-200">
                 Bật SESSION SHADOW (mặc định tắt)
+              </span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+              <input
+                type="checkbox"
+                checked={formData.session_shadow_telegram_enabled ?? false}
+                disabled={!(formData.session_shadow_enabled ?? false)}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    session_shadow_telegram_enabled: e.target.checked,
+                  })
+                }
+                className="accent-teal-500 w-4 h-4 rounded cursor-pointer disabled:opacity-40"
+              />
+              <span className="text-teal-200">
+                Gửi Telegram research alert (không phải signal)
               </span>
             </label>
           </div>

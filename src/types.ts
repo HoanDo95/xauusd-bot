@@ -971,8 +971,12 @@ export interface BotConfig {
   retest_scalp_risk_percentage?: number;
   /** Strategy v2 shadow: raw trigger + 1x H4 ATR SL, journal-only. Default false. */
   strategy_v2_shadow_enabled?: boolean;
+  /** Send Telegram research alerts for strategy v2 shadow. Default false. */
+  strategy_v2_shadow_telegram_enabled?: boolean;
   /** Session shadow: confirmed scenario in all sessions, journal-only. Default false. */
   session_shadow_enabled?: boolean;
+  /** Send Telegram research alerts for session shadow. Default false. */
+  session_shadow_telegram_enabled?: boolean;
   /** Minimum minutes between alerts for the same scenario + direction + zone (5–1440, default 120). */
   action_trigger_cooldown_minutes?: number;
   /** Max distance from price to trigger for SETUP WATCHING, in H4 ATR. Default 1.0. */

@@ -19,7 +19,7 @@ use crate::trigger_journal::{record, TriggerEvent};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 
 const INTERVAL_SECS: u64 = 30;
 pub const STRATEGY_V2_VERSION: &str = "2026-11-19.1-v2-shadow";
@@ -161,14 +161,12 @@ pub fn spawn_strategy_v2_shadow_worker(state: AppState) {
             event.confidence = Some(primary.confidence);
             event.valid = Some(primary.valid);
             event.macro_alignment = Some(primary.macro_alignment.clone());
-            event.session = Some(
-                if PersistentStore::is_within_golden_session(now, config.session_filter_enabled) {
-                    "IN"
-                } else {
-                    "OUT"
-                }
-                .to_string(),
-            );
+            let session = if PersistentStore::is_within_golden_session(now, true) {
+                "IN"
+            } else {
+                "OUT"
+            };
+            event.session = Some(session.to_string());
             event.regime = Some(regime_label(
                 &context.d1.bias,
                 &context.h4.bias,
@@ -215,6 +213,30 @@ pub fn spawn_strategy_v2_shadow_worker(state: AppState) {
                 config.trigger_journal_enabled,
                 &event,
             );
+            if config.strategy_v2_shadow_telegram_enabled {
+                let telegram = state.telegram.read().await.clone();
+                match telegram
+                    .send_strategy_v2_shadow_alert(
+                        primary,
+                        levels.entry,
+                        levels.stop_loss,
+                        levels.take_profit_1,
+                        levels.take_profit_2,
+                        candle.close,
+                        session,
+                    )
+                    .await
+                {
+                    Ok(msg_id) => info!(
+                        "🧪 [Strategy V2] Đã gửi Telegram research alert (msg_id={}).",
+                        msg_id
+                    ),
+                    Err(err) => warn!(
+                        "⚠️ [Strategy V2] Không gửi được Telegram research alert: {}",
+                        err
+                    ),
+                }
+            }
             info!(
                 "🧪 [Strategy V2] {} {} · entry {:.2} · SL {:.2} · TP1 {:.2} · TP2 {:.2} · confirmed={}",
                 primary.id,

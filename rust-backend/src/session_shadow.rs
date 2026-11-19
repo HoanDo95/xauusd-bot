@@ -19,7 +19,7 @@ use crate::trigger_journal::regime_label;
 use crate::trigger_journal::{record, TriggerEvent};
 use chrono::{DateTime, Utc};
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 
 const INTERVAL_SECS: u64 = 30;
 pub const SESSION_SHADOW_VERSION: &str = "2026-11-19.1-session-shadow";
@@ -124,6 +124,7 @@ pub fn spawn_session_shadow_worker(state: AppState) {
                 &news_events,
             );
             let setup_id = format!("SS-{}-{}", candle.timestamp, scenario.id);
+            let session = session_label(now);
             let mut event = TriggerEvent::new("session_shadow");
             event.setup_id = Some(setup_id);
             event.created_at = Some(now);
@@ -141,7 +142,7 @@ pub fn spawn_session_shadow_worker(state: AppState) {
             event.confidence = Some(scenario.confidence);
             event.valid = Some(scenario.valid);
             event.macro_alignment = Some(scenario.macro_alignment.clone());
-            event.session = Some(session_label(now).to_string());
+            event.session = Some(session.to_string());
             event.regime = Some(regime_label(
                 &context.d1.bias,
                 &context.h4.bias,
@@ -193,11 +194,27 @@ pub fn spawn_session_shadow_worker(state: AppState) {
                 config.trigger_journal_enabled,
                 &event,
             );
+            if config.session_shadow_telegram_enabled {
+                let telegram = state.telegram.read().await.clone();
+                match telegram
+                    .send_session_shadow_alert(&scenario, &signal, candle.close, session)
+                    .await
+                {
+                    Ok(msg_id) => info!(
+                        "🧭 [Session Shadow] Đã gửi Telegram research alert (msg_id={}).",
+                        msg_id
+                    ),
+                    Err(err) => warn!(
+                        "⚠️ [Session Shadow] Không gửi được Telegram research alert: {}",
+                        err
+                    ),
+                }
+            }
             info!(
                 "🧭 [Session Shadow] {} {} · {} · entry {:.2} · SL {:.2} · TP1 {:.2} · TP2 {:.2}",
                 scenario.id,
                 signal.signal_type.as_str(),
-                session_label(now),
+                session,
                 signal.entry_price,
                 signal.stop_loss,
                 signal.take_profit_1,

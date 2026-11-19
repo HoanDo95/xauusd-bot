@@ -774,6 +774,85 @@ impl TelegramNotifier {
         self.send_html_message(&message_text).await
     }
 
+    /// Research-only strategy v2 shadow alert. Never a signal or quota event.
+    #[allow(clippy::too_many_arguments)]
+    pub fn format_strategy_v2_shadow_message(
+        scenario: &Scenario,
+        entry: f64,
+        stop_loss: f64,
+        take_profit_1: f64,
+        take_profit_2: f64,
+        candle_close: f64,
+        session: &str,
+    ) -> String {
+        let name = Self::escape_html(&truncate_chars(&scenario.name, 80));
+        let direction = Self::escape_html(&truncate_chars(&scenario.trigger_direction, 16));
+        let session = Self::escape_html(&truncate_chars(session, 8));
+        format!(
+            "🧪 <b>RESEARCH — STRATEGY V2 SHADOW</b> — {name}\n\
+             XAU/USD · {direction} · {session} · M15 close {candle_close:.2}\n\
+             Entry <code>{entry:.2}</code> · SL {stop_loss:.2} · TP1 {take_profit_1:.2} · TP2 {take_profit_2:.2}\n\
+             ⚠️ Research only: raw PRIMARY trigger + wide SL 1×H4 ATR. Không phải GOLD SIGNAL, không quota, không AI, không auto-trade."
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_strategy_v2_shadow_alert(
+        &self,
+        scenario: &Scenario,
+        entry: f64,
+        stop_loss: f64,
+        take_profit_1: f64,
+        take_profit_2: f64,
+        candle_close: f64,
+        session: &str,
+    ) -> Result<i64, String> {
+        let message_text = Self::format_strategy_v2_shadow_message(
+            scenario,
+            entry,
+            stop_loss,
+            take_profit_1,
+            take_profit_2,
+            candle_close,
+            session,
+        );
+        self.send_html_message(&message_text).await
+    }
+
+    /// Research-only session shadow alert. Never a signal or quota event.
+    pub fn format_session_shadow_message(
+        scenario: &Scenario,
+        signal: &Signal,
+        candle_close: f64,
+        session: &str,
+    ) -> String {
+        let name = Self::escape_html(&truncate_chars(&scenario.name, 80));
+        let session = Self::escape_html(&truncate_chars(session, 8));
+        format!(
+            "🧭 <b>RESEARCH — SESSION SHADOW</b> — {name}\n\
+             XAU/USD · {} · {session} · M15 close {candle_close:.2}\n\
+             Entry <code>{:.2}</code> · SL {:.2} · TP1 {:.2} · TP2 {:.2}\n\
+             ⚠️ Research only: confirmed scenario in all sessions. Không phải GOLD SIGNAL, không quota, không AI, không auto-trade.",
+            signal.signal_type.as_str(),
+            signal.entry_price,
+            signal.stop_loss,
+            signal.take_profit_1,
+            signal.take_profit_2
+        )
+    }
+
+    pub async fn send_session_shadow_alert(
+        &self,
+        scenario: &Scenario,
+        signal: &Signal,
+        candle_close: f64,
+        session: &str,
+    ) -> Result<i64, String> {
+        let message_text =
+            Self::format_session_shadow_message(scenario, signal, candle_close, session);
+        self.send_html_message(&message_text).await
+    }
+
     pub async fn send_daily_view(&self, outlook: &MarketOutlook, slot: u32) -> Result<i64, String> {
         let message_text = Self::format_daily_view_message(outlook, slot);
         self.send_html_message(&message_text).await
@@ -3212,6 +3291,39 @@ mod tests {
         assert!(message.contains("Risk 0.5%"));
         assert!(message.contains("Alert-only"));
         assert!(!message.contains("GOLD SIGNAL"));
+    }
+
+    #[test]
+    fn format_strategy_v2_shadow_message_is_research_only() {
+        let scenario = base_scenario("bearish_breakdown", "Bearish breakdown", "BEARISH");
+        let message = TelegramNotifier::format_strategy_v2_shadow_message(
+            &scenario, 3800.0, 3810.0, 3780.0, 3770.0, 3799.5, "OUT",
+        );
+        assert!(message.contains("RESEARCH — STRATEGY V2 SHADOW"));
+        assert!(
+            message.contains("Entry <code>3800.00</code> · SL 3810.00 · TP1 3780.00 · TP2 3770.00")
+        );
+        assert!(message.contains("OUT"));
+        assert!(message.contains("Không phải GOLD SIGNAL"));
+        assert!(!message.contains("<b>GOLD SIGNAL"));
+    }
+
+    #[test]
+    fn format_session_shadow_message_is_research_only_and_escapes() {
+        let mut scenario = base_scenario("bearish_breakdown", "Bearish <breakdown>", "BEARISH");
+        scenario.trigger_direction = "BELOW".to_string();
+        let signal = sample_signal();
+        let message =
+            TelegramNotifier::format_session_shadow_message(&scenario, &signal, 2684.0, "IN");
+        assert!(message.contains("RESEARCH — SESSION SHADOW"));
+        assert!(message.contains("Bearish &lt;breakdown&gt;"));
+        assert!(!message.contains("<breakdown>"));
+        assert!(
+            message.contains("Entry <code>2684.50</code> · SL 2674.00 · TP1 2705.50 · TP2 2716.00")
+        );
+        assert!(message.contains("IN"));
+        assert!(message.contains("Không phải GOLD SIGNAL"));
+        assert!(!message.contains("<b>GOLD SIGNAL"));
     }
 
     #[test]
