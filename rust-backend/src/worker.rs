@@ -38,6 +38,7 @@ use crate::tracker::{evaluate_active_signals, PendingConfirmation};
 use crate::trigger_journal::{record, regime_label, TriggerEvent};
 use crate::volume_delta::{compute_delta, delta_allows_signal};
 use chrono::{DateTime, Utc};
+use std::collections::HashSet;
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -295,6 +296,7 @@ fn record_trigger_event(
     signal: Option<&Signal>,
     confirmation_reason: &str,
     confirmation_type: Option<&str>,
+    gate_detail: Option<&str>,
     score: Option<&MarketScore>,
     last_candle: &Candle,
     now: DateTime<Utc>,
@@ -350,6 +352,7 @@ fn record_trigger_event(
     event.confirmation_pass = Some(signal.is_some());
     event.confirmation_reason = Some(confirmation_reason.to_string());
     event.confirmation_type = confirmation_type.map(str::to_string);
+    event.gate_subreason = Some(gate_detail.unwrap_or(confirmation_reason).to_string());
     if let Some(score) = score {
         event.score_total = Some(score.total);
         event.score_structure = Some(score.structure);
@@ -371,7 +374,6 @@ fn record_trigger_event(
         _ => "confirmation",
     };
     event.gate = Some(gate.to_string());
-    event.gate_subreason = Some(confirmation_reason.to_string());
     let close_time = last_candle
         .timestamp
         .saturating_add(last_candle.timeframe.duration_millis());
@@ -530,6 +532,7 @@ async fn build_confirmed_scenario_signal(
                 signal.as_ref(),
                 &reason,
                 confirmation_type.map(|kind| kind.as_str()),
+                evaluation.detail.as_deref(),
                 Some(&score),
                 last_candle,
                 now,
@@ -601,6 +604,7 @@ async fn build_confirmed_scenario_signal(
         signal.as_ref(),
         &reason,
         confirmation_type.map(|kind| kind.as_str()),
+        evaluation.detail.as_deref(),
         score.as_ref(),
         last_candle,
         now,
@@ -616,6 +620,50 @@ async fn build_confirmed_scenario_signal(
     })
 }
 
+async fn record_scanner_gate(
+    state: &AppState,
+    config: &BotConfig,
+    gate: &str,
+    reason: &str,
+    recorded: &mut HashSet<(i64, String)>,
+    last_candle: &mut Option<i64>,
+) {
+    if !config.trigger_journal_enabled {
+        return;
+    }
+    let candles = state.candles.read().await.clone();
+    let Some(last) = candles.last() else {
+        return;
+    };
+    if *last_candle != Some(last.timestamp) {
+        *last_candle = Some(last.timestamp);
+        recorded.clear();
+    }
+    if !recorded.insert((last.timestamp, gate.to_string())) {
+        return;
+    }
+    let cfg_hash = config_hash(config);
+    let snap_hash = snapshot_hash(&cfg_hash, &candles, None, None, &[]);
+    let now = Utc::now();
+    let mut event = TriggerEvent::new("decision_trace");
+    event.created_at = Some(now);
+    event.candle_timestamp = Some(last.timestamp);
+    event.decision_id = Some(decision_id(now, &snap_hash));
+    event.strategy_version = Some(STRATEGY_VERSION.to_string());
+    event.config_hash = Some(cfg_hash);
+    event.snapshot_hash = Some(snap_hash);
+    event.gate = Some(gate.to_string());
+    event.gate_subreason = Some(reason.to_string());
+    event.valid = Some(false);
+    event.source = Some("scanner_gate".to_string());
+    event.reason = Some("blocked".to_string());
+    record(
+        &state.trigger_journal,
+        config.trigger_journal_enabled,
+        &event,
+    );
+}
+
 /// Background Scanner 24/7 — quét mỗi 60 giây.
 ///
 /// `initial_spot_cache` giữ lại kết quả spot/basis vừa fetch lúc bootstrap để
@@ -625,6 +673,8 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
         info!("⏱️ Sniper Worker 24/7 đã khởi chạy (chu kỳ 60 giây)...");
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         let mut cached_spot = initial_spot_cache;
+        let mut recorded_gates: HashSet<(i64, String)> = HashSet::new();
+        let mut gate_candle: Option<i64> = None;
 
         loop {
             interval.tick().await;
@@ -739,12 +789,30 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
 
             // 6.2 Bot đang hoạt động?
             if !config.is_active {
+                record_scanner_gate(
+                    &state,
+                    &config,
+                    "inactive",
+                    "bot_inactive",
+                    &mut recorded_gates,
+                    &mut gate_candle,
+                )
+                .await;
                 continue;
             }
 
             // 6.2b Hard weekend gate: no trade signals or entry alerts on
             // Saturday/Sunday, even when the session filter is disabled.
             if PersistentStore::is_market_closed_weekend(Utc::now()) {
+                record_scanner_gate(
+                    &state,
+                    &config,
+                    "weekend",
+                    "market_closed_weekend",
+                    &mut recorded_gates,
+                    &mut gate_candle,
+                )
+                .await;
                 continue;
             }
 
@@ -759,11 +827,29 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     now,
                 )
             {
+                record_scanner_gate(
+                    &state,
+                    &config,
+                    "quota",
+                    "daily_quota_reached",
+                    &mut recorded_gates,
+                    &mut gate_candle,
+                )
+                .await;
                 continue;
             }
 
             // 6.4 Chỉ quét trong khung giờ thanh khoản Âu-Mỹ (13:00-23:00 GMT+7).
             if !PersistentStore::is_within_golden_session(now, config.session_filter_enabled) {
+                record_scanner_gate(
+                    &state,
+                    &config,
+                    "session",
+                    "outside_session",
+                    &mut recorded_gates,
+                    &mut gate_candle,
+                )
+                .await;
                 continue;
             }
 
@@ -774,6 +860,15 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                 .await
                 .check_kill_switch(now, &config);
             if !is_market_safe {
+                record_scanner_gate(
+                    &state,
+                    &config,
+                    "news",
+                    "high_impact_window",
+                    &mut recorded_gates,
+                    &mut gate_candle,
+                )
+                .await;
                 continue;
             }
 
@@ -784,6 +879,15 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                 None => continue,
             };
             if PersistentStore::is_duplicate_candle_timestamp(&signals_snapshot, latest_timestamp) {
+                record_scanner_gate(
+                    &state,
+                    &config,
+                    "duplicate_candle",
+                    "already_evaluated",
+                    &mut recorded_gates,
+                    &mut gate_candle,
+                )
+                .await;
                 continue;
             }
 
@@ -808,6 +912,15 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                             "🛑 [NO_TRADE] Spread proxy {:.2}×H4 ATR > {:.2} — bỏ qua sniper.",
                             spread, config.max_spread_proxy_atr
                         );
+                        record_scanner_gate(
+                            &state,
+                            &config,
+                            "spread",
+                            "spread_proxy_too_high",
+                            &mut recorded_gates,
+                            &mut gate_candle,
+                        )
+                        .await;
                         continue;
                     }
                 }

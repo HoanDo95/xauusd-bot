@@ -83,7 +83,21 @@ pub(crate) fn pending_confirmation(
     index: usize,
     volume_ratio: f64,
 ) -> Option<ConfirmationType> {
-    let candle = candles.get(index)?;
+    pending_confirmation_detail(signal, candles, index, volume_ratio).0
+}
+
+/// Detailed version used by the decision trace: returns a machine-readable
+/// sub-reason (`volume`, `directional_close`, `pattern`, `no_candle`) so the
+/// funnel can distinguish why confirmation failed.
+pub(crate) fn pending_confirmation_detail(
+    signal: &Signal,
+    candles: &[Candle],
+    index: usize,
+    volume_ratio: f64,
+) -> (Option<ConfirmationType>, String) {
+    let Some(candle) = candles.get(index) else {
+        return (None, "no_candle".to_string());
+    };
 
     let period = 20;
     let start = index.saturating_sub(period);
@@ -95,13 +109,13 @@ pub(crate) fn pending_confirmation(
     };
     let volume_ok = average_volume > 0.0 && candle.volume >= average_volume * volume_ratio.max(1.0);
     if !volume_ok {
-        return None;
+        return (None, "volume".to_string());
     }
 
     let previous = index
         .checked_sub(1)
         .and_then(|previous| candles.get(previous));
-    match signal.entry_type {
+    let confirmation = match signal.entry_type {
         EntryType::Breakout => match signal.signal_type {
             SignalType::Buy if candle.close > signal.entry_price && candle.close > candle.open => {
                 Some(ConfirmationType::DirectionalClose)
@@ -152,6 +166,10 @@ pub(crate) fn pending_confirmation(
             }
             _ => None,
         },
+    };
+    match confirmation {
+        Some(kind) => (Some(kind), "confirmed".to_string()),
+        None => (None, "pattern".to_string()),
     }
 }
 

@@ -8,7 +8,7 @@ use crate::decision_trace::GateResult;
 use crate::models::{BotConfig, Candle, Signal};
 use crate::scenario_signal::{confirmed_signal_from_scenario, rsi_extreme_blocks_confirmed};
 use crate::scenarios::Scenario;
-use crate::tracker::{pending_confirmation, ConfirmationType};
+use crate::tracker::{pending_confirmation_detail, ConfirmationType};
 use chrono::{DateTime, Utc};
 use tracing::info;
 
@@ -17,6 +17,7 @@ pub struct GateEvaluation {
     pub signal: Option<Signal>,
     pub reason: String,
     pub confirmation_type: Option<ConfirmationType>,
+    pub detail: Option<String>,
     pub gates: Vec<GateResult>,
 }
 
@@ -65,6 +66,7 @@ pub fn confirmed_signal_with_gates(
             signal: None,
             reason: "rsi_extreme".to_string(),
             confirmation_type: None,
+            detail: None,
             gates,
         };
     }
@@ -82,6 +84,7 @@ pub fn confirmed_signal_with_gates(
             signal: None,
             reason: "invalid_levels".to_string(),
             confirmation_type: None,
+            detail: None,
             gates,
         };
     };
@@ -90,13 +93,13 @@ pub fn confirmed_signal_with_gates(
     let last_index = candles.len().saturating_sub(1);
     let mut confirmation_type = None;
     if config.quantum_trigger_confirmation_enabled {
-        match pending_confirmation(
+        match pending_confirmation_detail(
             &signal,
             candles,
             last_index,
             config.quantum_volume_confirm_ratio,
         ) {
-            Some(kind) => {
+            (Some(kind), _) => {
                 signal.management_note = Some(format!("M15 confirmation: {}", kind.as_str()));
                 confirmation_type = Some(kind);
                 gates.push(
@@ -104,16 +107,20 @@ pub fn confirmed_signal_with_gates(
                         .with_detail(kind.as_str().to_string()),
                 );
             }
-            None => {
+            (None, detail) => {
                 info!(
-                    "⏳ [Confirmed Signal] {} trigger chưa xác nhận volume/pattern — chờ nến sau.",
-                    scenario.id
+                    "⏳ [Confirmed Signal] {} trigger chưa xác nhận ({}).",
+                    scenario.id, detail
                 );
-                gates.push(GateResult::block("confirmation", "confirmation_failed"));
+                gates.push(
+                    GateResult::block("confirmation", "confirmation_failed")
+                        .with_detail(detail.clone()),
+                );
                 return GateEvaluation {
                     signal: None,
                     reason: "confirmation_failed".to_string(),
                     confirmation_type: None,
+                    detail: Some(detail),
                     gates,
                 };
             }
@@ -134,6 +141,7 @@ pub fn confirmed_signal_with_gates(
         signal: Some(signal),
         reason: "confirmed".to_string(),
         confirmation_type,
+        detail: None,
         gates,
     }
 }
