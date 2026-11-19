@@ -38,6 +38,7 @@ mod market;
 mod market_view;
 mod news;
 mod news_impact;
+mod scalp_api;
 mod scanner;
 mod scenarios;
 mod signals;
@@ -198,6 +199,11 @@ pub fn create_router(state: AppState) -> Router {
             "/api/trigger-journal/summary",
             get(journal::get_trigger_journal_summary),
         )
+        .route(
+            "/api/scalp-filters",
+            get(scalp_api::get_scalp_filters).post(scalp_api::update_scalp_filters),
+        )
+        .route("/api/scalp-stats", get(scalp_api::get_scalp_stats))
         .route("/api/market-view", get(market_view::get_market_view))
         .route(
             "/api/market-view/strategist",

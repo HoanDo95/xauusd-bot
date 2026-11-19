@@ -28,6 +28,7 @@ pub mod risk_guardrails;
 pub mod risk_manager;
 pub mod rsi;
 pub mod scalp;
+pub mod scalp_config;
 pub mod scenario_signal;
 pub mod scenarios;
 pub mod scheduler;

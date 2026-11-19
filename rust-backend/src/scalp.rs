@@ -13,6 +13,7 @@ use crate::models::Candle;
 use crate::retest_scalp::{RetestScalpLevels, RetestScalpOutcome, RetestScalpTrade};
 use crate::retest_shadow::RetestWatch;
 use crate::risk_manager::PositionSizer;
+use crate::scalp_config::ScalpFilterStore;
 use crate::scenarios::{scenario_triggered, Scenario};
 use crate::storage::PersistentStore;
 use crate::trigger_journal::{record, TriggerEvent};
@@ -26,10 +27,7 @@ use tracing::{info, warn};
 const INTERVAL_SECS: u64 = 30;
 const WAIT_BARS: i64 = 8;
 const M15_MS: i64 = 15 * 60 * 1000;
-const MIN_CONFIDENCE: u8 = 60;
 const OB_MAX_ATR: f64 = 1.0;
-const MAX_ALERTS_PER_DAY: usize = 3;
-const COOLDOWN_MINUTES: i64 = 45;
 const TP1_WEIGHT: f64 = 0.5;
 const TP2_WEIGHT: f64 = 0.5;
 
@@ -373,16 +371,18 @@ pub fn spawn_scalp_worker(state: AppState) {
         let path = std::env::var("SCALP_OB_STATE_PATH")
             .unwrap_or_else(|_| "data/scalp_ob_state.json".to_string());
         let store = ScalpObStore::new(path);
+        let filter_store = ScalpFilterStore::from_env();
         let mut local = store.load();
         info!(
-            "🧪 [Scalp OB] Worker started (wait {} bars, OB <= {:.1} ATR, TP 1R/2R, max {} alerts/day).",
-            WAIT_BARS, OB_MAX_ATR, MAX_ALERTS_PER_DAY
+            "🧪 [Scalp OB] Worker started (wait {} bars, OB <= {:.1} ATR, TP 1R/2R, filters config-driven).",
+            WAIT_BARS, OB_MAX_ATR
         );
         let mut interval = tokio::time::interval(StdDuration::from_secs(INTERVAL_SECS));
 
         loop {
             interval.tick().await;
             let config = state.config.read().await.clone();
+            let filters = filter_store.load();
             if !config.is_active {
                 continue;
             }
@@ -492,7 +492,7 @@ pub fn spawn_scalp_worker(state: AppState) {
                         .iter()
                         .filter(|at| same_vn_day(**at, now))
                         .count();
-                    if alerts_today >= MAX_ALERTS_PER_DAY {
+                    if alerts_today >= filters.max_alerts_per_day {
                         record_skip_event(&state, &watch, &candle, "daily_cap", Some(ob_distance))
                             .await;
                         local.watch = None;
@@ -502,7 +502,7 @@ pub fn spawn_scalp_worker(state: AppState) {
                         continue;
                     }
                     if let Some(last) = local.last_alert_at {
-                        if now - last < Duration::minutes(COOLDOWN_MINUTES) {
+                        if now - last < Duration::minutes(filters.cooldown_minutes) {
                             record_skip_event(
                                 &state,
                                 &watch,
@@ -601,7 +601,7 @@ pub fn spawn_scalp_worker(state: AppState) {
                 continue;
             };
             if !primary.valid
-                || primary.confidence < MIN_CONFIDENCE
+                || primary.confidence < filters.min_confidence
                 || primary.macro_alignment.eq_ignore_ascii_case("COUNTER")
             {
                 continue;
@@ -610,16 +610,20 @@ pub fn spawn_scalp_worker(state: AppState) {
                 continue;
             };
             if let Some(context) = state.market_context.read().await.clone() {
-                let (allowed, _) = htf_allows_signal(side, &context, true, true);
+                let htf_h4 = filters.htf_filter_enabled && config.htf_h4_filter_enabled;
+                let htf_d1 = filters.htf_filter_enabled && config.htf_d1_filter_enabled;
+                let (allowed, _) = htf_allows_signal(side, &context, htf_h4, htf_d1);
                 if !allowed {
                     continue;
                 }
-                if side == "BUY"
+                if filters.rsi_h1_guard_enabled
+                    && config.min_rsi_h1_for_buy > 0.0
+                    && side == "BUY"
                     && context
                         .rsi_h1
                         .as_ref()
                         .and_then(|rsi| rsi.value)
-                        .is_some_and(|value| value < 30.0)
+                        .is_some_and(|value| value < config.min_rsi_h1_for_buy)
                 {
                     continue;
                 }
