@@ -216,7 +216,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let profile = std::env::var("BOT_PROFILE").unwrap_or_else(|_| "swing".to_string());
-    let is_scalp = profile.eq_ignore_ascii_case("scalp");
     info!("🧩 Bot profile: {}", profile);
 
     // Common workers: market data/context, macro, trigger-journal outcomes.
@@ -225,22 +224,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     macro_flow::spawn_macro_flow_worker(state.clone());
     gold_signal_bot::trigger_journal_worker::spawn_trigger_journal_worker(state.clone());
 
-    if is_scalp {
-        gold_signal_bot::scalp::spawn_scalp_worker(state.clone());
-    } else {
-        // Swing-only workers. The scalp service must not run these.
-        worker::spawn_daily_scheduler(state.clone(), scheduler);
-        worker::spawn_session_alerts(state.clone());
-        gold_signal_bot::divergence_alerts::spawn_divergence_worker(state.clone());
-        gold_signal_bot::action_alerts::spawn_action_trigger_worker(state.clone());
-        gold_signal_bot::retest_shadow::spawn_retest_shadow_worker(state.clone());
-        gold_signal_bot::retest_scalp::spawn_retest_scalp_worker(state.clone());
-        gold_signal_bot::strategy_v2_shadow::spawn_strategy_v2_shadow_worker(state.clone());
-        gold_signal_bot::session_shadow::spawn_session_shadow_worker(state.clone());
-        gold_signal_bot::market_view_worker::spawn_market_view_worker(state.clone());
-        gold_signal_bot::news_impact_worker::spawn_news_impact_worker(state.clone());
-        gold_signal_bot::telegram_commands::spawn_telegram_command_worker(state.clone());
-    }
+    worker::spawn_daily_scheduler(state.clone(), scheduler);
+    worker::spawn_session_alerts(state.clone());
+    gold_signal_bot::divergence_alerts::spawn_divergence_worker(state.clone());
+    gold_signal_bot::action_alerts::spawn_action_trigger_worker(state.clone());
+    gold_signal_bot::retest_shadow::spawn_retest_shadow_worker(state.clone());
+    gold_signal_bot::retest_scalp::spawn_retest_scalp_worker(state.clone());
+    gold_signal_bot::strategy_v2_shadow::spawn_strategy_v2_shadow_worker(state.clone());
+    gold_signal_bot::session_shadow::spawn_session_shadow_worker(state.clone());
+    gold_signal_bot::market_view_worker::spawn_market_view_worker(state.clone());
+    gold_signal_bot::news_impact_worker::spawn_news_impact_worker(state.clone());
+    gold_signal_bot::telegram_commands::spawn_telegram_command_worker(state.clone());
 
     // 9. CORS + Router
     // Same-origin dashboard không cần CORS; chỉ mở cho các origin được cấu hình.

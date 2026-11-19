@@ -702,7 +702,6 @@ async fn record_scanner_gate(
 pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>) {
     tokio::spawn(async move {
         let profile = std::env::var("BOT_PROFILE").unwrap_or_else(|_| "swing".to_string());
-        let is_scalp = profile.eq_ignore_ascii_case("scalp");
         info!(
             "⏱️ Scanner 24/7 đã khởi chạy (profile={}, chu kỳ 60 giây)...",
             profile
@@ -821,12 +820,6 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                         warn!("⚠️ Không lưu được kết quả TP/SL: {}", err);
                     }
                 }
-            }
-
-            // Scalp service: keep candles/live price fresh, but never run the
-            // swing scenario/signal path. The scalp strategy has its own worker.
-            if is_scalp {
-                continue;
             }
 
             // 6.2 Bot đang hoạt động?
