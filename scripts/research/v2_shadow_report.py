@@ -125,7 +125,7 @@ def net_r(trigger, outcome, cost_usd):
     return gross
 
 
-def collect(rows, cost_usd, since=None):
+def collect(rows, cost_usd, since=None, session_filter=None):
     triggers = {}
     outcomes = {}
     for row in rows:
@@ -137,6 +137,8 @@ def collect(rows, cost_usd, since=None):
         if since and created and created < since:
             continue
         if event in ("strategy_v2_shadow", "triggered"):
+            if session_filter and row.get("session") != session_filter:
+                continue
             triggers[setup_id] = row
         elif event == "outcome":
             outcomes[setup_id] = row
@@ -199,6 +201,21 @@ def render(v2_rows, live_rows, pending, cost_usd):
         f"{live['pf']:.2f} | {live['dd']:.1f} | {fmt_ci(live_ci)} |"
     )
     lines.append("")
+    lines.append("## v2 shadow by session")
+    lines.append("")
+    lines.append("| Session | n | Win% | Avg R | Total R | PF |")
+    lines.append("|---|---:|---:|---:|---:|---:|")
+    by_session = defaultdict(list)
+    for trigger, r in v2_rows:
+        by_session[trigger.get("session") or "unknown"].append(r)
+    for session in sorted(by_session):
+        values = by_session[session]
+        row = stats(values)
+        lines.append(
+            f"| {session} | {row['n']} | {row['win']} | {row['avg']:+.3f} | "
+            f"{row['total']:+.1f} | {row['pf']:.2f} |"
+        )
+    lines.append("")
     if p_value is None:
         lines.append("- v2 vs live permutation: not enough completed samples yet.")
     else:
@@ -220,11 +237,18 @@ def main():
     parser.add_argument("--out", default="")
     parser.add_argument("--cost-usd", type=float, default=0.5)
     parser.add_argument("--since", default="")
+    parser.add_argument(
+        "--session",
+        default="",
+        help="Filter both groups by journal session label (e.g. IN).",
+    )
     args = parser.parse_args()
 
     since = parse_ts(args.since) if args.since else None
     rows = load_journal(args.journal)
-    v2_rows, live_rows, pending = collect(rows, args.cost_usd, since)
+    v2_rows, live_rows, pending = collect(
+        rows, args.cost_usd, since, args.session or None
+    )
     report = render(v2_rows, live_rows, pending, args.cost_usd)
     print(report)
     if args.out:
