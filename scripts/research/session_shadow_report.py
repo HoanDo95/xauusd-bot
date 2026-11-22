@@ -42,7 +42,10 @@ def parse_ts(value):
         if not sep:
             fraction, sep, tail = rest.partition("-")
         text = f"{head}.{fraction[:6]}{sep}{tail}"
-    return datetime.fromisoformat(text)
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def trigger_time(trigger):
