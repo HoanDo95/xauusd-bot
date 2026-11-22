@@ -1,5 +1,6 @@
 use axum::http::HeaderValue;
 use gold_signal_bot::api::{create_router, AppState};
+use gold_signal_bot::daily_plan::DailyPlanStore;
 use gold_signal_bot::macro_flow;
 use gold_signal_bot::market_feed::MarketDataFeed;
 use gold_signal_bot::news_filter::{NewsFilterConfig, NewsFilterService};
@@ -49,6 +50,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let news_impact_store = NewsImpactStore::new(news_impact_path);
     let initial_news_impact = news_impact_store.load();
     let persisted = store.load();
+    let daily_plan_store = DailyPlanStore::from_env();
+    let initial_daily_plan = daily_plan_store.load();
     let mut config = persisted.config.sanitized();
     if config.telegram_bot_token.trim().is_empty() {
         config.telegram_bot_token = env_bot_token.clone();
@@ -202,6 +205,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         action_trigger_last_sent: Arc::new(RwLock::new(persisted.action_watch_last_sent)),
         active_watch_setup: Arc::new(RwLock::new(persisted.active_watch_setup)),
         daily_view_sent: Arc::new(RwLock::new(persisted.daily_view_sent)),
+        daily_plan: Arc::new(RwLock::new(initial_daily_plan)),
+        daily_plan_store,
         retest_watch: Arc::new(RwLock::new(persisted.retest_watch)),
         active_retest_trade: Arc::new(RwLock::new(persisted.retest_trade)),
         retest_scalp_watch: Arc::new(RwLock::new(persisted.retest_scalp_watch)),

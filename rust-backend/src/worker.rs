@@ -1059,68 +1059,92 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                     )
                     .await;
 
-                    let Some(decision) = decision else {
-                        warn!(
-                            "🛑 [AI Decision] Không có quyết định cho {} {} — fail-closed, bỏ qua tín hiệu.",
-                            signal.signal_type, signal.symbol
+                    let decision = match decision {
+                        Some(decision) => Some(decision),
+                        None => {
+                            if config.ai_signal_review_fail_open {
+                                warn!(
+                                    "⚠️ [AI Decision] Không có quyết định cho {} {} — fail-open (ai_signal_review_fail_open=true).",
+                                    signal.signal_type, signal.symbol
+                                );
+                                record_ai_review_event(
+                                    &state,
+                                    &config,
+                                    confirmed_setup_id.as_deref(),
+                                    &signal,
+                                    "UNAVAILABLE",
+                                    0.0,
+                                    "unavailable",
+                                    false,
+                                    "ai_unavailable_fail_open",
+                                );
+                                None
+                            } else {
+                                warn!(
+                                    "🛑 [AI Decision] Không có quyết định cho {} {} — fail-closed, bỏ qua tín hiệu.",
+                                    signal.signal_type, signal.symbol
+                                );
+                                record_ai_review_event(
+                                    &state,
+                                    &config,
+                                    confirmed_setup_id.as_deref(),
+                                    &signal,
+                                    "UNAVAILABLE",
+                                    0.0,
+                                    "unavailable",
+                                    true,
+                                    "ai_unavailable",
+                                );
+                                continue;
+                            }
+                        }
+                    };
+                    if let Some(decision) = decision.as_ref() {
+                        *state.last_ai_decision.write().await = Some(decision.clone());
+
+                        signal.ai_verdict = Some(decision.action.clone());
+                        signal.ai_confidence = Some(decision.confidence_score);
+                        signal.ai_reason = Some(decision.reason.clone());
+                        if decision.macro_flow_alignment.is_some() {
+                            signal.macro_flow_alignment = decision.macro_flow_alignment.clone();
+                        }
+                        if decision.macro_flow_note.is_some() {
+                            signal.macro_flow_note = decision.macro_flow_note.clone();
+                        }
+                        if volume_source_has_buy_sell_delta(&active_volume_source) {
+                            signal.delta_ratio = Some(delta.delta_ratio);
+                            signal.cvd = Some(delta.cvd);
+                            signal.delta = Some(delta.delta);
+                        }
+
+                        let (blocked, reason) = decision_blocks_or_approves(
+                            &signal,
+                            decision,
+                            config.ai_signal_review_min_confidence,
                         );
                         record_ai_review_event(
                             &state,
                             &config,
                             confirmed_setup_id.as_deref(),
                             &signal,
-                            "UNAVAILABLE",
-                            0.0,
-                            "unavailable",
-                            true,
-                            "ai_unavailable",
+                            &decision.action,
+                            decision.confidence_score,
+                            &decision.model,
+                            blocked,
+                            &reason,
                         );
-                        continue;
-                    };
-                    *state.last_ai_decision.write().await = Some(decision.clone());
-
-                    signal.ai_verdict = Some(decision.action.clone());
-                    signal.ai_confidence = Some(decision.confidence_score);
-                    signal.ai_reason = Some(decision.reason.clone());
-                    if decision.macro_flow_alignment.is_some() {
-                        signal.macro_flow_alignment = decision.macro_flow_alignment.clone();
-                    }
-                    if decision.macro_flow_note.is_some() {
-                        signal.macro_flow_note = decision.macro_flow_note.clone();
-                    }
-                    if volume_source_has_buy_sell_delta(&active_volume_source) {
-                        signal.delta_ratio = Some(delta.delta_ratio);
-                        signal.cvd = Some(delta.cvd);
-                        signal.delta = Some(delta.delta);
-                    }
-
-                    let (blocked, reason) = decision_blocks_or_approves(
-                        &signal,
-                        &decision,
-                        config.ai_signal_review_min_confidence,
-                    );
-                    record_ai_review_event(
-                        &state,
-                        &config,
-                        confirmed_setup_id.as_deref(),
-                        &signal,
-                        &decision.action,
-                        decision.confidence_score,
-                        &decision.model,
-                        blocked,
-                        &reason,
-                    );
-                    if blocked {
-                        warn!(
-                            "🧠 [AI Decision] Bỏ qua {} {}: {}",
+                        if blocked {
+                            warn!(
+                                "🧠 [AI Decision] Bỏ qua {} {}: {}",
+                                signal.signal_type, signal.symbol, reason
+                            );
+                            continue;
+                        }
+                        info!(
+                            "✅ [AI Decision] Cho qua {} {} — {}",
                             signal.signal_type, signal.symbol, reason
                         );
-                        continue;
                     }
-                    info!(
-                        "✅ [AI Decision] Cho qua {} {} — {}",
-                        signal.signal_type, signal.symbol, reason
-                    );
 
                     // Deterministic anti-chase gate: after an exhausted daily
                     // move, do not chase a breakout even if the AI approved it.

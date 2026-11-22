@@ -72,7 +72,7 @@ pub async fn compute_market_outlook(state: &AppState) -> MarketOutlook {
     }
     .to_string();
 
-    build_outlook(OutlookInput {
+    let mut outlook = build_outlook(OutlookInput {
         scenarios: &scenarios,
         context: context.as_ref(),
         now,
@@ -84,7 +84,18 @@ pub async fn compute_market_outlook(state: &AppState) -> MarketOutlook {
         strategist,
         score,
         plan_status,
-    })
+    });
+
+    // Show the slot times of the frozen daily plan, not the request time. The
+    // levels are already anchored by current_scenarios; this keeps the UI honest.
+    let slot = crate::daily_plan::current_slot(now);
+    if let Some(plan) = state.daily_plan.read().await.as_ref() {
+        if plan.slot_key == slot.key {
+            outlook.generated_at = plan.generated_at.to_rfc3339();
+            outlook.valid_until = plan.valid_until.to_rfc3339();
+        }
+    }
+    outlook
 }
 
 pub async fn get_market_view(State(state): State<AppState>) -> impl IntoResponse {

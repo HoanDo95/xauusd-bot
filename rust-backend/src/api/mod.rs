@@ -130,6 +130,10 @@ pub struct AppState {
     pub active_watch_setup: Arc<RwLock<Option<WatchedSetup>>>,
     /// Các slot Daily View đã gửi, key `YYYY-MM-DD:HH` theo giờ Việt Nam.
     pub daily_view_sent: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
+    /// Daily plan đã freeze cho slot hiện tại (07/13/19 VN). Scanner + Market View
+    /// dùng cùng levels; refresh không re-anchor.
+    pub daily_plan: Arc<RwLock<Option<crate::daily_plan::DailyPlan>>>,
+    pub daily_plan_store: crate::daily_plan::DailyPlanStore,
     /// Retest shadow research watch (không phải signal/quota).
     pub retest_watch: Arc<RwLock<Option<crate::retest_shadow::RetestWatch>>>,
     /// Retest shadow trade being tracked to TP/SL/timeout.
