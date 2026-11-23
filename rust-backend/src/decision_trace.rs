@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 
 /// Bump when decision semantics change. Keep this in journal/health/Telegram.
-pub const STRATEGY_VERSION: &str = "2026-11-23.2-split-no-bounce";
+pub const STRATEGY_VERSION: &str = "2026-11-23.3-intraday-breakdown";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GateResult {

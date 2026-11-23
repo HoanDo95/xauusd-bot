@@ -23,6 +23,11 @@ const SINGLE_LEVEL_PROXIMITY_ATR: f64 = 1.5;
 const MIN_ATR: f64 = 2.5;
 /// Minimum breakout buffer above/below a level.
 const BREAKOUT_BUFFER_MIN: f64 = 2.0;
+/// A breakdown support farther than this many ATR from price is treated as a
+/// stale major level; the nearest intraday support inside the window wins.
+const INTRADAY_BREAKDOWN_MAX_ATR: f64 = 1.5;
+/// Ignore supports that are basically at the current price.
+const INTRADAY_BREAKDOWN_MIN_ATR: f64 = 0.15;
 /// Minimum stop-loss buffer around a level.
 const SL_BUFFER_MIN: f64 = 3.0;
 /// Number of recent candles used for the swing-high/low fallback.
@@ -449,7 +454,6 @@ pub fn build_scenarios(
         bullish_bounce_draft(
             price,
             atr,
-            breakout_buffer,
             sl_buffer,
             bounce_support,
             nearest_resistance,
@@ -459,7 +463,6 @@ pub fn build_scenarios(
         bearish_rejection_draft(
             price,
             atr,
-            breakout_buffer,
             sl_buffer,
             nearest_support,
             rejection_resistance,
@@ -615,6 +618,29 @@ fn bullish_breakout_draft(
     }
 }
 
+/// Pick the support that makes the breakdown actionable now. The
+/// confluence-preferred level can be a stale H4 major low; if it is farther
+/// than 1.5 ATR, use the nearest support inside the intraday window instead.
+fn select_breakdown_support(
+    price: f64,
+    atr: f64,
+    confluence_support: Option<f64>,
+    support_levels: &[f64],
+) -> Option<f64> {
+    let min_distance = atr * INTRADAY_BREAKDOWN_MIN_ATR;
+    let max_distance = atr * INTRADAY_BREAKDOWN_MAX_ATR;
+    let in_window = |level: f64| level < price - min_distance && level >= price - max_distance;
+
+    if let Some(level) = confluence_support.filter(|level| in_window(*level)) {
+        return Some(level);
+    }
+    support_levels
+        .iter()
+        .copied()
+        .find(|level| in_window(*level))
+        .or(confluence_support)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn bearish_breakdown_draft(
     price: f64,
@@ -627,17 +653,24 @@ fn bearish_breakdown_draft(
     swing_high: Option<f64>,
     sl_cap_atr: f64,
 ) -> ScenarioDraft {
+    let selected_support = select_breakdown_support(price, atr, nearest_support, support_levels);
+    let intraday_fallback = selected_support != nearest_support;
+    let entry_buffer = if intraday_fallback {
+        (atr * 0.10).max(BREAKOUT_BUFFER_MIN)
+    } else {
+        breakout_buffer
+    };
     let trigger = round2(
-        nearest_support
-            .map(|level| level - breakout_buffer)
+        selected_support
+            .map(|level| level - entry_buffer)
             .unwrap_or(price - atr),
     );
     let atr_stop_loss = round2(
-        nearest_support
+        selected_support
             .map(|level| level + sl_buffer)
             .unwrap_or(trigger + 2.0 * atr),
     );
-    let cap = nearest_support
+    let cap = selected_support
         .filter(|_| sl_cap_atr > 0.0)
         .map(|level| level + atr * sl_cap_atr);
     let stop_loss = swing_high
@@ -664,11 +697,15 @@ fn bearish_breakdown_draft(
             .unwrap_or_else(|| (trigger - 3.0 * risk).min(take_profit_1 - 1.0)),
     );
 
-    let invalidation = match nearest_support {
+    let invalidation = match selected_support {
         Some(level) => format!("Đóng M15 trở lại trên {:.2}", level),
         None => format!("Đóng M15 trở lại trên {:.2}", trigger),
     };
-    let trigger_text = match nearest_support {
+    let trigger_text = match selected_support {
+        Some(level) if intraday_fallback => format!(
+            "Đóng M15 dưới {:.2} (phá session low gần nhất {:.2})",
+            trigger, level
+        ),
         Some(level) => format!("Đóng M15 dưới {:.2} (phá hỗ trợ {:.2})", trigger, level),
         None => format!("Đóng M15 dưới {:.2}", trigger),
     };
@@ -687,13 +724,22 @@ fn bearish_breakdown_draft(
             take_profit_1,
             take_profit_2,
         )),
-        trigger_price: nearest_support.map(|_| trigger),
-        trigger_direction: if nearest_support.is_some() {
+        trigger_price: selected_support.map(|_| trigger),
+        trigger_direction: if selected_support.is_some() {
             "BELOW"
         } else {
             "NONE"
         },
-        notes: vec!["Kịch bản breakdown cần nến M15 đóng cửa xác nhận.".to_string()],
+        notes: {
+            let mut notes = vec!["Kịch bản breakdown cần nến M15 đóng cửa xác nhận.".to_string()];
+            if intraday_fallback {
+                notes.push(
+                    "Intraday breakdown: dùng session low gần nhất thay cho H4 major low đã quá xa."
+                        .to_string(),
+                );
+            }
+            notes
+        },
     }
 }
 
@@ -701,7 +747,6 @@ fn bearish_breakdown_draft(
 fn bullish_bounce_draft(
     price: f64,
     atr: f64,
-    breakout_buffer: f64,
     sl_buffer: f64,
     nearest_support: Option<f64>,
     nearest_resistance: Option<f64>,
@@ -754,7 +799,7 @@ fn bullish_bounce_draft(
         };
     }
 
-    let entry = round2(support + breakout_buffer);
+    let entry = round2(support);
     let stop_loss = round2(support - sl_buffer);
     let risk = (entry - stop_loss).abs();
     let tp1_reward = min_tp1_reward(risk, min_risk_reward);
@@ -788,7 +833,6 @@ fn bullish_bounce_draft(
 fn bearish_rejection_draft(
     price: f64,
     atr: f64,
-    breakout_buffer: f64,
     sl_buffer: f64,
     nearest_support: Option<f64>,
     nearest_resistance: Option<f64>,
@@ -841,7 +885,7 @@ fn bearish_rejection_draft(
         };
     }
 
-    let entry = round2(resistance - breakout_buffer);
+    let entry = round2(resistance);
     let stop_loss = round2(resistance + sl_buffer);
     let risk = (stop_loss - entry).abs();
     let tp1_reward = min_tp1_reward(risk, min_risk_reward);
@@ -2703,6 +2747,23 @@ mod tests {
     }
 
     #[test]
+    fn breakdown_uses_near_support_when_major_level_is_stale() {
+        let selected = select_breakdown_support(
+            3614.0,
+            53.0,
+            Some(3514.26),
+            &[3613.04, 3602.72, 3575.24, 3514.26],
+        );
+        assert_eq!(selected, Some(3602.72));
+    }
+
+    #[test]
+    fn breakdown_keeps_confluence_support_when_it_is_in_window() {
+        let selected = select_breakdown_support(3614.0, 53.0, Some(3575.24), &[3602.72, 3575.24]);
+        assert_eq!(selected, Some(3575.24));
+    }
+
+    #[test]
     fn reference_only_bounce_never_becomes_primary() {
         let ranked = rank_scenarios(vec![
             ranked_scenario("bearish_breakdown", "BEARISH", "ALIGNED", false, 100),
@@ -3099,10 +3160,12 @@ mod tests {
         assert_eq!(bounce.trigger_direction, "TOUCH");
         assert_eq!(bounce.trigger_timeframe, "M15");
         assert_eq!(bounce.trigger_price, market.nearest_support);
+        assert_eq!(bounce.entry, bounce.trigger_price);
 
         assert_eq!(rejection.trigger_direction, "TOUCH");
         assert_eq!(rejection.trigger_timeframe, "M15");
         assert_eq!(rejection.trigger_price, market.nearest_resistance);
+        assert_eq!(rejection.entry, rejection.trigger_price);
     }
 
     #[test]
