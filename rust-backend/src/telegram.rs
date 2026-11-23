@@ -25,6 +25,48 @@ pub struct TelegramNotifier {
     chat_id: String,
 }
 
+const ZONE_SL_POINTS: f64 = 20.0;
+const ZONE_TP1_POINTS: f64 = 20.0;
+const ZONE_TP2_MIN: f64 = 20.0;
+const ZONE_TP2_MAX: f64 = 40.0;
+
+fn zone_alert_mode_enabled() -> bool {
+    std::env::var("ZONE_ALERT_MODE")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// Reference levels for the zone-advisory profile: fixed 20-point SL, TP1 20,
+/// TP2 from the scenario target clamped to 20..=40 points. Display only.
+fn zone_plan_levels(entry: f64, side: &str, scenario_tp2: Option<f64>) -> (f64, f64, f64, f64) {
+    let is_buy = side.trim().eq_ignore_ascii_case("BUY");
+    let tp2_points = scenario_tp2
+        .map(|tp2| (tp2 - entry).abs())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(ZONE_TP2_MAX)
+        .clamp(ZONE_TP2_MIN, ZONE_TP2_MAX);
+    if is_buy {
+        (
+            entry - ZONE_SL_POINTS,
+            entry + ZONE_TP1_POINTS,
+            entry + tp2_points,
+            tp2_points,
+        )
+    } else {
+        (
+            entry + ZONE_SL_POINTS,
+            entry - ZONE_TP1_POINTS,
+            entry - tp2_points,
+            tp2_points,
+        )
+    }
+}
+
 impl TelegramNotifier {
     pub fn new(bot_token: String, chat_id: String) -> Self {
         Self {
@@ -138,7 +180,34 @@ impl TelegramNotifier {
     }
 
     /// Định dạng tin nhắn chuẩn và chuyên nghiệp cho Trader Vàng
+    /// Zone-advisory alert: fixed 20-point SL, TP1 20, TP2 20-40 from the
+    /// scenario target. Never shows lot/risk or position management.
+    pub fn format_zone_signal_message(signal: &Signal) -> String {
+        let side = match signal.signal_type {
+            SignalType::Buy => "BUY",
+            SignalType::Sell => "SELL",
+        };
+        let symbol = Self::escape_html(&signal.symbol);
+        let (stop_loss, take_profit_1, take_profit_2, tp2_points) =
+            zone_plan_levels(signal.entry_price, side, Some(signal.take_profit_2));
+        let rr2 = if ZONE_SL_POINTS > 0.0 {
+            tp2_points / ZONE_SL_POINTS
+        } else {
+            0.0
+        };
+        format!(
+            "🎯 <b>ZONE ALERT — {symbol} · {side}</b>\n\
+             Entry (trigger) <code>{:.2}</code>\n\
+             SL <b>20 giá</b> → {:.2} · TP1 <b>20 giá</b> → {:.2} · TP2 <b>{:.1} giá</b> → {:.2} · R:R 1:{:.2}\n\
+             ⚠️ Reference only: không lot/risk, không auto-trade, không phải GOLD SIGNAL.",
+            signal.entry_price, stop_loss, take_profit_1, tp2_points, take_profit_2, rr2
+        )
+    }
+
     pub fn format_signal_message(signal: &Signal) -> String {
+        if zone_alert_mode_enabled() {
+            return Self::format_zone_signal_message(signal);
+        }
         let (action_icon, action_text) = match signal.signal_type {
             SignalType::Buy => ("🟢", "BUY / LONG"),
             SignalType::Sell => ("🔴", "SELL / SHORT"),
@@ -671,8 +740,26 @@ impl TelegramNotifier {
                 )
             })
             .unwrap_or_default();
+        let side = if scenario.action.to_uppercase().contains("SELL") {
+            "SELL"
+        } else if scenario.action.to_uppercase().contains("BUY") {
+            "BUY"
+        } else {
+            ""
+        };
+        let zone_plan = if side.is_empty() {
+            String::new()
+        } else {
+            let entry = (scenario.zone_low + scenario.zone_high) / 2.0;
+            let (stop_loss, take_profit_1, take_profit_2, tp2_points) =
+                zone_plan_levels(entry, side, scenario.take_profit_2);
+            let rr2 = tp2_points / ZONE_SL_POINTS;
+            format!(
+                "\n🎯 Zone plan: Limit <code>{entry:.2}</code> · SL 20 giá → {stop_loss:.2} · TP1 20 giá → {take_profit_1:.2} · TP2 {tp2_points:.1} giá → {take_profit_2:.2} · R:R 1:{rr2:.2} (reference, no lot/risk)"
+            )
+        };
         format!(
-            "{} — <b>{}</b>\nZone: <code>{:.2}–{:.2}</code>\nTrigger: {}\nSL {} · TP1 {} · TP2 {} · Conf {}%\nInvalidation: {}{}",
+            "{} — <b>{}</b>\nZone: <code>{:.2}–{:.2}</code>\nTrigger: {}{zone_plan}\nSL {} · TP1 {} · TP2 {} · Conf {}%\nInvalidation: {}{}",
             label,
             Self::escape_html(&scenario.action),
             scenario.zone_low,
@@ -1827,13 +1914,23 @@ impl TelegramNotifier {
                 } else {
                     ""
                 };
+                let (zsl, ztp1, ztp2, ztp2_points) =
+                    zone_plan_levels(plan.entry, &plan.side, Some(plan.take_profit_2));
+                let zrr2 = ztp2_points / ZONE_SL_POINTS;
                 let mut block = format!(
                     "Plan: {source} (reference) · {side} · {status}{readiness}{early}\n\
-                     Entry {} · SL {} · TP1 {} · TP2 {} · R:R {risk_reward}",
+                     Entry {} · SL {} · TP1 {} · TP2 {} · R:R {risk_reward}\n\
+                     🎯 Zone plan: Limit {:.2} · SL 20 giá → {:.2} · TP1 20 giá → {:.2} · TP2 {:.1} giá → {:.2} · R:R 1:{:.2} (reference, no lot/risk)",
                     format_level(Some(plan.entry)),
                     format_level(Some(plan.stop_loss)),
                     format_level(Some(plan.take_profit_1)),
-                    format_level(Some(plan.take_profit_2))
+                    format_level(Some(plan.take_profit_2)),
+                    plan.entry,
+                    zsl,
+                    ztp1,
+                    ztp2_points,
+                    ztp2,
+                    zrr2
                 );
                 if !plan.note.trim().is_empty() {
                     block.push_str(&format!(
@@ -2531,6 +2628,34 @@ mod tests {
         assert!(message.contains("&amp; test"));
         assert!(message.contains("SRC&lt;&amp;&gt;"));
         assert!(!message.contains("SRC<&>"));
+    }
+
+    #[test]
+    fn zone_plan_levels_clamp_tp2_and_use_fixed_sl() {
+        assert_eq!(
+            zone_plan_levels(100.0, "BUY", Some(130.0)),
+            (80.0, 120.0, 130.0, 30.0)
+        );
+        assert_eq!(
+            zone_plan_levels(100.0, "SELL", Some(50.0)),
+            (120.0, 80.0, 60.0, 40.0)
+        );
+        assert_eq!(
+            zone_plan_levels(100.0, "SELL", Some(90.0)),
+            (120.0, 80.0, 80.0, 20.0)
+        );
+    }
+
+    #[test]
+    fn format_zone_signal_message_has_no_lot_or_risk() {
+        let signal = sample_signal();
+        let message = TelegramNotifier::format_zone_signal_message(&signal);
+        assert!(message.contains("ZONE ALERT"));
+        assert!(message.contains("SL <b>20 giá</b>"));
+        assert!(message.contains("TP1 <b>20 giá</b>"));
+        assert!(message.contains("không phải GOLD SIGNAL"));
+        assert!(!message.contains("Lot"));
+        assert!(!message.contains("Risk $"));
     }
 
     #[test]
