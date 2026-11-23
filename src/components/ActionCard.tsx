@@ -219,7 +219,7 @@ export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
           </div>
           <p className="text-[11px] text-neutral-500">
             Tổng hợp live setup + kịch bản chính + macro/flow. Chỉ báo cáo, không gửi Telegram,
-            không lưu tín hiệu, không tiêu hao quota.
+            không lưu tín hiệu, không ảnh hưởng lệnh thật.
           </p>
         </div>
         <div className="flex flex-col items-end gap-2">
@@ -289,7 +289,7 @@ export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
             </p>
           )}
           <p className="text-[9px] text-neutral-500">
-            AI là lớp quyết định chính; code vẫn giữ hard risk (SL/TP, R:R, risk budget, quota,
+            AI là lớp quyết định chính; code vẫn giữ hard risk (SL/TP, R:R, risk budget, giới hạn lệnh thật,
             session, news, dedup). Không auto-trade.
           </p>
         </div>
@@ -385,7 +385,7 @@ export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
           )}
           <p className="text-[9px] text-neutral-500">
             Check thủ công — không phải trade signal tự động; không gửi Telegram, không lưu tín
-            hiệu, không tiêu hao quota.
+            hiệu, không ảnh hưởng lệnh thật.
           </p>
         </div>
       )}

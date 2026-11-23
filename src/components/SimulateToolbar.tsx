@@ -18,7 +18,7 @@ export const SimulateToolbar: React.FC<Props> = ({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[11px] font-bold text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-2 py-1 font-mono">
-            🧪 [SIMULATION - Không tốn Quota]
+            🧪 [SIMULATION - KHÔNG TÍNH LỆNH THẬT]
           </span>
 
           <button
@@ -49,7 +49,7 @@ export const SimulateToolbar: React.FC<Props> = ({
         </div>
 
         <span className="text-[11px] text-neutral-500 font-mono">
-          Manual sandbox · không ảnh hưởng quota lệnh thật
+          Manual sandbox · không ảnh hưởng lệnh thật
         </span>
       </div>
 

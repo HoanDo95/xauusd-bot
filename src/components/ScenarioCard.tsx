@@ -372,7 +372,7 @@ export const ScenarioCard: React.FC<Props> = ({ data, onRefresh, onSendTelegram 
           <button
             onClick={onRefresh}
             className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-neutral-700 bg-neutral-950 text-neutral-300 hover:text-white hover:border-neutral-600 transition-colors cursor-pointer"
-            title="Tải lại 4 kịch bản tham khảo (không tốn quota)"
+            title="Tải lại 4 kịch bản tham khảo (không ảnh hưởng lệnh thật)"
           >
             Làm mới kịch bản
           </button>
@@ -382,7 +382,7 @@ export const ScenarioCard: React.FC<Props> = ({ data, onRefresh, onSendTelegram 
             }}
             disabled={telegramState === 'sending'}
             className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-sky-500/40 bg-sky-500/10 text-sky-300 hover:bg-sky-500/20 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
-            title="Gửi snapshot kịch bản tham khảo tới Telegram (không phải tín hiệu, không tốn quota)"
+            title="Gửi snapshot kịch bản tham khảo tới Telegram (không phải tín hiệu, không ảnh hưởng lệnh thật)"
           >
             {telegramState === 'sending' ? 'Đang gửi...' : 'Gửi Telegram'}
           </button>

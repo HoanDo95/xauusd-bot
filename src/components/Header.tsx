@@ -87,18 +87,18 @@ export const Header: React.FC<Props> = ({
           }`}
           title={
             quotaEnabled
-              ? 'Số lệnh THẬT đã phát hôm nay / giới hạn đã bật. Lệnh simulation không tính quota.'
+              ? 'Số lệnh THẬT đã fill hôm nay / giới hạn đã bật. Simulation và view không tính.'
               : 'Không giới hạn số lệnh/ngày. Dedup theo nến vẫn chặn alert trùng.'
           }
         >
           <span>
             {quotaEnabled
-              ? `🎯 Quota Hôm Nay: ${signalsToday}/${maxSignals} Lệnh`
-              : '🎯 Quota: Không giới hạn'}
+              ? `🎯 Lệnh thật: ${signalsToday}/${maxSignals} · view không tính`
+              : '🎯 Lệnh thật: Không giới hạn'}
           </span>
           {quotaEnabled && (
             <span className={quotaReached ? 'text-amber-400' : 'text-emerald-500'}>
-              {quotaReached ? '· Quota Reached' : '· Ready'}
+              {quotaReached ? '· Đã đủ lệnh' : '· Sẵn sàng'}
             </span>
           )}
         </div>

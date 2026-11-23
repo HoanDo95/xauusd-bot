@@ -161,8 +161,7 @@ export const LiveSetupCard: React.FC<Props> = ({
             </span>
           </div>
           <p className="text-[11px] text-neutral-500">
-            Preview read-only từ engine: không gửi Telegram, không lưu tín hiệu, không tiêu hao
-            quota.
+            Preview read-only từ engine: không gửi Telegram, không lưu tín hiệu, không ảnh hưởng lệnh thật.
           </p>
         </div>
 
@@ -170,7 +169,7 @@ export const LiveSetupCard: React.FC<Props> = ({
           <button
             onClick={onRefresh}
             className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-neutral-700 bg-neutral-950 text-neutral-300 hover:text-white hover:border-neutral-600 transition-colors cursor-pointer"
-            title="Tải lại live view ngay (không tốn quota)"
+            title="Tải lại live view ngay (không ảnh hưởng lệnh thật)"
           >
             Làm mới
           </button>
@@ -380,7 +379,7 @@ export const LiveSetupCard: React.FC<Props> = ({
 
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-neutral-800 pt-3 text-[10px] font-mono">
         <span className="text-neutral-400">
-          Preview only — không gửi Telegram, không tốn quota
+          Preview only — không gửi Telegram, không ảnh hưởng lệnh thật
         </span>
         <span className="text-neutral-600">
           {liveView?.source ? `Nguồn: ${liveView.source}` : 'Nguồn: —'}

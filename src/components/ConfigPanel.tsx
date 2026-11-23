@@ -50,9 +50,9 @@ export const ConfigPanel: React.FC<Props> = ({
           Cấu hình Sniper & Quản lý Rủi ro
         </h3>
         <p className="text-xs text-neutral-400">
-          Thông số được áp dụng trực tiếp cho Rust Engine & Express fallback: quota tùy chọn, khung giờ vàng
+          Thông số được áp dụng trực tiếp cho Rust Engine & Express fallback: giới hạn lệnh thật tùy chọn, split session
           Âu–Mỹ, đệm Stop Loss 5–25$ (M15 8–10$ / H1 15–20$), tự động giảm Lot Size để giữ nguyên % rủi ro
-          và cảnh báo phân kỳ RSI độc lập (không phải entry, không tiêu hao quota).
+          và cảnh báo phân kỳ RSI độc lập (không phải entry, không ảnh hưởng lệnh thật).
         </p>
       </div>
 
@@ -337,7 +337,7 @@ export const ConfigPanel: React.FC<Props> = ({
           <div className="text-xs font-bold text-emerald-400 uppercase tracking-wider border-b border-neutral-800 pb-2 flex items-center justify-between">
             <span>2. Giới hạn lệnh/ngày (tùy chọn) & Bộ lọc phiên</span>
             <span className="text-neutral-500 text-[11px] normal-case font-normal">
-              Lệnh test simulation không tiêu tốn quota
+              Chỉ lệnh thật mới tính; simulation/view/zone không tính
             </span>
           </div>
 
@@ -345,7 +345,7 @@ export const ConfigPanel: React.FC<Props> = ({
             {/* Daily quota toggle */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-neutral-300">
-                Giới hạn số lệnh/ngày
+                Giới hạn lệnh thật/ngày
               </label>
               <label className="flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
                 <input
@@ -368,7 +368,7 @@ export const ConfigPanel: React.FC<Props> = ({
             {/* Max signals per day */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-neutral-300">
-                Giới hạn Lệnh / Ngày
+                Lệnh thật tối đa / ngày
               </label>
               <div className="relative">
                 <input
@@ -761,7 +761,7 @@ export const ConfigPanel: React.FC<Props> = ({
                 </span>
               </label>
               <span className="text-[11px] text-neutral-500">
-                Chỉ thông tin tham khảo — không tiêu hao quota và không phải lệnh vào trực tiếp
+                Chỉ thông tin tham khảo — không ảnh hưởng lệnh thật và không phải lệnh vào trực tiếp
               </span>
             </div>
 
@@ -936,7 +936,7 @@ export const ConfigPanel: React.FC<Props> = ({
           </label>
           <p className="text-[11px] text-neutral-500 leading-relaxed -mt-2">
             FRED + Yahoo + CFTC: bối cảnh vĩ mô/dòng tiền trước khi vào lệnh. Chỉ hiển thị, không
-            tham gia tạo tín hiệu, bộ lọc, quota hay Telegram.
+            tham gia tạo tín hiệu, bộ lọc, lệnh thật hay Telegram.
           </p>
 
           <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 flex flex-col gap-3">
@@ -946,7 +946,7 @@ export const ConfigPanel: React.FC<Props> = ({
               </div>
               <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
                 Phân loại tin, tính surprise actual/forecast, đo +15m/+60m/+240m và volume. Không
-                ảnh hưởng tín hiệu, kill switch, score hay quota.
+                ảnh hưởng tín hiệu, kill switch, score hay lệnh thật.
               </p>
             </div>
             <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
@@ -1044,7 +1044,7 @@ export const ConfigPanel: React.FC<Props> = ({
           </label>
           <p className="text-[11px] text-neutral-500 leading-relaxed -mt-2">
             Gửi macro/news + PRIMARY/ALTERNATE/WATCHLIST mỗi ngày lúc 07:00 (giờ server). Chỉ đọc:
-            không tiêu hao quota, không chèn tín hiệu và không tự vào lệnh.
+            không ảnh hưởng lệnh thật, không chèn tín hiệu và không tự vào lệnh.
           </p>
 
           <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
@@ -1384,8 +1384,8 @@ export const ConfigPanel: React.FC<Props> = ({
                 </div>
                 <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
                   Gửi cảnh báo Telegram khi M15/H1/H4 xuất hiện phân kỳ RSI/giá. Cảnh báo chỉ
-                  mang tính động lượng: không tạo tín hiệu, không có entry/SL/TP, không tiêu hao
-                  quota và không lưu vào lịch sử signals.
+                  mang tính động lượng: không tạo tín hiệu, không có entry/SL/TP, không ảnh hưởng
+                  lệnh thật và không lưu vào lịch sử signals.
                 </p>
               </div>
               <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
@@ -1504,7 +1504,7 @@ export const ConfigPanel: React.FC<Props> = ({
                   M15 đóng cửa xác nhận trigger, bot gửi thêm một alert
                   <strong className="text-neutral-200"> SCENARIO TRIGGER</strong> với đầy đủ
                   Entry/SL/TP để bạn tự quyết định. Alert này không phải GOLD SIGNAL đã qua AI/volume
-                  confirmation và không tiêu quota.
+                  confirmation và không ảnh hưởng lệnh thật.
                 </p>
               </div>
               <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
@@ -1676,7 +1676,7 @@ export const ConfigPanel: React.FC<Props> = ({
               <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
                 Sau PRIMARY trigger, chờ retest tối đa 8 nến M15 rồi mới vào tại broken level.
                 SL cấu trúc tối đa 20$; TP1 20$ (50%), TP2 40$ (50%); sau TP1 dời SL về entry.
-                Không phải sniper signal, không quota, không auto-trade. Khi bật profile này,
+                Không phải sniper signal, không ảnh hưởng lệnh thật, không auto-trade. Khi bật profile này,
                 RETEST SHADOW 2R/3R không arm watch mới để tránh trùng alert.
               </p>
             </div>
@@ -1789,7 +1789,7 @@ export const ConfigPanel: React.FC<Props> = ({
               </div>
               <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
                 Ghi journal mọi PRIMARY trigger với entry tại trigger, SL 1× H4 ATR,
-                TP1 2R / TP2 3R. Chỉ research, không Telegram, không signal, không quota,
+                TP1 2R / TP2 3R. Chỉ research, không Telegram, không signal, không ảnh hưởng lệnh thật,
                 không AI, không auto-trade. Dùng để forward-test candidate breakdown_wide.
               </p>
             </div>
@@ -1833,7 +1833,7 @@ export const ConfigPanel: React.FC<Props> = ({
               </div>
               <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
                 Ghi journal confirmed PRIMARY/ALTERNATE scenario ở mọi session, dùng cùng
-                Entry/SL/TP như live. Chỉ research, không Telegram, không signal, không quota,
+                Entry/SL/TP như live. Chỉ research, không Telegram, không signal, không ảnh hưởng lệnh thật,
                 không AI, không auto-trade. Dùng để so sánh current 13–23 VN vs split vs full 24h.
               </p>
             </div>
@@ -1980,7 +1980,7 @@ export const ConfigPanel: React.FC<Props> = ({
                   Ở chế độ <strong className="text-neutral-200">DECISION</strong>, AI là lớp quyết
                   định chính: nhận full brief (D1/H4/H1, macro/flow, RSI, volume delta, scenarios,
                   news) rồi chọn BUY / SELL / STANDBY. Code chỉ giữ hard risk: SL/TP ordering, R:R,
-                  risk budget, quota, session, news, dedup.{' '}
+                  risk budget, giới hạn lệnh thật, session, news, dedup.{' '}
                   <strong className="text-neutral-200">AI không bao giờ đặt SL/TP live</strong>.
                 </p>
               </div>
@@ -2236,7 +2236,7 @@ export const ConfigPanel: React.FC<Props> = ({
                 <label className="text-xs font-semibold text-neutral-300">Phạm vi áp dụng</label>
                 <div className="bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 text-[11px] text-neutral-300 leading-snug">
                   DECISION nới soft filters (volume/RSI/HTF/macro) để AI review candidate; hard
-                  risk vẫn do code chặn. Chỉ tín hiệu thật; simulation không gọi AI/quota.
+                  risk vẫn do code chặn. Chỉ tín hiệu thật; simulation không gọi AI và không tính lệnh thật.
                 </div>
                 <span className="text-[11px] text-neutral-500">
                   Cần <span className="font-mono text-neutral-400">OPENCODE_GO_API_KEY</span> trong

@@ -773,7 +773,7 @@ impl TelegramNotifier {
             "🧪 <b>RESEARCH — RETEST SHADOW</b> — {name}\n\
              XAU/USD · {direction} · M15 close {candle_close:.2}\n\
              Retest level <code>{:.2}</code> · SL {:.2} · TP1 {:.2} · TP2 {:.2} · R:R 1:{risk_reward}\n\
-             ⚠️ Chỉ để đo forward test. Không phải signal, không quota, không auto-trade.",
+             ⚠️ Chỉ để đo forward test. Không phải signal, không auto-trade.",
             levels.entry, levels.stop_loss, levels.take_profit_1, levels.take_profit_2
         )
     }
@@ -810,7 +810,7 @@ impl TelegramNotifier {
              TP1 {:.2} (50%) · TP2 {:.2} (50%)\n\
              Risk {:.1}% · Lot gợi ý {:.2} · Risk ${:.2}\n\
              Sau TP1 dời SL về entry; có thể chốt tay phần còn lại.{tp1_note}\n\
-             ⚠️ Alert-only, không phải sniper signal, không quota, không auto-trade.",
+             ⚠️ Alert-only, không phải sniper signal, không auto-trade.",
             trade.entry,
             trade.stop_loss,
             trade.risk,
@@ -860,7 +860,7 @@ impl TelegramNotifier {
             "🧪 <b>RESEARCH — STRATEGY V2 SHADOW</b> — {name}\n\
              XAU/USD · {direction} · {session} · M15 close {candle_close:.2}\n\
              Entry <code>{entry:.2}</code> · SL {stop_loss:.2} · TP1 {take_profit_1:.2} · TP2 {take_profit_2:.2}\n\
-             ⚠️ Research only: raw PRIMARY trigger + wide SL 1×H4 ATR. Không phải GOLD SIGNAL, không quota, không AI, không auto-trade."
+             ⚠️ Research only: raw PRIMARY trigger + wide SL 1×H4 ATR. Không phải GOLD SIGNAL, không AI, không auto-trade."
         )
     }
 
@@ -900,7 +900,7 @@ impl TelegramNotifier {
             "🧭 <b>RESEARCH — SESSION SHADOW</b> — {name}\n\
              XAU/USD · {} · {session} · M15 close {candle_close:.2}\n\
              Entry <code>{:.2}</code> · SL {:.2} · TP1 {:.2} · TP2 {:.2}\n\
-             ⚠️ Research only: confirmed scenario in all sessions. Không phải GOLD SIGNAL, không quota, không AI, không auto-trade.",
+             ⚠️ Research only: confirmed scenario in all sessions. Không phải GOLD SIGNAL, không AI, không auto-trade.",
             signal.signal_type.as_str(),
             signal.entry_price,
             signal.stop_loss,
@@ -1995,7 +1995,7 @@ impl TelegramNotifier {
             "🧠 <b>AI ENTRY CHECK</b>"
         };
         let footer = if result.panorama.is_some() {
-            "Đây là view tham khảo, KHÔNG phải sniper signal. Không quota, không auto-trade."
+            "Đây là view tham khảo, KHÔNG phải sniper signal. Không auto-trade."
         } else {
             "Đây là check thủ công, KHÔNG phải trade signal tự động."
         };
@@ -2146,12 +2146,13 @@ impl TelegramNotifier {
                 .join("\n")
         };
 
-        // `max_signals_per_day == 0` = quota tắt: briefing ghi "Không giới hạn".
-        let quota_line = if briefing.max_signals_per_day == 0 {
-            "🎯 <b>Quota:</b> <code>Không giới hạn</code>".to_string()
+        // Only filled real signals count; views/zones never consume this.
+        let fill_line = if briefing.max_signals_per_day == 0 {
+            "📌 <b>Lệnh thật đã fill hôm nay:</b> <code>Không giới hạn</code> · view không tính"
+                .to_string()
         } else {
             format!(
-                "🎯 <b>Quota hôm nay:</b> <code>{}/{} lệnh thật</code>",
+                "📌 <b>Lệnh thật đã fill hôm nay:</b> <code>{}/{}</code> · view không tính",
                 briefing.signals_today, briefing.max_signals_per_day
             )
         };
@@ -2184,7 +2185,7 @@ impl TelegramNotifier {
             support,
             resistance,
             events_text,
-            quota_line
+            fill_line
         )
     }
 
@@ -2901,7 +2902,7 @@ mod tests {
         assert!(message.contains("SRC&lt;&amp;&gt;"));
         assert!(message.contains("US &lt;CPI&gt; &amp; &lt;script&gt;"));
         assert!(message.contains("KHÔNG phải lệnh vào trực tiếp"));
-        assert!(message.contains("1/1 lệnh thật"));
+        assert!(message.contains("Lệnh thật đã fill hôm nay:</b> <code>1/1</code>"));
         assert!(!message.contains("<script>"));
 
         // Sau khi bỏ các thẻ HTML định dạng hợp lệ, không còn '<' thô nào.
@@ -2925,13 +2926,13 @@ mod tests {
     }
 
     #[test]
-    fn format_session_alert_shows_unlimited_quota_when_disabled() {
+    fn format_session_alert_shows_unlimited_fill_when_disabled() {
         let mut briefing = sample_session_briefing();
         briefing.max_signals_per_day = 0;
         briefing.signals_today = 3;
 
         let message = TelegramNotifier::format_session_alert(&briefing);
-        assert!(message.contains("Quota:</b> <code>Không giới hạn</code>"));
+        assert!(message.contains("Lệnh thật đã fill hôm nay:</b> <code>Không giới hạn</code>"));
         assert!(!message.contains("3/0"));
     }
 
@@ -3431,7 +3432,7 @@ mod tests {
         assert!(message.contains("SL 3806.00"));
         assert!(message.contains("TP1 3788.00"));
         assert!(message.contains("TP2 3782.00"));
-        assert!(message.contains("Không phải signal, không quota"));
+        assert!(message.contains("Không phải signal, không auto-trade"));
         assert!(!message.contains("GOLD SIGNAL"));
     }
 

@@ -487,7 +487,7 @@ export default function DashboardPage() {
   // Handle a manual simulation (never consumes the daily Sniper quota).
   const handleSimulate = async (type: SimulateSetupType) => {
     setIsLoading(true);
-    setStatusMessage('🧪 Đang chạy simulation: quét Pinbar + Volume + S/R, không tốn quota...');
+    setStatusMessage('🧪 Đang chạy simulation: quét Pinbar + Volume + S/R, không ảnh hưởng lệnh thật...');
     try {
       const data = await simulateSetup(type);
 
@@ -497,7 +497,7 @@ export default function DashboardPage() {
         setSignals((prev) => [data.signal as Signal, ...prev.filter((s) => s.id !== data.signal?.id)]);
         setActiveSignal(data.signal);
         setStatusMessage(
-          `🧪 [SIMULATION - Không tốn Quota] Tín hiệu ${data.signal.signal_type} demo! R:R 1:${data.signal.risk_reward_ratio}`
+          `🧪 [SIMULATION - KHÔNG TÍNH LỆNH THẬT] Tín hiệu ${data.signal.signal_type} demo! R:R 1:${data.signal.risk_reward_ratio}`
         );
       } else {
         setStatusMessage(data.message || 'Nến mới đã thêm vào buffer. Chưa đủ điều kiện Pinbar + Volume.');
@@ -815,7 +815,7 @@ export default function DashboardPage() {
                       <p className="text-[10px] text-neutral-600">
                         Dùng các nút{' '}
                         <span className="text-amber-400 font-mono">[SIMULATION]</span> phía trên để
-                        test nến Pinbar tại vùng hỗ trợ/kháng cự mà không tốn quota.
+                        test nến Pinbar tại vùng hỗ trợ/kháng cự mà không ảnh hưởng lệnh thật.
                       </p>
                     </div>
                   ) : (
@@ -851,7 +851,7 @@ export default function DashboardPage() {
                   Lịch sử Tín hiệu & Trạng thái Bắn Alert Telegram
                 </h3>
                 <p className="text-xs text-neutral-400 mt-0.5">
-                  Toàn bộ tín hiệu với Entry, Stop Loss 5–25$, Take Profit, R:R và cờ simulation (không tính quota).
+                  Toàn bộ tín hiệu với Entry, Stop Loss 5–25$, Take Profit, R:R và cờ simulation (không tính lệnh thật).
                 </p>
               </div>
 
@@ -863,9 +863,9 @@ export default function DashboardPage() {
                       : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                   }`}
                 >
-                  🎯 Quota:{' '}
+                  🎯 Lệnh thật:{' '}
                   {config.daily_quota_enabled
-                    ? `${signalsToday}/${maxSignalsPerDay} lệnh hôm nay`
+                    ? `${signalsToday}/${maxSignalsPerDay} lệnh thật · view không tính`
                     : 'Không giới hạn'}
                 </span>
                 <span className="px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-md">

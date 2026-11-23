@@ -423,11 +423,14 @@ fn format_status_message(snapshot: &StatusSnapshot) -> String {
         .unwrap_or_else(|| "—".to_string());
     let signals_line = if snapshot.daily_quota_enabled {
         format!(
-            "Signals today: {}/{}",
+            "Lệnh thật đã fill: {}/{} · view không tính",
             snapshot.signals_today, snapshot.max_signals_per_day
         )
     } else {
-        format!("Signals today: {} (không giới hạn)", snapshot.signals_today)
+        format!(
+            "Lệnh thật đã fill: {} (không giới hạn) · view không tính",
+            snapshot.signals_today
+        )
     };
 
     format!(
@@ -555,7 +558,7 @@ mod tests {
             "Data: TWELVEDATA · volume BINANCE_PAXG_PROXY",
             "Feed: OK · last scan 42s ago",
             "Macro: BEARISH · 95% · CONFIRMING",
-            "Signals today: 0/1",
+            "Lệnh thật đã fill: 0/1 · view không tính",
             "Divergence: ON",
             "AI review: OFF",
         ] {
@@ -585,8 +588,8 @@ mod tests {
         };
 
         let message = format_status_message(&snapshot);
-        assert!(message.contains("Signals today: 3 (không giới hạn)"));
-        assert!(!message.contains("Signals today: 3/1"));
+        assert!(message.contains("Lệnh thật đã fill: 3 (không giới hạn) · view không tính"));
+        assert!(!message.contains("Lệnh thật đã fill: 3/1"));
     }
 
     #[test]
@@ -611,7 +614,7 @@ mod tests {
         assert!(message.contains("Scanner: PAUSED"));
         assert!(message.contains("Feed: DEGRADED · last scan —"));
         assert!(message.contains("Macro: UNKNOWN · 0% · —"));
-        assert!(message.contains("Signals today: 1/1"));
+        assert!(message.contains("Lệnh thật đã fill: 1/1 · view không tính"));
         assert!(message.contains("Divergence: OFF"));
         assert!(message.contains("AI review: ON"));
     }

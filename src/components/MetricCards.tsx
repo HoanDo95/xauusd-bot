@@ -107,8 +107,8 @@ export const MetricCards: React.FC<Props> = ({
           <span className="text-base leading-none">🎯</span>
           <span>
             {quotaEnabled
-              ? `Quota Hôm Nay: ${signalsToday}/${maxSignals} Lệnh`
-              : 'Quota: Không giới hạn'}
+              ? `Lệnh thật: ${signalsToday}/${maxSignals} · view không tính`
+              : 'Lệnh thật: Không giới hạn'}
           </span>
           {quotaEnabled && (
             <span
@@ -116,7 +116,7 @@ export const MetricCards: React.FC<Props> = ({
                 quotaReached ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'
               }`}
             >
-              {quotaReached ? 'Quota Reached' : 'Ready'}
+              {quotaReached ? 'Đã đủ lệnh' : 'Sẵn sàng'}
             </span>
           )}
         </div>
@@ -205,9 +205,9 @@ export const MetricCards: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Metric 4: Daily Sniper Limit & SL Buffer */}
+        {/* Metric 4: Daily Giới hạn lệnh thật & SL Buffer */}
         <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-3.5">
-          <div className="text-xs text-neutral-400 font-medium">Sniper Limit & SL Buffer</div>
+          <div className="text-xs text-neutral-400 font-medium">Giới hạn lệnh thật & SL Buffer</div>
           <div className="flex items-baseline gap-2 mt-1">
             <span className={`text-2xl font-bold font-mono tabular-nums ${quotaReached ? 'text-amber-400' : 'text-emerald-400'}`}>
               {quotaEnabled ? maxSignals : '∞'}

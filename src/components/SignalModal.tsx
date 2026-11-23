@@ -30,7 +30,7 @@ export const SignalModal: React.FC<Props> = ({
   const tp2UsdStr = signal.potential_profit_tp2_usd ? ` | +$${signal.potential_profit_tp2_usd.toFixed(2)}` : '';
 
   const simulationPrefix = signal.is_simulated
-    ? '🧪 [SIMULATION - Không tốn Quota]\n'
+    ? '🧪 [SIMULATION - KHÔNG TÍNH LỆNH THẬT]\n'
     : '';
   const confluenceLine =
     typeof signal.confluence_score === 'number'
@@ -126,7 +126,7 @@ export const SignalModal: React.FC<Props> = ({
             )}
             {signal.is_simulated && (
               <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                SIMULATION · KHÔNG TỐN QUOTA
+                SIMULATION · KHÔNG TÍNH LỆNH THẬT
               </span>
             )}
             {typeof signal.confluence_score === 'number' && (

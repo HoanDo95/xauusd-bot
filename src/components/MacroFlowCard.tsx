@@ -263,7 +263,7 @@ export const MacroFlowCard: React.FC<Props> = ({ data, enabled = true }) => {
     return (
       <CompactState
         title="Dashboard đang tắt"
-        message="Bật “Macro & Flow dashboard (read-only)” trong Cấu hình để xem bối cảnh vĩ mô và dòng tiền. Mục này không ảnh hưởng tín hiệu, quota hay Telegram."
+        message="Bật “Macro & Flow dashboard (read-only)” trong Cấu hình để xem bối cảnh vĩ mô và dòng tiền. Mục này không ảnh hưởng tín hiệu, lệnh thật hay Telegram."
       />
     );
   }
