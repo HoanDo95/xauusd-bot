@@ -330,17 +330,29 @@ pub(super) fn build_action_view(
         }
         "no_setup" => {
             primary = primary_scenario(scenarios);
-            if let Some(scenario) = primary.as_ref().filter(|scenario| scenario.valid) {
-                verdict = "WAIT";
-                headline = "Chờ trigger";
-                reason = "Chưa có nến xác nhận; chờ trigger của kịch bản chính.".to_string();
-                if scenario.macro_alignment.eq_ignore_ascii_case("COUNTER") {
-                    caution = Some("COUNTER_MACRO");
+            match primary.as_ref() {
+                Some(scenario) if scenario.valid => {
+                    verdict = "WAIT";
+                    headline = "Chờ trigger";
+                    reason = "Chưa có nến xác nhận; chờ trigger của kịch bản chính.".to_string();
+                    if scenario.macro_alignment.eq_ignore_ascii_case("COUNTER") {
+                        caution = Some("COUNTER_MACRO");
+                    }
                 }
-            } else {
-                verdict = "NO_TRADE";
-                headline = NO_TRADE_HEADLINE;
-                reason = "Không có kịch bản valid; R:R/điều kiện chưa đạt.".to_string();
+                Some(scenario) if scenario.entry.is_some() => {
+                    // The structural level set may be invalid (e.g. a wide
+                    // structural stop), but the zone view still has a usable
+                    // reference entry. Do not present it as a trade signal.
+                    verdict = "WAIT";
+                    headline = "Chờ trigger (reference)";
+                    reason =
+                        "Zone tham khảo; structural chưa valid — chờ trigger xác nhận.".to_string();
+                }
+                _ => {
+                    verdict = "NO_TRADE";
+                    headline = NO_TRADE_HEADLINE;
+                    reason = "Không có kịch bản valid; R:R/điều kiện chưa đạt.".to_string();
+                }
             }
         }
         _ => {
@@ -733,15 +745,15 @@ mod tests {
     }
 
     #[test]
-    fn no_setup_with_invalid_primary_returns_no_trade_with_context() {
+    fn no_setup_with_invalid_primary_returns_reference_wait_with_context() {
         let primary = scenario("bullish_breakout", "PRIMARY", false, "ALIGNED");
         let action = build(&no_setup_view(), &scenario_response(vec![primary]), None);
 
-        assert_eq!(action["verdict"], "NO_TRADE");
-        assert_eq!(action["headline"], "Đứng ngoài");
+        assert_eq!(action["verdict"], "WAIT");
+        assert_eq!(action["headline"], "Chờ trigger (reference)");
         assert_eq!(
             action["reason"],
-            "Không có kịch bản valid; R:R/điều kiện chưa đạt."
+            "Zone tham khảo; structural chưa valid — chờ trigger xác nhận."
         );
         assert_eq!(action["primaryScenario"]["id"], "bullish_breakout");
         assert_eq!(action["primaryScenario"]["valid"], false);
