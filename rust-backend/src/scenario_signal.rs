@@ -8,7 +8,9 @@
 
 use crate::models::{BotConfig, Candle, EntryType, Signal, SignalStatus, SignalType};
 use crate::risk_manager::PositionSizer;
-use crate::scenarios::{scenario_triggered, Scenario, ScenarioResponse};
+use crate::scenarios::{
+    is_reference_only_scenario, scenario_triggered, Scenario, ScenarioResponse,
+};
 use crate::signal_validation::validate_signal_levels;
 use chrono::{DateTime, Utc};
 
@@ -64,6 +66,7 @@ pub fn best_early_entry_scenario(
 ) -> Option<&Scenario> {
     scenarios.scenarios.iter().find(|scenario| {
         scenario.valid
+            && !is_reference_only_scenario(&scenario.id)
             && scenario.confidence >= min_confidence
             && !scenario.macro_alignment.eq_ignore_ascii_case("COUNTER")
             && matches!(
@@ -485,6 +488,22 @@ mod tests {
         let picked = best_early_entry_scenario(&response, 90).expect("primary scenario");
         assert_eq!(picked.id, "bearish_breakdown");
         assert!(best_early_entry_scenario(&response, 95).is_none());
+    }
+
+    #[test]
+    fn ignores_reference_only_bounce_even_at_alternate() {
+        let response = response(vec![scenario(
+            "bullish_bounce",
+            "ALTERNATE",
+            "BULLISH",
+            95,
+            3900.0,
+            3885.0,
+            3930.0,
+            3945.0,
+            "TOUCH",
+        )]);
+        assert!(best_early_entry_scenario(&response, 90).is_none());
     }
 
     #[test]

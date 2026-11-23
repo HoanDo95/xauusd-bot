@@ -7,7 +7,7 @@
 
 use crate::market_context::MarketContext;
 use crate::market_strategist::StrategistView;
-use crate::scenarios::{Scenario, ScenarioResponse};
+use crate::scenarios::{is_reference_only_scenario, Scenario, ScenarioResponse};
 use crate::zone_plan;
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -351,8 +351,16 @@ fn pick_primary(scenarios: &ScenarioResponse) -> Option<&Scenario> {
     scenarios
         .scenarios
         .iter()
-        .find(|scenario| scenario.role.eq_ignore_ascii_case("PRIMARY"))
-        .or_else(|| scenarios.scenarios.iter().find(|scenario| scenario.valid))
+        .find(|scenario| {
+            scenario.role.eq_ignore_ascii_case("PRIMARY")
+                && !is_reference_only_scenario(&scenario.id)
+        })
+        .or_else(|| {
+            scenarios
+                .scenarios
+                .iter()
+                .find(|scenario| scenario.valid && !is_reference_only_scenario(&scenario.id))
+        })
 }
 
 fn pick_alternative(scenarios: &ScenarioResponse) -> Option<&Scenario> {

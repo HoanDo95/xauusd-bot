@@ -9,7 +9,7 @@ use crate::models::{
 };
 use crate::retest_scalp::RetestScalpTrade;
 use crate::retest_shadow::RetestLevels;
-use crate::scenarios::{Scenario, ScenarioResponse};
+use crate::scenarios::{is_reference_only_scenario, Scenario, ScenarioResponse};
 use crate::session_alerts::SessionBriefing;
 use crate::zone_plan;
 use reqwest::Client;
@@ -737,8 +737,13 @@ impl TelegramNotifier {
                 zone_plan::TP2_MAX_POINTS
             )
         };
+        let reference_note = if is_reference_only_scenario(&scenario.scenario_id) {
+            "\n⚠️ REFERENCE ONLY — backtest 2022–2026 âm; không phải qualified PRIMARY."
+        } else {
+            ""
+        };
         format!(
-            "{} — <b>{}</b>\nZone: <code>{:.2}–{:.2}</code>\nTrigger: {}{zone_plan}\nConf {}%\nInvalidation: {}{}",
+            "{} — <b>{}</b>\nZone: <code>{:.2}–{:.2}</code>\nTrigger: {}{zone_plan}\nConf {}%\nInvalidation: {}{}{reference_note}",
             label,
             Self::escape_html(&scenario.action),
             scenario.zone_low,
@@ -2344,11 +2349,21 @@ impl TelegramNotifier {
     }
 }
 
+fn scenario_status_label(scenario: &Scenario) -> &'static str {
+    if is_reference_only_scenario(&scenario.id) {
+        "REFERENCE"
+    } else if scenario.valid {
+        "VALID"
+    } else {
+        "NOT VALID"
+    }
+}
+
 /// PRIMARY block: full trigger, levels, invalidation.
 fn scenario_primary_block(scenario: &Scenario) -> String {
     let name = TelegramNotifier::escape_html(&truncate_chars(&scenario.name, 80));
     let alignment = TelegramNotifier::escape_html(&truncate_chars(&scenario.macro_alignment, 24));
-    let status = if scenario.valid { "VALID" } else { "NOT VALID" };
+    let status = scenario_status_label(scenario);
     let trigger = TelegramNotifier::escape_html(&truncate_chars(&scenario.trigger, 220));
     let mut lines = vec![
         format!(
@@ -2372,6 +2387,11 @@ fn scenario_primary_block(scenario: &Scenario) -> String {
         ));
     }
 
+    if is_reference_only_scenario(&scenario.id) {
+        lines.push(
+            "⚠️ REFERENCE ONLY — backtest 2022–2026 âm; không phải qualified PRIMARY.".to_string(),
+        );
+    }
     lines.push(format!(
         "Invalidation: {}",
         TelegramNotifier::escape_html(&truncate_chars(&scenario.invalidation, 220))
@@ -2384,7 +2404,7 @@ fn scenario_primary_block(scenario: &Scenario) -> String {
 fn scenario_alternate_block(scenario: &Scenario, include_details: bool) -> String {
     let name = TelegramNotifier::escape_html(&truncate_chars(&scenario.name, 80));
     let alignment = TelegramNotifier::escape_html(&truncate_chars(&scenario.macro_alignment, 24));
-    let status = if scenario.valid { "VALID" } else { "NOT VALID" };
+    let status = scenario_status_label(scenario);
     let header = format!(
         "🔁 ALTERNATE — {name} [{alignment}] [{status}] · confluence {}",
         scenario.confidence
@@ -2407,6 +2427,9 @@ fn scenario_alternate_block(scenario: &Scenario, include_details: bool) -> Strin
             .unwrap_or(&scenario.trigger);
         parts.push(TelegramNotifier::escape_html(&truncate_chars(note, 120)));
     }
+    if is_reference_only_scenario(&scenario.id) {
+        parts.push("REFERENCE ONLY — backtest 2022–2026 âm".to_string());
+    }
     format!("{header}\n{}", parts.join(" · "))
 }
 
@@ -2416,7 +2439,13 @@ fn scenario_watchlist_line(items: &[&Scenario], truncated: bool) -> String {
         .iter()
         .map(|scenario| {
             let name = TelegramNotifier::escape_html(&truncate_chars(&scenario.name, 60));
-            let status = if scenario.valid { "valid" } else { "not valid" };
+            let status = if is_reference_only_scenario(&scenario.id) {
+                "reference"
+            } else if scenario.valid {
+                "valid"
+            } else {
+                "not valid"
+            };
             format!("{name} ({status})")
         })
         .collect::<Vec<_>>()
@@ -3231,7 +3260,7 @@ mod tests {
             "Invalidation: Đóng M15 ngược hướng.",
             "🔁 ALTERNATE — Bullish breakout [COUNTER] [NOT VALID] · confluence 50",
             "Trigger: Đóng M15 trên 3997.00 (phá kháng cự 3995.00) · Entry 3997.00 · SL 20 giá → 3977.00 · TP1 20 giá → 4017.00 · R:R TP2 1:2.00",
-            "👀 Watchlist: Bullish bounce (not valid) · Bearish rejection (not valid)",
+            "👀 Watchlist: Bullish bounce (reference) · Bearish rejection (not valid)",
             "Bot sẽ gửi tín hiệu thật khi đủ điều kiện.",
             "không phải entry đã xác nhận.",
         ] {
@@ -3273,7 +3302,7 @@ mod tests {
             "Giá: 3980.50 · Nguồn: TWELVEDATA",
             "🎯 PRIMARY — Bearish breakdown [ALIGNED] [VALID] · confluence 95",
             "🔁 ALTERNATE — Bullish breakout [COUNTER] [NOT VALID] · confluence 50",
-            "👀 Watchlist: Bullish bounce (not valid) · Bearish rejection (not valid)",
+            "👀 Watchlist: Bullish bounce (reference) · Bearish rejection (not valid)",
             "Đây là nhận định AI, không phải lệnh tự động.",
         ] {
             assert!(
@@ -3559,7 +3588,7 @@ mod tests {
         assert!(message.contains("🎯 PRIMARY — Bearish breakdown"));
         assert!(message.contains("🔁 ALTERNATE — Bullish breakout"));
         assert!(message
-            .contains("👀 Watchlist: Bullish bounce (not valid) · Bearish rejection (not valid)"));
+            .contains("👀 Watchlist: Bullish bounce (reference) · Bearish rejection (not valid)"));
     }
 
     #[test]
@@ -3726,7 +3755,7 @@ mod tests {
             "🎯 PRIMARY — Bearish breakdown [ALIGNED] [VALID] · confluence 95",
             "Entry 3960.00 · SL 20 giá → 3980.00 · TP1 20 giá → 3940.00 · TP2 40–50 giá → 3920.00 (40.0 giá) · R:R TP2 1:2.00",
             "🔁 ALTERNATE — Bullish breakout [COUNTER] [NOT VALID] · confluence 50",
-            "👀 Watchlist: Bullish bounce (not valid) · Bearish rejection (not valid)",
+            "👀 Watchlist: Bullish bounce (reference) · Bearish rejection (not valid)",
             "Action: WAIT — chờ trigger của PRIMARY.",
             "Đây là kế hoạch tham khảo, không phải trade signal đã xác nhận.",
         ] {

@@ -8,7 +8,7 @@
 use crate::market_context::MarketContext;
 use crate::market_view::MarketScore;
 use crate::models::Candle;
-use crate::scenarios::{Scenario, ScenarioResponse};
+use crate::scenarios::{is_reference_only_scenario, Scenario, ScenarioResponse};
 use crate::signal_review::{
     normalize_json_content, post_ai_chat_completion, resolve_review_settings, review_session_id,
     truncate_chars,
@@ -47,8 +47,9 @@ NGUYÊN TẮC BẮT BUỘC:\n\
 3. Phân biệt Technical Pullback và Reversal: nếu H4/H1 giảm mà M15 tăng mạnh, gọi là pullback lên kháng cự để canh Sell, trừ khi H1 đóng cửa vượt invalidation. Mirror cho xu hướng tăng.\n\
 4. Chỉ cảnh báo NO_TRADE cứng khi có tin đỏ High Impact trong ±30 phút. Các yếu tố khác chỉ dùng để điều chỉnh Entry/SL/độ tin cậy.\n\
 5. KHÔNG bịa giá. Chỉ chọn primary_scenario_id / alternative_scenario_id từ danh sách scenario được cung cấp. Levels do code giữ.\n\
-7. CHỈ chọn scenario có valid=true. Scenario valid=false (ví dụ bearish_rejection đang tắt vì backtest âm) chỉ để tham khảo, KHÔNG được chọn làm PRIMARY/ALTERNATIVE.\n\
 6. Nếu dữ liệu thiếu/mâu thuẫn, ghi rõ trong risk_notes; vẫn giữ Market View thay vì im lặng.\n\
+7. CHỈ chọn scenario có valid=true. Scenario valid=false (ví dụ bearish_rejection đang tắt vì backtest âm) chỉ để tham khảo, KHÔNG được chọn làm PRIMARY/ALTERNATIVE.\n\
+8. `bullish_bounce` là REFERENCE_ONLY (backtest 2022–2026 âm). KHÔNG được chọn làm PRIMARY/ALTERNATIVE; chỉ có thể nhắc trong market_view/risk_notes.\n\
 \n\
 TRẢ VỀ JSON THUẦN (không markdown, không giải thích ngoài JSON):\n\
 {\"market_view\":\"2-3 câu\",\"structure\":\"TREND_BULL|TREND_BEAR|TECHNICAL_PULLBACK|RANGE|REVERSAL_WATCH|MIXED\",\"primary_scenario_id\":\"id hoặc null\",\"primary_action\":\"WATCH_SELL|WATCH_BUY|STAND_ASIDE\",\"alternative_scenario_id\":\"id hoặc null\",\"risk_notes\":[\"tối đa 3 ghi chú ngắn\"]}";
@@ -154,11 +155,12 @@ pub fn build_strategist_prompt(
 
 fn format_scenario_line(scenario: &Scenario) -> String {
     format!(
-        "- id={} | role={} | bias={} | valid={} | confidence={} | entry={} | SL={} | TP1={} | TP2={} | trigger={} | invalidation={}",
+        "- id={} | role={} | bias={} | valid={} | reference_only={} | confidence={} | entry={} | SL={} | TP1={} | TP2={} | trigger={} | invalidation={}",
         scenario.id,
         scenario.role,
         scenario.bias,
         scenario.valid,
+        is_reference_only_scenario(&scenario.id),
         scenario.confidence,
         format_optional(scenario.entry),
         format_optional(scenario.stop_loss),
@@ -222,13 +224,17 @@ pub fn parse_strategist_content(
         scenarios
             .scenarios
             .iter()
-            .find(|scenario| scenario.role.eq_ignore_ascii_case("PRIMARY"))
+            .find(|scenario| {
+                scenario.role.eq_ignore_ascii_case("PRIMARY")
+                    && !is_reference_only_scenario(&scenario.id)
+            })
             .map(|scenario| scenario.id.clone())
     })
     .or_else(|| {
         scenarios
             .scenarios
-            .first()
+            .iter()
+            .find(|scenario| !is_reference_only_scenario(&scenario.id))
             .map(|scenario| scenario.id.clone())
     });
     let alternative_id = valid_scenario_id(
@@ -245,6 +251,7 @@ pub fn parse_strategist_content(
             .find(|scenario| {
                 scenario.role.eq_ignore_ascii_case("ALTERNATE")
                     && scenario.valid
+                    && !is_reference_only_scenario(&scenario.id)
                     && Some(&scenario.id) != primary_id.as_ref()
             })
             .map(|scenario| scenario.id.clone())
@@ -317,7 +324,9 @@ fn valid_scenario_id(scenarios: &ScenarioResponse, candidate: Option<&str>) -> O
     scenarios
         .scenarios
         .iter()
-        .find(|scenario| scenario.id == candidate && scenario.valid)
+        .find(|scenario| {
+            scenario.id == candidate && scenario.valid && !is_reference_only_scenario(&scenario.id)
+        })
         .map(|scenario| scenario.id.clone())
 }
 
@@ -491,6 +500,24 @@ mod tests {
             "test-model",
         )
         .expect("valid view");
+        assert_eq!(view.primary_scenario_id.as_deref(), Some("primary"));
+        assert_eq!(view.alternative_scenario_id.as_deref(), Some("alt"));
+    }
+
+    #[test]
+    fn reference_only_bounce_is_rejected_as_primary() {
+        let mut scenarios = response();
+        scenarios
+            .scenarios
+            .push(scenario("bullish_bounce", "WATCHLIST", "BULLISH", 2695.0));
+
+        let view = parse_strategist_content(
+            r#"{"market_view":"Bounce reference.","structure":"MIXED","primary_scenario_id":"bullish_bounce","primary_action":"WATCH_BUY","alternative_scenario_id":"bullish_bounce","risk_notes":[]}"#,
+            &scenarios,
+            "test-model",
+        )
+        .expect("valid view");
+
         assert_eq!(view.primary_scenario_id.as_deref(), Some("primary"));
         assert_eq!(view.alternative_scenario_id.as_deref(), Some("alt"));
     }

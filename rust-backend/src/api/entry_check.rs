@@ -18,7 +18,9 @@ use crate::market_strategist::StrategistView;
 use crate::models::{BotConfig, Signal, SignalType};
 use crate::rsi::rsi_snapshot;
 use crate::scenario_signal::{best_early_entry_scenario, signal_from_scenario};
-use crate::scenarios::{scenario_triggered, Scenario, ScenarioResponse};
+use crate::scenarios::{
+    is_reference_only_scenario, scenario_triggered, Scenario, ScenarioResponse,
+};
 use crate::storage::PersistentStore;
 use crate::volume_delta::compute_delta;
 use crate::zone_plan;
@@ -242,6 +244,9 @@ fn plan_from_candidate(candidate: &Signal) -> EntryPlan {
 }
 
 fn plan_from_scenario(scenario: &Scenario, config: &BotConfig, note: String) -> Option<EntryPlan> {
+    if is_reference_only_scenario(&scenario.id) {
+        return None;
+    }
     let side = scenario_signal_type(&scenario.bias)?;
     let entry = scenario
         .entry
@@ -264,6 +269,12 @@ fn plan_from_scenario(scenario: &Scenario, config: &BotConfig, note: String) -> 
     Some(plan)
 }
 
+fn candidate_is_reference_only(candidate: &Signal) -> bool {
+    crate::scenarios::REFERENCE_ONLY_SCENARIO_IDS
+        .iter()
+        .any(|id| candidate.dedup_key.contains(&format!("SCENARIO_{id}")))
+}
+
 /// Pure plan selection shared by `run_entry_check` and the unit tests.
 ///
 /// - AI BUY/SELL + matching candidate side => CANDIDATE plan.
@@ -280,9 +291,10 @@ pub(crate) fn select_entry_plan(
 
     match action.as_str() {
         "BUY" | "SELL" => {
-            if let Some(candidate) =
-                candidate.filter(|candidate| candidate.signal_type.as_str() == action.as_str())
-            {
+            if let Some(candidate) = candidate.filter(|candidate| {
+                candidate.signal_type.as_str() == action.as_str()
+                    && !candidate_is_reference_only(candidate)
+            }) {
                 return Some(plan_from_candidate(candidate));
             }
 
@@ -297,6 +309,7 @@ pub(crate) fn select_entry_plan(
 
             let scenario = scenarios.scenarios.iter().find(|scenario| {
                 scenario.role.eq_ignore_ascii_case(&role)
+                    && !is_reference_only_scenario(&scenario.id)
                     && bias_matches_action(&scenario.bias, &action)
                     && scenario
                         .entry
@@ -320,6 +333,7 @@ pub(crate) fn select_entry_plan(
             // AI never invents them and the view never sizes a position.
             if let Some(valid) = scenarios.scenarios.iter().find(|scenario| {
                 scenario.valid
+                    && !is_reference_only_scenario(&scenario.id)
                     && scenario
                         .entry
                         .is_some_and(|value| value.is_finite() && value > 0.0)
@@ -809,6 +823,18 @@ mod tests {
 
         assert_eq!(plan.source, "PRIMARY");
         assert_eq!(plan.side, "BUY");
+    }
+
+    #[test]
+    fn reference_only_bounce_is_not_used_for_entry_plan() {
+        let decision = decision("STANDBY", None);
+        let mut primary = scenario("PRIMARY", "BEARISH");
+        primary.entry = None;
+        let mut bounce = scenario("WATCHLIST", "BULLISH");
+        bounce.id = "bullish_bounce".to_string();
+        let scenarios = scenario_response(vec![primary, bounce]);
+
+        assert!(select_entry_plan(&decision, None, &scenarios, &config()).is_none());
     }
 
     #[test]

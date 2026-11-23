@@ -2,6 +2,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { MarketOutlook, OutlookScenario } from '../types';
+import { isReferenceOnlyScenario } from '../lib/scenarioQuality';
 
 interface Props {
   data: MarketOutlook | null;
@@ -42,8 +43,9 @@ function planStatusTone(status: string): string {
 
 function planLine(label: string, scenario: OutlookScenario | null): string {
   if (!scenario) return `${label}: chưa có kịch bản hợp lệ.`;
+  const reference = isReferenceOnlyScenario(scenario.scenario_id) ? 'REFERENCE — ' : '';
   return [
-    `${label}: ${actionLabel(scenario.action)}`,
+    `${label}: ${reference}${actionLabel(scenario.action)}`,
     `Zone ${price(scenario.zone_low)}–${price(scenario.zone_high)}`,
     `Trigger ${scenario.trigger}`,
     `SL20 ${price(scenario.stop_loss)}`,
@@ -66,6 +68,7 @@ const PlanBlock: React.FC<{
       </div>
     );
   }
+  const referenceOnly = isReferenceOnlyScenario(scenario.scenario_id);
   const border =
     tone === 'primary'
       ? 'border-emerald-500/30 bg-emerald-500/5'
@@ -82,8 +85,15 @@ const PlanBlock: React.FC<{
         <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-neutral-400">
           {label}
         </span>
-        <span className={`text-[11px] font-black font-mono ${actionTone}`}>
-          {actionLabel(scenario.action)}
+        <span className="flex items-center gap-2">
+          {referenceOnly && (
+            <span className="px-1.5 py-0.5 rounded border text-[9px] font-mono font-bold bg-amber-500/10 text-amber-300 border-amber-500/30">
+              REFERENCE ONLY
+            </span>
+          )}
+          <span className={`text-[11px] font-black font-mono ${actionTone}`}>
+            {actionLabel(scenario.action)}
+          </span>
         </span>
       </div>
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px] font-mono">
@@ -117,6 +127,11 @@ const PlanBlock: React.FC<{
           <div className="text-neutral-300 leading-snug">{scenario.invalidation}</div>
         </div>
       </div>
+      {referenceOnly && (
+        <p className="text-[9px] text-amber-300/90 leading-relaxed">
+          Reference only — backtest 2022–2026 âm; không phải qualified PRIMARY.
+        </p>
+      )}
     </div>
   );
 };

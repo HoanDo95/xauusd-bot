@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { Scenario, ScenarioMarket, ScenarioResponse } from '../types';
+import { isReferenceOnlyScenario } from '../lib/scenarioQuality';
 
 interface Props {
   data: ScenarioResponse | null;
@@ -202,6 +203,7 @@ const ScenarioTile: React.FC<{ scenario: Scenario; role: ScenarioRole }> = ({
 }) => {
   const confidence = Math.max(0, Math.min(100, scenario.confidence || 0));
   const zone = zonePlan(scenario);
+  const referenceOnly = isReferenceOnlyScenario(scenario.id);
   const isPrimary = role === 'PRIMARY';
   const roleLabel = isPrimary ? '🎯 PRIMARY' : '🔁 ALTERNATE';
   const roleTone = isPrimary
@@ -236,12 +238,14 @@ const ScenarioTile: React.FC<{ scenario: Scenario; role: ScenarioRole }> = ({
         </div>
         <span
           className={`shrink-0 px-1.5 py-0.5 rounded border text-[9px] font-mono font-bold ${
-            scenario.valid
-              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
-              : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+            referenceOnly
+              ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+              : scenario.valid
+                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
           }`}
         >
-          {scenario.valid ? 'VALID' : 'NOT VIABLE'}
+          {referenceOnly ? 'REFERENCE' : scenario.valid ? 'VALID' : 'NOT VIABLE'}
         </span>
       </div>
 
@@ -250,6 +254,11 @@ const ScenarioTile: React.FC<{ scenario: Scenario; role: ScenarioRole }> = ({
           {scenario.trigger}
         </p>
         <p className="text-[10px] text-neutral-500">{scenario.condition}</p>
+        {referenceOnly && (
+          <p className="text-[9px] text-amber-300/90 leading-relaxed">
+            Reference only — backtest 2022–2026 âm; không phải qualified PRIMARY.
+          </p>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-2 font-mono">

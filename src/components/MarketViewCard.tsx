@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { MarketOutlook, OutlookScenario } from '../types';
+import { isReferenceOnlyScenario } from '../lib/scenarioQuality';
 
 interface Props {
   data: MarketOutlook | null;
@@ -92,6 +93,7 @@ function ScenarioBlock({
   scenario: OutlookScenario;
   tone: 'primary' | 'alternative';
 }) {
+  const referenceOnly = isReferenceOnlyScenario(scenario.scenario_id);
   const border =
     tone === 'primary'
       ? 'border-emerald-500/30 bg-emerald-500/5'
@@ -108,8 +110,15 @@ function ScenarioBlock({
         <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-neutral-400">
           {label}
         </span>
-        <span className={`text-xs font-black font-mono tracking-wider ${actionTone}`}>
-          {actionLabel(scenario.action)}
+        <span className="flex items-center gap-2">
+          {referenceOnly && (
+            <span className="px-1.5 py-0.5 rounded border text-[9px] font-mono font-bold bg-amber-500/10 text-amber-300 border-amber-500/30">
+              REFERENCE ONLY
+            </span>
+          )}
+          <span className={`text-xs font-black font-mono tracking-wider ${actionTone}`}>
+            {actionLabel(scenario.action)}
+          </span>
         </span>
       </div>
       <div className="flex items-baseline gap-2">
@@ -119,6 +128,11 @@ function ScenarioBlock({
         </span>
       </div>
       <p className="text-[11px] text-neutral-300 leading-relaxed">{scenario.trigger}</p>
+      {referenceOnly && (
+        <p className="text-[9px] text-amber-300/90 leading-relaxed">
+          Reference only — backtest 2022–2026 âm; không phải qualified PRIMARY.
+        </p>
+      )}
       {scenario.h1_confirmation ? (
         <div
           className={`rounded-lg border px-3 py-2 flex flex-col gap-1 ${h1StatusTone(

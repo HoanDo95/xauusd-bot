@@ -35,6 +35,17 @@ const MAX_CONFIDENCE: i32 = 95;
 /// A watched setup expires after this many M15 bars (8 bars = 2 hours).
 pub const WATCH_SETUP_MAX_BARS: i64 = 8;
 
+/// Scenarios that stay visible as context but must never be a qualified
+/// PRIMARY or an AI-selected setup. `bullish_bounce` is negative in the
+/// 2026-11-23 backtest; `bearish_rejection` remains governed by its config flag.
+pub const REFERENCE_ONLY_SCENARIO_IDS: &[&str] = &["bullish_bounce"];
+
+pub fn is_reference_only_scenario(id: &str) -> bool {
+    REFERENCE_ONLY_SCENARIO_IDS
+        .iter()
+        .any(|candidate| id.eq_ignore_ascii_case(candidate))
+}
+
 /// One read-only reference scenario. Never an executable signal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scenario {
@@ -998,11 +1009,22 @@ fn scenario_priority(
 /// Sort viable scenarios first, then by priority/confidence, then label one
 /// PRIMARY, one opposite-bias ALTERNATE and the rest WATCHLIST. The returned
 /// order is PRIMARY, ALTERNATE, then the remaining WATCHLIST by priority.
+fn scenario_rank(scenario: &Scenario) -> u8 {
+    match (is_reference_only_scenario(&scenario.id), scenario.valid) {
+        // A non-reference scenario may be shown as the reference PRIMARY even
+        // when its structural levels are not tradable. A reference-only
+        // scenario never outranks it.
+        (false, true) => 4,
+        (false, false) => 3,
+        (true, true) => 2,
+        (true, false) => 1,
+    }
+}
+
 fn rank_scenarios(mut scenarios: Vec<Scenario>) -> Vec<Scenario> {
     scenarios.sort_by(|left, right| {
-        right
-            .valid
-            .cmp(&left.valid)
+        scenario_rank(right)
+            .cmp(&scenario_rank(left))
             .then_with(|| right.priority.cmp(&left.priority))
             .then_with(|| right.confidence.cmp(&left.confidence))
             .then_with(|| left.id.cmp(&right.id))
@@ -1012,14 +1034,24 @@ fn rank_scenarios(mut scenarios: Vec<Scenario>) -> Vec<Scenario> {
         return scenarios;
     }
 
+    // If every available scenario is reference-only, keep them visible but do
+    // not manufacture a qualified PRIMARY.
+    if is_reference_only_scenario(&scenarios[0].id) {
+        for scenario in scenarios.iter_mut() {
+            scenario.role = "WATCHLIST".to_string();
+        }
+        return scenarios;
+    }
+
     // Backtest 2025: COUNTER-macro PRIMARY trades averaged -0.50R and were
-    // statistically negative. Prefer an aligned scenario for PRIMARY; if none
-    // exists, keep the counter scenario visible but mark it non-tradable.
+    // statistically negative. Prefer an aligned non-reference scenario for
+    // PRIMARY; if none exists, keep the counter scenario visible but mark it
+    // non-tradable.
     if scenarios[0].macro_alignment.eq_ignore_ascii_case("COUNTER") {
-        if let Some(aligned_index) = scenarios
-            .iter()
-            .position(|scenario| scenario.macro_alignment.eq_ignore_ascii_case("ALIGNED"))
-        {
+        if let Some(aligned_index) = scenarios.iter().position(|scenario| {
+            scenario.macro_alignment.eq_ignore_ascii_case("ALIGNED")
+                && !is_reference_only_scenario(&scenario.id)
+        }) {
             let aligned = scenarios.remove(aligned_index);
             scenarios.insert(0, aligned);
         } else {
@@ -2658,6 +2690,35 @@ mod tests {
         scenario.valid = valid;
         scenario.priority = priority;
         scenario
+    }
+
+    #[test]
+    fn reference_only_bounce_never_becomes_primary() {
+        let ranked = rank_scenarios(vec![
+            ranked_scenario("bearish_breakdown", "BEARISH", "ALIGNED", false, 100),
+            ranked_scenario("bullish_bounce", "BULLISH", "ALIGNED", true, 300),
+        ]);
+
+        assert_eq!(ranked[0].id, "bearish_breakdown");
+        assert_eq!(ranked[0].role, "PRIMARY");
+        let bounce = ranked
+            .iter()
+            .find(|scenario| scenario.id == "bullish_bounce")
+            .expect("bounce stays visible");
+        assert_eq!(bounce.role, "ALTERNATE");
+    }
+
+    #[test]
+    fn reference_only_bounce_alone_has_no_primary() {
+        let ranked = rank_scenarios(vec![ranked_scenario(
+            "bullish_bounce",
+            "BULLISH",
+            "ALIGNED",
+            true,
+            300,
+        )]);
+
+        assert_eq!(ranked[0].role, "WATCHLIST");
     }
 
     #[test]
