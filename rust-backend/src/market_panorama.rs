@@ -52,6 +52,10 @@ pub struct StructureBlock {
     pub d1_structure: String,
     pub h4_structure: String,
     pub h1_structure: String,
+    /// Advisory structure state from the last closed candles:
+    /// CONTINUATION | PULLBACK | POTENTIAL_BULLISH_SHIFT | POTENTIAL_BEARISH_SHIFT | RANGE.
+    #[serde(default)]
+    pub state: String,
     pub h4_atr: Option<f64>,
     pub price_vs_ema50_m15: Option<f64>,
 }
@@ -404,6 +408,38 @@ pub async fn build_market_panorama(state: &AppState) -> MarketPanorama {
         }
     };
 
+    let h1_structure_for_state = context
+        .as_ref()
+        .map(|context| context.h1.structure.clone())
+        .unwrap_or_else(|| "UNKNOWN".to_string());
+    let nearest_support_for_state = scenarios
+        .market
+        .as_ref()
+        .and_then(|market| market.nearest_support);
+    let nearest_resistance_for_state = scenarios
+        .market
+        .as_ref()
+        .and_then(|market| market.nearest_resistance);
+    let structure_state = match price {
+        Some(price) => {
+            if nearest_resistance_for_state.is_some_and(|level| price > level)
+                && h1_structure_for_state == "LH_LL"
+            {
+                "POTENTIAL_BULLISH_SHIFT"
+            } else if nearest_support_for_state.is_some_and(|level| price < level)
+                && h1_structure_for_state == "HH_HL"
+            {
+                "POTENTIAL_BEARISH_SHIFT"
+            } else if h1_structure_for_state == "LH_LL" || h1_structure_for_state == "HH_HL" {
+                "PULLBACK"
+            } else {
+                "RANGE"
+            }
+        }
+        None => "UNKNOWN",
+    }
+    .to_string();
+
     let structure = StructureBlock {
         d1_bias: context
             .as_ref()
@@ -429,6 +465,7 @@ pub async fn build_market_panorama(state: &AppState) -> MarketPanorama {
             .as_ref()
             .map(|context| context.h1.structure.clone())
             .unwrap_or_else(|| "UNKNOWN".to_string()),
+        state: structure_state,
         h4_atr,
         price_vs_ema50_m15: price.map(|price| {
             let ema50 = GoldMarketAnalyzer::calculate_ema(&candles, 50);

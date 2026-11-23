@@ -47,6 +47,7 @@ NGUYÊN TẮC BẮT BUỘC:\n\
 3. Phân biệt Technical Pullback và Reversal: nếu H4/H1 giảm mà M15 tăng mạnh, gọi là pullback lên kháng cự để canh Sell, trừ khi H1 đóng cửa vượt invalidation. Mirror cho xu hướng tăng.\n\
 4. Chỉ cảnh báo NO_TRADE cứng khi có tin đỏ High Impact trong ±30 phút. Các yếu tố khác chỉ dùng để điều chỉnh Entry/SL/độ tin cậy.\n\
 5. KHÔNG bịa giá. Chỉ chọn primary_scenario_id / alternative_scenario_id từ danh sách scenario được cung cấp. Levels do code giữ.\n\
+7. CHỈ chọn scenario có valid=true. Scenario valid=false (ví dụ bearish_rejection đang tắt vì backtest âm) chỉ để tham khảo, KHÔNG được chọn làm PRIMARY/ALTERNATIVE.\n\
 6. Nếu dữ liệu thiếu/mâu thuẫn, ghi rõ trong risk_notes; vẫn giữ Market View thay vì im lặng.\n\
 \n\
 TRẢ VỀ JSON THUẦN (không markdown, không giải thích ngoài JSON):\n\
@@ -243,6 +244,7 @@ pub fn parse_strategist_content(
             .iter()
             .find(|scenario| {
                 scenario.role.eq_ignore_ascii_case("ALTERNATE")
+                    && scenario.valid
                     && Some(&scenario.id) != primary_id.as_ref()
             })
             .map(|scenario| scenario.id.clone())
@@ -315,7 +317,7 @@ fn valid_scenario_id(scenarios: &ScenarioResponse, candidate: Option<&str>) -> O
     scenarios
         .scenarios
         .iter()
-        .find(|scenario| scenario.id == candidate)
+        .find(|scenario| scenario.id == candidate && scenario.valid)
         .map(|scenario| scenario.id.clone())
 }
 

@@ -55,6 +55,10 @@ pub struct EntryPlan {
     /// True when the plan comes from a scenario that cleared the early-entry
     /// threshold before its M15 trigger confirmed. Entry remains the trigger.
     pub early_entry: bool,
+    /// False for a deterministic reference plan; true for the fallback advisory
+    /// plan shown when the PRIMARY is invalid. Never a trade signal.
+    #[serde(default)]
+    pub advisory: bool,
     pub note: String,
 }
 
@@ -162,6 +166,7 @@ fn build_entry_plan(
         valid: false,
         readiness: None,
         early_entry: false,
+        advisory: false,
         note,
     };
 
@@ -292,12 +297,41 @@ pub(crate) fn select_entry_plan(
             plan_from_scenario(scenario, config, note)
         }
         "STANDBY" => {
-            let scenario = scenarios
+            let primary = scenarios
                 .scenarios
                 .iter()
                 .find(|scenario| scenario.role.eq_ignore_ascii_case("PRIMARY"))?;
-            scenario_levels(scenario)?;
-            plan_from_scenario(scenario, config, STANDBY_PLAN_NOTE.to_string())
+            let primary_plan = plan_from_scenario(primary, config, STANDBY_PLAN_NOTE.to_string())?;
+            if primary_plan.valid {
+                return Some(primary_plan);
+            }
+
+            // The PRIMARY can be structurally invalid (e.g. SL distance beyond
+            // the risk budget). Keep it visible, but also show a deterministic
+            // advisory plan from the first valid scenario. Levels always come
+            // from the scenario; the AI never invents them.
+            if let Some(valid) = scenarios
+                .scenarios
+                .iter()
+                .find(|scenario| scenario.valid && scenario_levels(scenario).is_some())
+            {
+                if valid.id != primary.id {
+                    if let Some(mut advisory) = plan_from_scenario(
+                        valid,
+                        config,
+                        format!(
+                            "{STANDBY_PLAN_NOTE} — ADVISORY từ kịch bản {} (không phải signal).",
+                            valid.role
+                        ),
+                    ) {
+                        if advisory.valid {
+                            advisory.advisory = true;
+                            return Some(advisory);
+                        }
+                    }
+                }
+            }
+            Some(primary_plan)
         }
         _ => None,
     }

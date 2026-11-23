@@ -1615,13 +1615,14 @@ impl TelegramNotifier {
             Self::escape_html(&panorama.volatility.regime)
         ));
         lines.push(format!(
-            "🧱 <b>Cấu trúc</b>: D1 {} ({}) / H4 {} ({}) / H1 {} ({}) · session {}",
+            "🧱 <b>Cấu trúc</b>: D1 {} ({}) / H4 {} ({}) / H1 {} ({}) · {} · session {}",
             Self::escape_html(&panorama.structure.d1_bias),
             Self::escape_html(&panorama.structure.d1_structure),
             Self::escape_html(&panorama.structure.h4_bias),
             Self::escape_html(&panorama.structure.h4_structure),
             Self::escape_html(&panorama.structure.h1_bias),
             Self::escape_html(&panorama.structure.h1_structure),
+            Self::escape_html(&panorama.structure.state),
             Self::escape_html(&panorama.session)
         ));
         if let Some(score) = panorama.score.as_ref() {
@@ -3211,6 +3212,7 @@ mod tests {
                 valid: true,
                 readiness: Some(90),
                 early_entry: true,
+                advisory: false,
                 note: "Kế hoạch tham khảo từ kịch bản PRIMARY.".to_string(),
             }),
             generated_at: "2026-11-12T00:00:00Z".to_string(),
