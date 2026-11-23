@@ -1,9 +1,10 @@
 //! Telegram command worker: `/start`, `/stop`, `/view`, `/status`, `/start-entry`, `/help`.
 //!
-//! Commands are authorized to one admin chat (`TELEGRAM_ADMIN_CHAT_ID`, with
-//! `config.telegram_chat_id` as fallback). They only toggle `is_active` or send
-//! read-only scenario/status/entry-check views — never quota, signals or trade
-//! state.
+//! Commands are authorized to an explicit Telegram **user ID** allowlist
+//! (`TELEGRAM_ALLOWED_USER_IDS` or `TELEGRAM_ADMIN_USER_ID`). When the allowlist
+//! is unset, the legacy single admin-chat check (`TELEGRAM_ADMIN_CHAT_ID`, then
+//! `config.telegram_chat_id`) still applies. Commands only toggle `is_active` or
+//! send read-only views — never quota, signals or trade state.
 
 use crate::api::{
     current_live_view, current_scenarios, run_entry_check, start_scanner_inner, stop_scanner_inner,
@@ -37,6 +38,7 @@ pub fn spawn_telegram_command_worker(state: AppState) {
     tokio::spawn(async move {
         info!("🤖 Telegram command worker đã khởi chạy.");
         let env_admin = env_admin_chat_id();
+        let env_allowed_users = env_admin_user_ids();
         let mut offset = {
             let telegram = state.telegram.read().await.clone();
             match telegram.get_updates(-1, 0).await {
@@ -68,6 +70,7 @@ pub fn spawn_telegram_command_worker(state: AppState) {
                         handle_update(
                             &state,
                             env_admin,
+                            env_allowed_users.as_deref(),
                             &mut last_command_at,
                             &mut last_entry_check_at,
                             &update,
@@ -88,6 +91,7 @@ pub fn spawn_telegram_command_worker(state: AppState) {
 async fn handle_update(
     state: &AppState,
     env_admin: Option<i64>,
+    allowed_users: Option<&[i64]>,
     last_command_at: &mut HashMap<i64, Instant>,
     last_entry_check_at: &mut HashMap<i64, Instant>,
     update: &serde_json::Value,
@@ -110,6 +114,21 @@ async fn handle_update(
     };
 
     let config = state.config.read().await.clone();
+    let sender_id = message
+        .get("from")
+        .and_then(|from| from.get("id"))
+        .and_then(|value| value.as_i64());
+
+    if let Some(allowed) = allowed_users {
+        if !sender_allowed(sender_id, allowed) {
+            warn!(
+                "🚫 Telegram command từ user không được phép: user_id={:?} chat_id={}",
+                sender_id, chat_id
+            );
+            return;
+        }
+    }
+
     let admin_chat = resolve_admin_chat(env_admin, &config.telegram_chat_id);
 
     let Some(admin_chat) = admin_chat else {
@@ -125,7 +144,7 @@ async fn handle_update(
         return;
     };
 
-    if chat_id != admin_chat {
+    if allowed_users.is_none() && chat_id != admin_chat {
         info!("🚫 Telegram command từ chat không được phép: {}", chat_id);
         return;
     }
@@ -265,6 +284,25 @@ fn parse_command(text: &str) -> Option<String> {
     }
     let command = token.split('@').next().unwrap_or(token).to_lowercase();
     (!command.is_empty()).then_some(command)
+}
+
+fn env_admin_user_ids() -> Option<Vec<i64>> {
+    let raw = std::env::var("TELEGRAM_ALLOWED_USER_IDS")
+        .ok()
+        .or_else(|| std::env::var("TELEGRAM_ADMIN_USER_ID").ok())?;
+    let ids = parse_allowed_user_ids(&raw);
+    (!ids.is_empty()).then_some(ids)
+}
+
+fn parse_allowed_user_ids(raw: &str) -> Vec<i64> {
+    raw.split(',')
+        .filter_map(|part| part.trim().parse::<i64>().ok())
+        .filter(|id| *id > 0)
+        .collect()
+}
+
+fn sender_allowed(sender_id: Option<i64>, allowed: &[i64]) -> bool {
+    sender_id.is_some_and(|id| allowed.contains(&id))
 }
 
 fn env_admin_chat_id() -> Option<i64> {
@@ -440,6 +478,23 @@ mod tests {
         );
         assert_eq!(parse_command("hello"), None);
         assert_eq!(parse_command("view"), None);
+    }
+
+    #[test]
+    fn allowed_user_ids_parse_csv_and_ignore_invalid() {
+        assert_eq!(
+            parse_allowed_user_ids("123, 456 ,bad, -999, 789"),
+            vec![123, 456, 789]
+        );
+        assert!(parse_allowed_user_ids("").is_empty());
+    }
+
+    #[test]
+    fn sender_allowed_requires_membership() {
+        let allowed = [123_i64, 456];
+        assert!(sender_allowed(Some(123), &allowed));
+        assert!(!sender_allowed(Some(999), &allowed));
+        assert!(!sender_allowed(None, &allowed));
     }
 
     #[test]
