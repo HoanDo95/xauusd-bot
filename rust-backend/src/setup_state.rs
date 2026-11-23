@@ -89,14 +89,19 @@ impl SetupRecord {
         (now - self.created_at).num_minutes() >= bars * 15
     }
 
-    /// A setup is invalidated by the scenario's structural invalidation level,
-    /// not by the (usually wider) protective stop. Falls back to the stop when
-    /// the invalidation text has no parseable level.
+    /// Before the trigger, a breakout/breakdown is *expected* to sit on the
+    /// pre-break side of its structural level, so the protective stop owns
+    /// invalidation. After the trigger, the structural level (the broken S/R)
+    /// owns it. Using the structural level before the trigger would incorrectly
+    /// cancel every waiting breakout/breakdown.
     pub fn is_invalidated(&self, candle: &Candle) -> bool {
-        let level = self
-            .scenario
-            .invalidation_price()
-            .or(self.scenario.stop_loss);
+        let level = if self.triggered_bar.is_some() {
+            self.scenario
+                .invalidation_price()
+                .or(self.scenario.stop_loss)
+        } else {
+            self.scenario.stop_loss
+        };
         let Some(level) = level.filter(|value| value.is_finite() && *value > 0.0) else {
             return true;
         };
@@ -365,16 +370,31 @@ mod tests {
     }
 
     #[test]
-    fn invalidation_uses_the_structural_text_level_not_the_wide_stop() {
+    fn triggered_setup_uses_the_structural_text_level_not_the_wide_stop() {
+        let mut setup = SetupRecord::new(
+            "S".to_string(),
+            scenario("BULLISH", "ABOVE", 2701.0, "Đóng M15 trở lại dưới 2698.00"),
+            at(23, 10),
+            0,
+        );
+        setup.mark_triggered(at(23, 11), 900_000, 2705.0);
+        // Close is below the structural invalidation but still above the 2681 stop.
+        assert!(setup.is_invalidated(&candle(1_800_000, 2700.0, 2695.0, 2697.0)));
+        assert!(!setup.is_invalidated(&candle(1_800_000, 2705.0, 2699.0, 2702.0)));
+    }
+
+    #[test]
+    fn waiting_breakout_is_not_invalidated_by_the_pre_break_level() {
+        // A waiting bullish breakout sits below the broken resistance by design;
+        // only the protective stop may cancel it before the trigger.
         let setup = SetupRecord::new(
             "S".to_string(),
             scenario("BULLISH", "ABOVE", 2701.0, "Đóng M15 trở lại dưới 2698.00"),
             at(23, 10),
             0,
         );
-        // Close is below the invalidation level but still above the 2681 stop.
-        assert!(setup.is_invalidated(&candle(900_000, 2700.0, 2695.0, 2697.0)));
-        assert!(!setup.is_invalidated(&candle(900_000, 2705.0, 2699.0, 2702.0)));
+        assert!(!setup.is_invalidated(&candle(900_000, 2700.0, 2695.0, 2697.0)));
+        assert!(setup.is_invalidated(&candle(900_000, 2690.0, 2680.0, 2680.5)));
     }
 
     #[test]
