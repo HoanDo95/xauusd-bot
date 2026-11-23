@@ -462,6 +462,22 @@ async fn evaluate_once(state: &AppState) -> Result<(), String> {
     if scenarios.status != "ok" || scenarios.scenarios.is_empty() {
         return Ok(());
     }
+    if config.trigger_journal_enabled {
+        let summary = scenarios
+            .scenarios
+            .iter()
+            .map(|scenario| {
+                format!(
+                    "{}={} ({})",
+                    scenario.id,
+                    if scenario.valid { "valid" } else { "invalid" },
+                    scenario.role
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        info!("🔎 [Setup Engine] M15 {} · {}", candle.timestamp, summary);
+    }
     let market = scenarios.market.as_ref();
     // Judge the session at the bar close, not at the 30-second polling tick, so
     // a bar closing at 20:00 is OUT and one closing at 07:00 is IN.
