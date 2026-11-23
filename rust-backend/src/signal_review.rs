@@ -364,7 +364,7 @@ fn build_review_prompt(
         RSI context (Wilder, closed candles):\n{}\n\n\
         {}\n\n\
         Candidate signal:\n\
-        side={} entry={:.2} SL={:.2} TP1={:.2} TP2={:.2} RR=1:{:.2} lot={:.2}\n\
+        side={} entry={:.2} SL={:.2} TP1={:.2} TP2={:.2} RR=1:{:.2} view_only=no_lot\n\
         volume_surge={:.2}x entry_type={} candle_close={:.2} current_price={:.2}\n\
         price_action={}\n\n\
         Timing: {} UTC | {} (VN) | {}\n\
@@ -401,7 +401,6 @@ fn build_review_prompt(
         candidate.take_profit_1,
         candidate.take_profit_2,
         candidate.risk_reward_ratio,
-        candidate.recommended_lot_size,
         candidate.volume_surge_ratio,
         candidate.entry_type.as_str(),
         candidate.candle_close_price,
