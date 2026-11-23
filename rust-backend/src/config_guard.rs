@@ -95,22 +95,10 @@ pub fn evaluate(config: &BotConfig) -> Vec<ConfigWarning> {
             ),
         ));
     }
-    if !config.strategy_v2_shadow_enabled {
-        warnings.push(ConfigWarning::warning(
-            "v2_shadow_disabled",
-            "strategy_v2_shadow_enabled=false; v2 forward sampling stopped.",
-        ));
-    }
     if !config.session_shadow_enabled {
         warnings.push(ConfigWarning::warning(
             "session_shadow_disabled",
             "session_shadow_enabled=false; session forward sampling stopped.",
-        ));
-    }
-    if !config.strategy_v2_shadow_telegram_enabled {
-        warnings.push(ConfigWarning::warning(
-            "v2_shadow_telegram_disabled",
-            "strategy_v2_shadow_telegram_enabled=false; research alerts stopped.",
         ));
     }
     if !config.session_shadow_telegram_enabled {
@@ -222,8 +210,6 @@ mod tests {
             risk_guardrails_enabled: true,
             htf_h4_filter_enabled: true,
             htf_d1_filter_enabled: true,
-            strategy_v2_shadow_enabled: true,
-            strategy_v2_shadow_telegram_enabled: true,
             session_shadow_enabled: true,
             session_shadow_telegram_enabled: true,
             ..BotConfig::default()
@@ -258,10 +244,8 @@ mod tests {
     #[test]
     fn shadow_off_is_a_warning_not_an_error() {
         let mut config = frozen_profile();
-        config.strategy_v2_shadow_enabled = false;
         config.session_shadow_enabled = false;
         let warnings = evaluate(&config);
-        assert!(warnings.iter().any(|w| w.code == "v2_shadow_disabled"));
         assert!(warnings.iter().any(|w| w.code == "session_shadow_disabled"));
         assert!(!has_errors(&warnings));
     }

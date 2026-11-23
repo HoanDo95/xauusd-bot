@@ -119,8 +119,6 @@ const DEFAULT_CONFIG: BotConfig = {
   early_entry_max_distance_r: 1.0,
   quantum_weighted_score_enabled: false,
   trigger_confirmation_enabled: true,
-  strategy_v2_shadow_enabled: false,
-  strategy_v2_shadow_telegram_enabled: false,
   session_shadow_enabled: false,
   session_shadow_telegram_enabled: false,
   quantum_volume_confirm_ratio: 1.2,

@@ -209,8 +209,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         daily_plan_store,
         retest_watch: Arc::new(RwLock::new(persisted.retest_watch)),
         active_retest_trade: Arc::new(RwLock::new(persisted.retest_trade)),
-        retest_scalp_watch: Arc::new(RwLock::new(persisted.retest_scalp_watch)),
-        active_retest_scalp_trade: Arc::new(RwLock::new(persisted.retest_scalp_trade)),
         market_strategist_view: Arc::new(RwLock::new(None)),
         trigger_journal: Arc::new(TriggerJournal::new(journal_path)),
         macro_flow: Arc::new(RwLock::new(None)),
@@ -234,8 +232,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     gold_signal_bot::divergence_alerts::spawn_divergence_worker(state.clone());
     gold_signal_bot::action_alerts::spawn_action_trigger_worker(state.clone());
     gold_signal_bot::retest_shadow::spawn_retest_shadow_worker(state.clone());
-    gold_signal_bot::retest_scalp::spawn_retest_scalp_worker(state.clone());
-    gold_signal_bot::strategy_v2_shadow::spawn_strategy_v2_shadow_worker(state.clone());
     gold_signal_bot::session_shadow::spawn_session_shadow_worker(state.clone());
     gold_signal_bot::market_view_worker::spawn_market_view_worker(state.clone());
     gold_signal_bot::news_impact_worker::spawn_news_impact_worker(state.clone());

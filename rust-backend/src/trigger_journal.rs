@@ -401,10 +401,7 @@ pub fn open_triggers_from_events(events: &[TriggerEvent]) -> Vec<OpenTrigger> {
     let mut seen = HashSet::new();
     let mut open = Vec::new();
     for event in events {
-        if event.event != "triggered"
-            && event.event != "strategy_v2_shadow"
-            && event.event != "session_shadow"
-        {
+        if event.event != "triggered" && event.event != "session_shadow" {
             continue;
         }
         let Some(setup_id) = event.setup_id.as_ref() else {
@@ -1039,57 +1036,6 @@ mod tests {
             serde_json::from_str(r#"{"schema":1,"event":"triggered"}"#).expect("legacy event");
         assert!(legacy.decision_id.is_none());
         assert!(legacy.shadow.is_none());
-    }
-
-    #[test]
-    fn strategy_v2_shadow_events_are_open_triggers() {
-        let path = temp_path();
-        let journal = TriggerJournal::new(&path);
-        let mut event = TriggerEvent::new("strategy_v2_shadow");
-        event.setup_id = Some("V2-TEST".to_string());
-        event.bias = Some("BEARISH".to_string());
-        event.entry = Some(100.0);
-        event.stop_loss = Some(110.0);
-        event.take_profit_1 = Some(80.0);
-        event.candle_timestamp = Some(0);
-        event.source = Some("strategy_v2_shadow".to_string());
-        event.shadow = Some(true);
-        journal.append(&event).expect("append");
-        let open = journal.open_triggers();
-        assert_eq!(open.len(), 1);
-        assert_eq!(open[0].setup_id, "V2-TEST");
-        assert!(open[0].shadow);
-        assert_eq!(open[0].source.as_deref(), Some("strategy_v2_shadow"));
-        assert!(journal.has_event_for_candle("strategy_v2_shadow", 0));
-        assert!(!journal.has_event_for_candle("strategy_v2_shadow", 900_000));
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn strategy_v2_shadow_outcome_uses_wide_levels() {
-        let path = temp_path();
-        let journal = TriggerJournal::new(&path);
-        let mut event = TriggerEvent::new("strategy_v2_shadow");
-        event.setup_id = Some("V2-TP".to_string());
-        event.bias = Some("BEARISH".to_string());
-        event.entry = Some(100.0);
-        event.stop_loss = Some(110.0);
-        event.take_profit_1 = Some(80.0);
-        event.take_profit_2 = Some(70.0);
-        event.candle_timestamp = Some(0);
-        event.source = Some("strategy_v2_shadow".to_string());
-        event.shadow = Some(true);
-        journal.append(&event).expect("append");
-
-        let trigger = journal.open_triggers().pop().expect("open trigger");
-        let mut candles = vec![candle(0, 101.0, 99.0, 100.0)];
-        candles.push(candle(15 * 60 * 1000, 100.5, 79.0, 80.0));
-        let OutcomeEvaluation::Complete(outcome) = evaluate_outcome(&trigger, &candles, 24) else {
-            panic!("expected complete outcome");
-        };
-        assert_eq!(outcome.outcome, "TP1");
-        assert!((outcome.r_multiple - 2.0).abs() < 1e-9);
-        let _ = fs::remove_file(path);
     }
 
     #[test]

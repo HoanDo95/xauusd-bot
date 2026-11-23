@@ -477,12 +477,6 @@ pub fn spawn_retest_shadow_worker(state: AppState) {
                 continue;
             }
 
-            // The newer retest-scalp profile owns new watches while enabled.
-            // Existing shadow watches/trades above are still managed to close.
-            if config.retest_scalp_enabled {
-                continue;
-            }
-
             // No active watch: arm one when a valid PRIMARY triggers.
             let scenarios = current_scenarios(&state).await;
             let Some(primary) = scenarios

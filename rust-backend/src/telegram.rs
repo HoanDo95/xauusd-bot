@@ -7,7 +7,6 @@ use crate::models::{
     DailyMacroReport, EconomicEvent, EntryType, ImpactLevel, Signal, SignalStatus, SignalType,
     SupportResistanceZone,
 };
-use crate::retest_scalp::RetestScalpTrade;
 use crate::retest_shadow::RetestLevels;
 use crate::scenarios::{is_reference_only_scenario, Scenario, ScenarioResponse};
 use crate::session_alerts::SessionBriefing;
@@ -781,97 +780,6 @@ impl TelegramNotifier {
         candle_close: f64,
     ) -> Result<i64, String> {
         let message_text = Self::format_retest_shadow_message(scenario, levels, candle_close);
-        self.send_html_message(&message_text).await
-    }
-
-    pub fn format_retest_scalp_message(
-        scenario: &Scenario,
-        trade: &RetestScalpTrade,
-        candle_close: f64,
-        _lot_size: f64,
-        _risk_usd: f64,
-        _risk_pct: f64,
-    ) -> String {
-        let name = Self::escape_html(&truncate_chars(&scenario.name, 80));
-        let direction = Self::escape_html(&truncate_chars(&scenario.trigger_direction, 16));
-        let tp1_note = if trade.tp1_hit {
-            "\nTP1 đã chạm cùng nến; SL đã về entry cho 50% còn lại."
-        } else {
-            ""
-        };
-        format!(
-            "⚡ <b>SCALP RETEST — RESEARCH</b> — {name}\n\
-             XAU/USD · {direction} · M15 close {candle_close:.2}\n\
-             Entry <code>{:.2}</code> · SL {:.2} · risk {:.2}$\n\
-             TP1 {:.2} (50%) · TP2 {:.2} (50%)\n\
-             Sau TP1 dời SL về entry; có thể chốt tay phần còn lại.{tp1_note}\n\
-             ⚠️ Alert-only, không phải sniper signal, không auto-trade.",
-            trade.entry, trade.stop_loss, trade.risk, trade.take_profit_1, trade.take_profit_2
-        )
-    }
-
-    pub async fn send_retest_scalp_alert(
-        &self,
-        scenario: &Scenario,
-        trade: &RetestScalpTrade,
-        candle_close: f64,
-        lot_size: f64,
-        risk_usd: f64,
-        risk_pct: f64,
-    ) -> Result<i64, String> {
-        let message_text = Self::format_retest_scalp_message(
-            scenario,
-            trade,
-            candle_close,
-            lot_size,
-            risk_usd,
-            risk_pct,
-        );
-        self.send_html_message(&message_text).await
-    }
-
-    /// Research-only strategy v2 shadow alert. Never a signal or quota event.
-    #[allow(clippy::too_many_arguments)]
-    pub fn format_strategy_v2_shadow_message(
-        scenario: &Scenario,
-        entry: f64,
-        stop_loss: f64,
-        take_profit_1: f64,
-        take_profit_2: f64,
-        candle_close: f64,
-        session: &str,
-    ) -> String {
-        let name = Self::escape_html(&truncate_chars(&scenario.name, 80));
-        let direction = Self::escape_html(&truncate_chars(&scenario.trigger_direction, 16));
-        let session = Self::escape_html(&truncate_chars(session, 8));
-        format!(
-            "🧪 <b>RESEARCH — STRATEGY V2 SHADOW</b> — {name}\n\
-             XAU/USD · {direction} · {session} · M15 close {candle_close:.2}\n\
-             Entry <code>{entry:.2}</code> · SL {stop_loss:.2} · TP1 {take_profit_1:.2} · TP2 {take_profit_2:.2}\n\
-             ⚠️ Research only: raw PRIMARY trigger + wide SL 1×H4 ATR. Không phải GOLD SIGNAL, không AI, không auto-trade."
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn send_strategy_v2_shadow_alert(
-        &self,
-        scenario: &Scenario,
-        entry: f64,
-        stop_loss: f64,
-        take_profit_1: f64,
-        take_profit_2: f64,
-        candle_close: f64,
-        session: &str,
-    ) -> Result<i64, String> {
-        let message_text = Self::format_strategy_v2_shadow_message(
-            scenario,
-            entry,
-            stop_loss,
-            take_profit_1,
-            take_profit_2,
-            candle_close,
-            session,
-        );
         self.send_html_message(&message_text).await
     }
 
@@ -3486,52 +3394,6 @@ mod tests {
         assert!(message.contains("TP2 3782.00"));
         assert!(message.contains("Không phải signal, không auto-trade"));
         assert!(!message.contains("GOLD SIGNAL"));
-    }
-
-    #[test]
-    fn format_retest_scalp_message_is_research_only() {
-        let scenario = base_scenario("bearish_breakdown", "Bearish breakdown", "BEARISH");
-        let trade = RetestScalpTrade {
-            setup_id: "SCALP-TEST".to_string(),
-            scenario_id: "bearish_breakdown".to_string(),
-            bias: "BEARISH".to_string(),
-            confidence: 70,
-            direction: "SELL".to_string(),
-            entry: 3800.0,
-            stop_loss: 3810.0,
-            take_profit_1: 3780.0,
-            take_profit_2: 3760.0,
-            risk: 10.0,
-            created_at: chrono::Utc::now(),
-            entry_candle_timestamp: 0,
-            tp1_hit: false,
-            be_active: false,
-        };
-        let message = TelegramNotifier::format_retest_scalp_message(
-            &scenario, &trade, 3799.5, 0.05, 50.0, 0.5,
-        );
-        assert!(message.contains("SCALP RETEST — RESEARCH"));
-        assert!(message.contains("Entry <code>3800.00</code>"));
-        assert!(message.contains("SL 3810.00"));
-        assert!(message.contains("TP1 3780.00 (50%)"));
-        assert!(message.contains("TP2 3760.00 (50%)"));
-        assert!(message.contains("Alert-only"));
-        assert!(!message.contains("GOLD SIGNAL"));
-    }
-
-    #[test]
-    fn format_strategy_v2_shadow_message_is_research_only() {
-        let scenario = base_scenario("bearish_breakdown", "Bearish breakdown", "BEARISH");
-        let message = TelegramNotifier::format_strategy_v2_shadow_message(
-            &scenario, 3800.0, 3810.0, 3780.0, 3770.0, 3799.5, "OUT",
-        );
-        assert!(message.contains("RESEARCH — STRATEGY V2 SHADOW"));
-        assert!(
-            message.contains("Entry <code>3800.00</code> · SL 3810.00 · TP1 3780.00 · TP2 3770.00")
-        );
-        assert!(message.contains("OUT"));
-        assert!(message.contains("Không phải GOLD SIGNAL"));
-        assert!(!message.contains("<b>GOLD SIGNAL"));
     }
 
     #[test]
