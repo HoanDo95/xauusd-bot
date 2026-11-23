@@ -14,7 +14,7 @@ use crate::risk_guardrails::{
 };
 use crate::risk_manager::PositionSizer;
 use crate::rsi::rsi_snapshot;
-use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
+use crate::signal_validation::validate_signal_levels;
 use crate::storage::PersistentStore;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use chrono::Utc;
@@ -664,15 +664,8 @@ pub(super) async fn receive_tradingview_webhook(
         0.0
     };
 
-    let pos_calc = PositionSizer::calculate_lot_size(
-        config.account_balance,
-        config.risk_percentage,
-        risk_points,
-        reward_tp1,
-        reward_tp2,
-        entry_price,
-        config.account_leverage,
-    );
+    // View-only: external alerts keep levels but do not calculate lot/risk.
+    let pos_calc = PositionSizer::view_only_result();
 
     let mut signal = Signal {
         id: format!("TV-{}-{}", now.timestamp_millis(), action_upper),
@@ -702,8 +695,8 @@ pub(super) async fn receive_tradingview_webhook(
         volume_analysis_notes:
             "Xác nhận hấp thụ lực giá theo tín hiệu Pine Script từ TradingView".to_string(),
         full_rationale: format!(
-            "TradingView Alert [{}] thực thi an toàn ngoài vùng cấm tin tức. Khối lượng tự động: {:.2} lot (Rủi ro: -${:.2}, TP1: +${:.2}). Tỷ lệ R:R chuẩn 1:{:.2}.",
-            action_upper, pos_calc.lot_size, pos_calc.risk_amount_usd, pos_calc.potential_profit_tp1_usd, risk_reward_ratio
+            "TradingView Alert [{}] thực thi an toàn ngoài vùng cấm tin tức. View-only: không tính lot/risk. Tỷ lệ R:R chuẩn 1:{:.2}.",
+            action_upper, risk_reward_ratio
         ),
         status: SignalStatus::Active,
         created_at: now,
@@ -757,19 +750,7 @@ pub(super) async fn receive_tradingview_webhook(
         );
     }
 
-    if let Err(reason) = validate_risk_budget(&config, &pos_calc) {
-        warn!(
-            "🛑 [TradingView Webhook] Từ chối tín hiệu vượt ngân sách rủi ro: {}",
-            reason
-        );
-        return (
-            StatusCode::OK,
-            Json(json!({
-                "status": "rejected_invalid_signal",
-                "reason": reason
-            })),
-        );
-    }
+    // Account risk budget is intentionally not part of the view-only path.
 
     // Bước 6b: RSI M15 context — luôn gắn, kể cả khi filter tắt.
     let candles_snapshot = state.candles.read().await.clone();

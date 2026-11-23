@@ -289,11 +289,10 @@ impl TelegramNotifier {
             {}\
             📡 <b>Nguồn giá:</b> <code>{}</code>\n\
             {}\
-            🎯 <b>Take Profit 1 (1:2):</b> <code>${:.2}</code> (+{:.1} pts | +${:.2})\n\
-            🚀 <b>Take Profit 2 (1:3):</b> <code>${:.2}</code> (+{:.1} pts | +${:.2})\n\
-            🛑 <b>Stop Loss:</b> <code>${:.2}</code> (-{:.1} pts | -${:.2})\n\
+            🎯 <b>Take Profit 1 (1:2):</b> <code>${:.2}</code> (+{:.1} pts)\n\
+            🚀 <b>Take Profit 2 (1:3):</b> <code>${:.2}</code> (+{:.1} pts)\n\
+            🛑 <b>Stop Loss:</b> <code>${:.2}</code> (-{:.1} pts)\n\
             ⚖️ <b>Tỷ lệ R:R:</b> <b>1:{:.2}</b>\n\
-            💼 <b>Quản lý vốn đề xuất:</b> <code>{:.2} Lot</code>\n\
             ━━━━━━━━━━━━━━━━━━━━━━\n\
             🔍 <b>Phân tích Kỹ thuật & Volume:</b>\n\
             • <b>Price Action:</b> {}\n\
@@ -304,7 +303,7 @@ impl TelegramNotifier {
             • <b>Đánh giá:</b> {}\n\
             {}\
             ━━━━━━━━━━━━━━━━━━━━━━\n\
-            ⚠️ <i>Quản lý rủi ro tối đa 1-2% tài khoản. Chúc bạn giao dịch kỷ luật!</i>\n\
+            ⚠️ <i>View-only: không tính lot/risk; người dùng tự quyết định khối lượng.</i>\n\
             ⚡ <i>Engine: Rust Gold Signal Bot v1.0 (Tokio/Axum)</i>",
             symbol,
             action_icon,
@@ -318,15 +317,11 @@ impl TelegramNotifier {
             fill_line,
             signal.take_profit_1,
             signal.reward_points_tp1,
-            signal.potential_profit_tp1_usd,
             signal.take_profit_2,
             signal.reward_points_tp2,
-            signal.potential_profit_tp2_usd,
             signal.stop_loss,
             signal.risk_points,
-            signal.risk_amount_usd,
             signal.risk_reward_ratio,
-            signal.recommended_lot_size,
             price_action,
             volume_analysis,
             volume_delta_line,
@@ -793,9 +788,9 @@ impl TelegramNotifier {
         scenario: &Scenario,
         trade: &RetestScalpTrade,
         candle_close: f64,
-        lot_size: f64,
-        risk_usd: f64,
-        risk_pct: f64,
+        _lot_size: f64,
+        _risk_usd: f64,
+        _risk_pct: f64,
     ) -> String {
         let name = Self::escape_html(&truncate_chars(&scenario.name, 80));
         let direction = Self::escape_html(&truncate_chars(&scenario.trigger_direction, 16));
@@ -809,17 +804,9 @@ impl TelegramNotifier {
              XAU/USD · {direction} · M15 close {candle_close:.2}\n\
              Entry <code>{:.2}</code> · SL {:.2} · risk {:.2}$\n\
              TP1 {:.2} (50%) · TP2 {:.2} (50%)\n\
-             Risk {:.1}% · Lot gợi ý {:.2} · Risk ${:.2}\n\
              Sau TP1 dời SL về entry; có thể chốt tay phần còn lại.{tp1_note}\n\
              ⚠️ Alert-only, không phải sniper signal, không auto-trade.",
-            trade.entry,
-            trade.stop_loss,
-            trade.risk,
-            trade.take_profit_1,
-            trade.take_profit_2,
-            risk_pct,
-            lot_size,
-            risk_usd
+            trade.entry, trade.stop_loss, trade.risk, trade.take_profit_1, trade.take_profit_2
         )
     }
 
@@ -3528,7 +3515,6 @@ mod tests {
         assert!(message.contains("SL 3810.00"));
         assert!(message.contains("TP1 3780.00 (50%)"));
         assert!(message.contains("TP2 3760.00 (50%)"));
-        assert!(message.contains("Risk 0.5%"));
         assert!(message.contains("Alert-only"));
         assert!(!message.contains("GOLD SIGNAL"));
     }

@@ -427,7 +427,7 @@ if (sellCondition)
 
               <div className="flex items-center justify-between pt-1">
                 <span className="text-[11px] text-zinc-500">
-                  Hệ thống sẽ kiểm tra Kill Switch & tính Lot trước khi phát cảnh báo.
+                  Hệ thống sẽ kiểm tra Kill Switch trước khi phát cảnh báo.
                 </span>
                 <button
                   onClick={handleSendWebhook}
@@ -464,7 +464,6 @@ if (sellCondition)
                   {webhookResponse.signal && (
                     <div className="pt-1.5 border-t border-zinc-800 text-[11px] space-y-0.5">
                       <div>• Entry: ${webhookResponse.signal.entry_price} | SL: ${webhookResponse.signal.stop_loss} | TP1: ${webhookResponse.signal.take_profit_1}</div>
-                      <div>• Lot đề xuất: <strong className="text-amber-400">{webhookResponse.signal.recommended_lot_size} Lot</strong> | Rủi ro: -${webhookResponse.signal.risk_amount_usd} | Lợi nhuận TP1: +${webhookResponse.signal.potential_profit_tp1_usd}</div>
                     </div>
                   )}
                 </div>

@@ -24,10 +24,6 @@ export const SignalModal: React.FC<Props> = ({
   const actionIcon = isBuy ? '🟢' : '🔴';
   const actionText = isBuy ? 'BUY / LONG' : 'SELL / SHORT';
 
-  const lotStr = signal.recommended_lot_size ? `${signal.recommended_lot_size} Lot` : '1.0% Vốn Tài Khoản';
-  const riskUsdStr = signal.risk_amount_usd ? ` | -$${signal.risk_amount_usd.toFixed(2)}` : '';
-  const tp1UsdStr = signal.potential_profit_tp1_usd ? ` | +$${signal.potential_profit_tp1_usd.toFixed(2)}` : '';
-  const tp2UsdStr = signal.potential_profit_tp2_usd ? ` | +$${signal.potential_profit_tp2_usd.toFixed(2)}` : '';
 
   const simulationPrefix = signal.is_simulated
     ? '🧪 [SIMULATION - KHÔNG TÍNH LỆNH THẬT]\n'
@@ -69,11 +65,11 @@ export const SignalModal: React.FC<Props> = ({
 📊 Lệnh: ${actionIcon} ${actionText}
 ⏱ Khung: ${signal.timeframe}
 💵 Entry: $${signal.entry_price.toFixed(2)}
-🎯 Take Profit 1 (1:2): $${signal.take_profit_1.toFixed(2)} (+${signal.reward_points_tp1.toFixed(1)} pts${tp1UsdStr})
-🚀 Take Profit 2 (1:3): $${signal.take_profit_2.toFixed(2)} (+${signal.reward_points_tp2.toFixed(1)} pts${tp2UsdStr})
-🛑 Stop Loss: $${signal.stop_loss.toFixed(2)} (-${signal.risk_points.toFixed(1)} pts${riskUsdStr})
+🎯 Take Profit 1 (1:2): $${signal.take_profit_1.toFixed(2)} (+${signal.reward_points_tp1.toFixed(1)} pts)
+🚀 Take Profit 2 (1:3): $${signal.take_profit_2.toFixed(2)} (+${signal.reward_points_tp2.toFixed(1)} pts)
+🛑 Stop Loss: $${signal.stop_loss.toFixed(2)} (-${signal.risk_points.toFixed(1)} pts)
 ⚖️ Tỷ lệ R:R: 1:${signal.risk_reward_ratio.toFixed(2)}
-💼 Quản lý vốn đề xuất: ${lotStr}${confluenceLine}
+⚠️ View-only: không tính lot/risk.${confluenceLine}
 ━━━━━━━━━━━━━━━━━━━━━━
 🔍 Phân tích Kỹ thuật & Volume:
 • Price Action: ${signal.price_action_notes}
@@ -359,44 +355,6 @@ export const SignalModal: React.FC<Props> = ({
               <span className="text-[10px] text-neutral-500">
                 Wilder · context/AI input · không tự vào lệnh
               </span>
-            </div>
-          )}
-
-          {/* Position Sizing & Money Management Card */}
-          {signal.recommended_lot_size && (
-            <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs font-mono">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 font-bold text-sm">
-                  Lot
-                </div>
-                <div>
-                  <div className="text-zinc-300 font-sans font-semibold text-xs">
-                    Quản Lý Vốn Tự Động (Position Sizer)
-                  </div>
-                  <div className="text-zinc-400 text-[11px] font-sans">
-                    Quy cách 1.0 Lot = 100 oz. Giới hạn rủi ro tối đa 1.0% tài khoản.
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-4 bg-zinc-900/80 px-3 py-2 rounded-lg border border-zinc-800">
-                <div>
-                  <span className="text-zinc-500 text-[10px] block">Khối Lượng</span>
-                  <span className="text-amber-400 font-bold text-sm">{signal.recommended_lot_size.toFixed(2)} Lot</span>
-                </div>
-                {signal.risk_amount_usd && (
-                  <div>
-                    <span className="text-zinc-500 text-[10px] block">Rủi Ro (SL)</span>
-                    <span className="text-rose-400 font-semibold text-xs">-${signal.risk_amount_usd.toFixed(2)}</span>
-                  </div>
-                )}
-                {signal.potential_profit_tp1_usd && (
-                  <div>
-                    <span className="text-zinc-500 text-[10px] block">Lợi Nhuận (TP1)</span>
-                    <span className="text-emerald-400 font-semibold text-xs">+${signal.potential_profit_tp1_usd.toFixed(2)}</span>
-                  </div>
-                )}
-              </div>
             </div>
           )}
 

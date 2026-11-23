@@ -3,7 +3,7 @@ use crate::models::{
 };
 use crate::news_filter::MacroBias;
 use crate::risk_manager::PositionSizer;
-use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
+use crate::signal_validation::validate_signal_levels;
 use chrono::Utc;
 use tracing::{info, warn};
 
@@ -407,25 +407,9 @@ impl GoldMarketAnalyzer {
                             entry_price, stop_loss, take_profit_1, risk_reward_ratio
                         );
 
-                        // Tính toán quản lý vốn tự động
-                        let pos_sizing = PositionSizer::calculate_lot_size(
-                            config.account_balance,
-                            config.risk_percentage,
-                            risk_points,
-                            reward_tp1,
-                            reward_tp2,
-                            entry_price,
-                            config.account_leverage,
-                        );
-
-                        // Chặn tín hiệu nếu MIN_LOT đẩy rủi ro vượt ngân sách cấu hình.
-                        if let Err(reason) = validate_risk_budget(config, &pos_sizing) {
-                            warn!(
-                                "🛑 [Analyzer] Bỏ qua tín hiệu BUY do vượt ngân sách rủi ro: {}",
-                                reason
-                            );
-                            return None;
-                        }
+                        // View-only: Entry/SL/TP are logic levels; no lot,
+                        // account balance or risk budget is calculated.
+                        let pos_sizing = PositionSizer::view_only_result();
 
                         let wick_ratio = if current_candle.body_size() > 0.0 {
                             current_candle.lower_wick() / current_candle.body_size()
@@ -483,9 +467,8 @@ impl GoldMarketAnalyzer {
                                 volume_surge_ratio, config.volume_ma_period
                             ),
                             full_rationale: format!(
-                                "Nến từ chối giảm tạo râu dưới dài tại vùng Hỗ trợ ${:.2} (đã retest {} lần). Khối lượng tăng vọt {:.2}x xác nhận phe mua nhập cuộc bảo vệ vùng giá. Tỷ lệ R:R đạt 1:{:.2}. Khối lượng đề xuất: {:.2} lot (Rủi ro: -${:.2}, TP1: +${:.2}).",
-                                support.price, support.touch_count, volume_surge_ratio, risk_reward_ratio,
-                                pos_sizing.lot_size, pos_sizing.risk_amount_usd, pos_sizing.potential_profit_tp1_usd
+                                "Nến từ chối giảm tạo râu dưới dài tại vùng Hỗ trợ ${:.2} (đã retest {} lần). Khối lượng tăng vọt {:.2}x xác nhận phe mua nhập cuộc bảo vệ vùng giá. Tỷ lệ R:R đạt 1:{:.2}. View-only: không tính lot/risk.",
+                                support.price, support.touch_count, volume_surge_ratio, risk_reward_ratio
                             ),
                             status: SignalStatus::Active,
                             created_at: Utc::now(),
@@ -575,25 +558,9 @@ impl GoldMarketAnalyzer {
                             entry_price, stop_loss, take_profit_1, risk_reward_ratio
                         );
 
-                        // Tính toán quản lý vốn tự động
-                        let pos_sizing = PositionSizer::calculate_lot_size(
-                            config.account_balance,
-                            config.risk_percentage,
-                            risk_points,
-                            reward_tp1,
-                            reward_tp2,
-                            entry_price,
-                            config.account_leverage,
-                        );
-
-                        // Chặn tín hiệu nếu MIN_LOT đẩy rủi ro vượt ngân sách cấu hình.
-                        if let Err(reason) = validate_risk_budget(config, &pos_sizing) {
-                            warn!(
-                                "🛑 [Analyzer] Bỏ qua tín hiệu SELL do vượt ngân sách rủi ro: {}",
-                                reason
-                            );
-                            return None;
-                        }
+                        // View-only: Entry/SL/TP are logic levels; no lot,
+                        // account balance or risk budget is calculated.
+                        let pos_sizing = PositionSizer::view_only_result();
 
                         let wick_ratio = if current_candle.body_size() > 0.0 {
                             current_candle.upper_wick() / current_candle.body_size()
@@ -654,9 +621,8 @@ impl GoldMarketAnalyzer {
                                 volume_surge_ratio, config.volume_ma_period
                             ),
                             full_rationale: format!(
-                                "Nến từ chối tăng tạo râu trên dài tại Kháng cự ${:.2} (đã kiểm tra {} lần). Khối lượng đột biến {:.2}x xác nhận lực bán áp đảo. Tỷ lệ R:R đạt 1:{:.2}. Khối lượng đề xuất: {:.2} lot (Rủi ro: -${:.2}, TP1: +${:.2}).",
-                                resistance.price, resistance.touch_count, volume_surge_ratio, risk_reward_ratio,
-                                pos_sizing.lot_size, pos_sizing.risk_amount_usd, pos_sizing.potential_profit_tp1_usd
+                                "Nến từ chối tăng tạo râu trên dài tại Kháng cự ${:.2} (đã kiểm tra {} lần). Khối lượng đột biến {:.2}x xác nhận lực bán áp đảo. Tỷ lệ R:R đạt 1:{:.2}. View-only: không tính lot/risk.",
+                                resistance.price, resistance.touch_count, volume_surge_ratio, risk_reward_ratio
                             ),
                             status: SignalStatus::Active,
                             created_at: Utc::now(),
@@ -1004,10 +970,8 @@ mod tests {
         assert_eq!(signal.symbol, "XAU/USD");
         assert!((signal.risk_points - 15.5).abs() < 1e-6);
         assert!((signal.stop_loss - 2659.5).abs() < 1e-6);
-        assert_eq!(signal.recommended_lot_size, 0.06);
-        // Rủi ro thực tế sau khi làm tròn lot: 0.06 * 15.5 * 100 = $93 (< $100 max).
-        assert!((signal.risk_amount_usd - 93.0).abs() < 1e-6);
-        assert!(signal.risk_amount_usd <= 10_000.0 * 0.01 + 1e-6);
+        assert_eq!(signal.recommended_lot_size, 0.0);
+        assert_eq!(signal.risk_amount_usd, 0.0);
         assert_eq!(
             signal.dedup_key,
             format!("XAU/USD_M15_{}", signal.candle_timestamp)
@@ -1026,10 +990,10 @@ mod tests {
         assert!((signal_20.risk_points - 25.5).abs() < 1e-6);
         assert!(signal_20.risk_points > 25.0);
 
-        // Lot size phải giảm để rủi ro tiền mặt không vượt quá 1% tài khoản $10,000.
-        assert_eq!(signal_20.recommended_lot_size, 0.03);
-        assert!(signal_20.recommended_lot_size < signal_10.recommended_lot_size);
-        assert!(signal_20.risk_amount_usd <= 10_000.0 * 0.01 + 1e-6);
+        // View-only: no lot or account risk for either SL distance.
+        assert_eq!(signal_20.recommended_lot_size, 0.0);
+        assert_eq!(signal_10.recommended_lot_size, 0.0);
+        assert_eq!(signal_20.risk_amount_usd, 0.0);
     }
 
     #[test]
@@ -1239,9 +1203,9 @@ mod tests {
     }
 
     #[test]
-    fn small_account_wide_sl_is_rejected_by_risk_budget() {
-        // $100 balance at 1% => $1 max risk. A 25.5-point SL forces MIN_LOT 0.01,
-        // whose actual risk is $25.50 — far above the budget.
+    fn small_account_wide_sl_is_not_blocked_in_view_only_mode() {
+        // View-only: a tiny account and a wide SL must not filter the signal.
+        // Position sizing is the user's responsibility, not the analyzer's.
         let config = BotConfig {
             account_balance: 100.0,
             risk_percentage: 1.0,
@@ -1250,6 +1214,9 @@ mod tests {
         let mut candles = zigzag_candles(60);
         candles.push(bullish_pinbar(BASE_TS + 60 * STEP_MS));
 
-        assert!(GoldMarketAnalyzer::analyze_market(&candles, &config).is_none());
+        let signal = GoldMarketAnalyzer::analyze_market(&candles, &config)
+            .expect("logic signal must stay available");
+        assert_eq!(signal.recommended_lot_size, 0.0);
+        assert_eq!(signal.risk_amount_usd, 0.0);
     }
 }

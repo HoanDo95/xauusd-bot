@@ -137,15 +137,8 @@ pub fn signal_from_scenario(
         return None;
     }
     let risk_reward_ratio = round2(reward_points_tp1 / risk_points);
-    let sizing = PositionSizer::calculate_lot_size(
-        config.account_balance,
-        config.risk_percentage,
-        risk_points,
-        reward_points_tp1,
-        reward_points_tp2,
-        entry,
-        config.account_leverage,
-    );
+    // View-only signal: levels are logic; position sizing belongs to the user.
+    let sizing = PositionSizer::view_only_result();
 
     let role = scenario.role.trim().to_uppercase();
     let dedup_key = format!(

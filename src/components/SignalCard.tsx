@@ -87,24 +87,6 @@ export const SignalCard: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* Position Sizing Recommendation */}
-      {signal.recommended_lot_size && (
-        <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs font-mono">
-          <span className="text-zinc-400 text-[11px] flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-            <span>Khối lượng đề xuất:</span>
-          </span>
-          <div className="flex items-center gap-2">
-            <span className="text-amber-400 font-bold">{signal.recommended_lot_size.toFixed(2)} Lot</span>
-            {signal.risk_amount_usd && (
-              <span className="text-zinc-400 text-[11px]">
-                (Rủi ro: <span className="text-rose-400">-${signal.risk_amount_usd.toFixed(2)}</span> | TP1: <span className="text-emerald-400">+${signal.potential_profit_tp1_usd?.toFixed(2)}</span>)
-              </span>
-            )}
-          </div>
-        </div>
-      )}
-
       {/* Rationale & Volume Absorption */}
       <div className="text-xs text-neutral-300 leading-relaxed line-clamp-2">
         {signal.full_rationale}

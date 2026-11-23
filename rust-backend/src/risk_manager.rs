@@ -27,6 +27,19 @@ impl PositionSizer {
     pub const MIN_LOT: f64 = 0.01; // Micro lot tối thiểu của sàn
     pub const MAX_LOT: f64 = 50.0; // Giới hạn an toàn chống cháy tài khoản
 
+    /// View-only signal metadata: no lot, no account risk, no margin.
+    /// The signal keeps Entry/SL/TP for logic; position sizing is user-owned.
+    pub fn view_only_result() -> PositionSizeResult {
+        PositionSizeResult {
+            lot_size: 0.0,
+            risk_amount_usd: 0.0,
+            potential_profit_tp1_usd: 0.0,
+            potential_profit_tp2_usd: 0.0,
+            estimated_margin_usd: 0.0,
+            risk_assessment: "View-only: no lot or account risk is calculated.".to_string(),
+        }
+    }
+
     /// Hàm tự động tính khối lượng giao dịch (Lot Size) chuẩn xác
     ///
     /// Công thức:

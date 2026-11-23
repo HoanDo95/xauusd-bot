@@ -25,7 +25,6 @@ use crate::news_filter::ImpactLevel;
 use crate::risk_guardrails::{
     buy_rsi_h1_block_reason, counter_macro_block_reason, evaluate_risk_guardrails,
 };
-use crate::risk_manager::PositionSizer;
 use crate::rsi::{divergence_label, rsi_allows_signal, rsi_snapshot};
 use crate::scenario_signal::best_confirmed_scenario;
 use crate::scenarios::WATCH_SETUP_MAX_BARS;
@@ -35,7 +34,7 @@ use crate::scenarios::{
 use crate::scheduler::DailyScheduler;
 use crate::session_alerts::evaluate_and_dispatch;
 use crate::signal_review::{review_blocks_signal, review_signal};
-use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
+use crate::signal_validation::validate_signal_levels;
 use crate::storage::PersistentStore;
 use crate::tracker::{evaluate_active_signals, PendingConfirmation};
 use crate::trigger_journal::{record, regime_label, TriggerEvent};
@@ -239,16 +238,9 @@ fn validate_ai_hard_risk(signal: &Signal, config: &BotConfig) -> Result<(), Stri
         config.min_risk_reward,
     )?;
 
-    let sizing = PositionSizer::calculate_lot_size(
-        config.account_balance,
-        config.risk_percentage,
-        signal.risk_points,
-        signal.reward_points_tp1,
-        signal.reward_points_tp2,
-        signal.entry_price,
-        config.account_leverage,
-    );
-    validate_risk_budget(config, &sizing)
+    // View-only: account balance, lot and risk budget are intentionally not
+    // part of the signal gate. The user owns position sizing.
+    Ok(())
 }
 
 /// A confirmed scenario candidate plus the setup id used by the trigger journal.

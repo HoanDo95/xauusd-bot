@@ -286,7 +286,7 @@ fn format_candidate_block(candidate: Option<&Signal>) -> String {
 
     format!(
         "Candidate technical setup (deterministic, relaxed filters):\n\
-        side={} entry={:.2} SL={:.2} TP1={:.2} TP2={:.2} RR=1:{:.2} lot={:.2}\n\
+        side={} entry={:.2} SL={:.2} TP1={:.2} TP2={:.2} RR=1:{:.2} view_only=no_lot\n\
         confluence={}/100 volume_surge={:.2}x entry_type={} candle_close={:.2} current_price={}\n\
         price_action={}\n\
         volume_analysis={}",
@@ -296,7 +296,6 @@ fn format_candidate_block(candidate: Option<&Signal>) -> String {
         candidate.take_profit_1,
         candidate.take_profit_2,
         candidate.risk_reward_ratio,
-        candidate.recommended_lot_size,
         candidate.confluence_score,
         candidate.volume_surge_ratio,
         candidate.entry_type.as_str(),

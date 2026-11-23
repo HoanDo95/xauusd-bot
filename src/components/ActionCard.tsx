@@ -487,19 +487,7 @@ export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
               value={`1:${signal.risk_reward_ratio.toFixed(2)}`}
               valueClass="text-sky-300"
             />
-            <Metric
-              label="Lot"
-              value={
-                typeof signal.recommended_lot_size === 'number'
-                  ? `${signal.recommended_lot_size.toFixed(2)} lot`
-                  : '—'
-              }
-              hint={
-                typeof signal.risk_amount_usd === 'number'
-                  ? `Risk ${price(signal.risk_amount_usd)}`
-                  : undefined
-              }
-            />
+
           </div>
         </div>
       ) : primary ? (
