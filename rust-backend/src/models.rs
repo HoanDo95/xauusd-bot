@@ -383,7 +383,7 @@ pub struct BotConfig {
     /// Volume ratio cho trigger confirmation. Mặc định 1.2.
     #[serde(default = "default_quantum_volume_confirm_ratio")]
     pub quantum_volume_confirm_ratio: f64,
-    /// Bật bộ lọc khung giờ thanh khoản Âu-Mỹ 13:00-23:00 GMT+7
+    /// Bật split session 07:00–20:00 + 22:00–05:00 GMT+7 (live scanner).
     #[serde(default = "default_session_filter_enabled")]
     pub session_filter_enabled: bool,
     /// Nguồn dữ liệu giá đang sử dụng: "BINANCE_PAXG" hoặc "TWELVEDATA"

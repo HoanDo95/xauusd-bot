@@ -37,7 +37,7 @@ pub async fn compute_market_outlook(state: &AppState) -> MarketOutlook {
             ));
         }
     }
-    let session_in = PersistentStore::is_within_golden_session(now, config.session_filter_enabled);
+    let session_in = PersistentStore::is_within_split_session(now, config.session_filter_enabled);
     let volume_ratio = volume_surge_ratio(&candles, 20);
     let score = score_market(&scenarios, context.as_ref(), volume_ratio);
     let spread = match last_candle.as_ref() {

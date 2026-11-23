@@ -724,7 +724,7 @@ export const ConfigPanel: React.FC<Props> = ({
             {/* Session filter toggle */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-semibold text-neutral-300">
-                Bộ lọc Khung Giờ Vàng (Session Filter)
+                Bộ lọc Split Session (Session Filter)
               </label>
               <label className="flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
                 <input
@@ -734,7 +734,7 @@ export const ConfigPanel: React.FC<Props> = ({
                   className="accent-emerald-500 w-4 h-4 rounded cursor-pointer mt-0.5"
                 />
                 <span className="text-[11px] text-neutral-300 leading-snug">
-                  Ưu tiên phiên Âu - Mỹ <span className="font-mono text-emerald-400">13:00 - 23:00 VN</span> để tập trung vào khung thanh khoản cao nhất
+                  Ưu tiên split session <span className="font-mono text-emerald-400">07:00–20:00 + 22:00–05:00 VN</span>; bỏ 20:00–22:00 và 05:00–07:00
                 </span>
               </label>
               <span className="text-[11px] text-neutral-500">Tắt nếu muốn quét cả ngày (không khuyến nghị)</span>

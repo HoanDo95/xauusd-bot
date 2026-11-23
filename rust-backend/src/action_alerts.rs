@@ -263,7 +263,7 @@ pub fn spawn_action_trigger_worker(state: AppState) {
                 .iter()
                 .find(|scenario| scenario.role.eq_ignore_ascii_case("PRIMARY"));
             let in_session =
-                PersistentStore::is_within_golden_session(now, config.session_filter_enabled);
+                PersistentStore::is_within_split_session(now, config.session_filter_enabled);
             let volume_ratio = {
                 let candles = state.candles.read().await;
                 crate::market_strategist::volume_surge_ratio(&candles, 20)

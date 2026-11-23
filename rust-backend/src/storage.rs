@@ -221,8 +221,8 @@ impl PersistentStore {
         keys.iter().any(|sent| sent == key)
     }
 
-    /// Bộ lọc khung giờ vàng 13:00-23:00 GMT+7 (tương đương 06:00-16:00 UTC).
-    /// Thị trường vàng đóng cửa cuối tuần nên thứ Bảy/Chủ Nhật luôn trả false.
+    /// Legacy 13:00–23:00 VN window. Kept as the fixed session-shadow/report
+    /// baseline; the live scanner uses `is_within_split_session`.
     pub fn is_within_golden_session(now: DateTime<Utc>, session_filter_enabled: bool) -> bool {
         if !session_filter_enabled {
             return true;
@@ -234,6 +234,24 @@ impl PersistentStore {
         }
 
         (13..=23).contains(&(vietnam_now.hour() as i64))
+    }
+
+    /// Live split session: 07:00–20:00 + 22:00–05:00 VN.
+    ///
+    /// The report bucket uses `07 <= hour < 20 || hour >= 22 || hour < 5`;
+    /// this function mirrors that boundary. Weekends are always closed.
+    pub fn is_within_split_session(now: DateTime<Utc>, session_filter_enabled: bool) -> bool {
+        if !session_filter_enabled {
+            return true;
+        }
+
+        let vietnam_now = now + Duration::hours(7);
+        if matches!(vietnam_now.weekday(), Weekday::Sat | Weekday::Sun) {
+            return false;
+        }
+
+        let hour = vietnam_now.hour() as i64;
+        (7..20).contains(&hour) || !(5..22).contains(&hour)
     }
 
     /// Hard weekend gate: XAU/USD is closed on Saturday/Sunday (Vietnam time),
@@ -512,6 +530,54 @@ mod tests {
         ));
         // Tắt session filter -> cho phép cả cuối tuần.
         assert!(PersistentStore::is_within_golden_session(
+            at(2026, 11, 7, 12, 0),
+            false
+        ));
+    }
+
+    #[test]
+    fn test_split_session_filter_boundaries() {
+        // UTC -> VN (+7h). Monday 09/11/2026.
+        let cases = [
+            // 00:30 UTC = 07:30 VN -> in.
+            (0, 30, true),
+            // 05:30 UTC = 12:30 VN -> in.
+            (5, 30, true),
+            // 12:59 UTC = 19:59 VN -> in.
+            (12, 59, true),
+            // 13:00 UTC = 20:00 VN -> out.
+            (13, 0, false),
+            // 14:00 UTC = 21:00 VN -> out.
+            (14, 0, false),
+            // 15:00 UTC = 22:00 VN -> in.
+            (15, 0, true),
+            // 21:30 UTC = 04:30 VN next day -> in.
+            (21, 30, true),
+            // 22:00 UTC = 05:00 VN next day -> out.
+            (22, 0, false),
+        ];
+
+        for (hour, minute, expected) in cases {
+            assert_eq!(
+                PersistentStore::is_within_split_session(at(2026, 11, 9, hour, minute), true),
+                expected,
+                "UTC {hour:02}:{minute:02} should map to split={expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_split_session_filter_disabled_and_weekend() {
+        // Monday 09/11/2026 12:00 UTC = 19:00 VN.
+        assert!(!PersistentStore::is_within_split_session(
+            at(2026, 11, 7, 12, 0),
+            true
+        ));
+        assert!(!PersistentStore::is_within_split_session(
+            at(2026, 11, 8, 6, 0),
+            true
+        ));
+        assert!(PersistentStore::is_within_split_session(
             at(2026, 11, 7, 12, 0),
             false
         ));

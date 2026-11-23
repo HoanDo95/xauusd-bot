@@ -337,7 +337,7 @@ fn record_trigger_event(
     event.valid = Some(scenario.valid);
     event.macro_alignment = Some(scenario.macro_alignment.clone());
     event.session = Some(
-        if PersistentStore::is_within_golden_session(now, config.session_filter_enabled) {
+        if PersistentStore::is_within_split_session(now, config.session_filter_enabled) {
             "IN"
         } else {
             "OUT"
@@ -874,8 +874,8 @@ pub fn spawn_scanner(state: AppState, initial_spot_cache: Option<(f64, Instant)>
                 continue;
             }
 
-            // 6.4 Chỉ quét trong khung giờ thanh khoản Âu-Mỹ (13:00-23:00 GMT+7).
-            if !PersistentStore::is_within_golden_session(now, config.session_filter_enabled) {
+            // 6.4 Chỉ quét trong split session 07:00–20:00 + 22:00–05:00 VN.
+            if !PersistentStore::is_within_split_session(now, config.session_filter_enabled) {
                 record_scanner_gate(
                     &state,
                     &config,

@@ -78,7 +78,7 @@ pub fn evaluate(config: &BotConfig) -> Vec<ConfigWarning> {
     if !config.session_filter_enabled {
         warnings.push(ConfigWarning::warning(
             "session_filter_disabled",
-            "session_filter_enabled=false; live session is no longer 13:00–23:00 VN.",
+            "session_filter_enabled=false; live split session (07:00–20:00 + 22:00–05:00 VN) is disabled.",
         ));
     }
     if !config.daily_quota_enabled {

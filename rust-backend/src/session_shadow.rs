@@ -25,7 +25,8 @@ const INTERVAL_SECS: u64 = 30;
 pub const SESSION_SHADOW_VERSION: &str = "2026-11-19.1-session-shadow";
 
 /// Label the fixed 13:00–23:00 VN window independently of the live session
-/// flag, so the shadow keeps a stable research label even if live changes.
+/// flag, so the shadow keeps a stable research baseline even though live moved
+/// to the split session on 2026-11-23.
 pub fn session_label(now: DateTime<Utc>) -> &'static str {
     if PersistentStore::is_within_golden_session(now, true) {
         "IN"

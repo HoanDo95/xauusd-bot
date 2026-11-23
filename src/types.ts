@@ -874,7 +874,7 @@ export interface BotConfig {
   structural_sl_atr_cap?: number;
   /** Use Yahoo GC=F COMEX futures volume proxy. Default true. */
   yahoo_futures_volume_enabled?: boolean;
-  /** Prefer the high-liquidity Vietnam session 13:00 – 23:00 (GMT+7). */
+  /** Prefer the split Vietnam session 07:00–20:00 + 22:00–05:00 (GMT+7). */
   session_filter_enabled: boolean;
   /** Send informational Telegram briefings before London/New York opens (Mon–Fri, DST-aware). */
   session_alerts_enabled: boolean;
