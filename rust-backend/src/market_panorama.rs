@@ -412,14 +412,8 @@ pub async fn build_market_panorama(state: &AppState) -> MarketPanorama {
         .as_ref()
         .map(|context| context.h1.structure.clone())
         .unwrap_or_else(|| "UNKNOWN".to_string());
-    let nearest_support_for_state = scenarios
-        .market
-        .as_ref()
-        .and_then(|market| market.nearest_support);
-    let nearest_resistance_for_state = scenarios
-        .market
-        .as_ref()
-        .and_then(|market| market.nearest_resistance);
+    let nearest_support_for_state = supports.first().map(|zone| zone.price);
+    let nearest_resistance_for_state = resistances.first().map(|zone| zone.price);
     let structure_state = match price {
         Some(price) => {
             if nearest_resistance_for_state.is_some_and(|level| price > level)
