@@ -1001,6 +1001,12 @@ impl TelegramNotifier {
         } else {
             0
         };
+        let confidence_text = if decision.action.eq_ignore_ascii_case("STANDBY") && confidence == 0
+        {
+            "—".to_string()
+        } else {
+            format!("{confidence}%")
+        };
         let selected = decision
             .selected_scenario
             .as_deref()
@@ -1032,7 +1038,7 @@ impl TelegramNotifier {
                 Self::escape_html(&truncate_chars(symbol, 40))
             ),
             format!(
-                "Action: <b>{action}</b> · confidence {confidence}%\nSelected: {}",
+                "Action: <b>{action}</b> · confidence {confidence_text}\nSelected: {}",
                 Self::escape_html(&truncate_chars(selected, 24))
             ),
             format!("Reason: {reason}"),
@@ -1683,6 +1689,7 @@ impl TelegramNotifier {
             Self::escape_html(&panorama.structure.state),
             Self::escape_html(&panorama.session)
         ));
+        lines.push("⏱ <b>Session rule:</b> split 07:00–20:00 + 22:00–05:00 VN (20:00–22:00 OUT by design).".to_string());
         if let Some(score) = panorama.score.as_ref() {
             lines.push(format!(
                 "Score 60/30/10: {}/100 · Structure {}/60 · Trigger {}/30 · Macro {}/10",
@@ -1775,6 +1782,12 @@ impl TelegramNotifier {
                 .clamp(0.0, 100.0) as u8
         } else {
             0
+        };
+        let confidence_text = if decision.action.eq_ignore_ascii_case("STANDBY") && confidence == 0
+        {
+            "—".to_string()
+        } else {
+            format!("{confidence}%")
         };
         let selected = decision
             .selected_scenario
@@ -1908,7 +1921,7 @@ impl TelegramNotifier {
                 block
             }
             None => {
-                "Plan: không có kế hoạch hợp lệ (AI không chọn candidate/scenario).".to_string()
+                "Plan: NO ACTIVE PLAN — PRIMARY invalidated hoặc chưa có setup mới.".to_string()
             }
         };
 
@@ -1962,7 +1975,7 @@ impl TelegramNotifier {
 
         let body = format!(
             "{header} — {}\n\
-             Action: <b>{action}</b> · confidence {confidence}%\n\
+             Action: <b>{action}</b> · confidence {confidence_text}\n\
              Selected scenario: {}\n\
              Reason: {reason}\n\
              {panorama_block}\n\
@@ -3306,6 +3319,21 @@ mod tests {
     }
 
     #[test]
+    fn standby_zero_confidence_is_displayed_as_dash() {
+        let mut decision = sample_ai_decision();
+        decision.action = "STANDBY".to_string();
+        decision.confidence_score = 0.0;
+        decision.selected_scenario = None;
+        let message = TelegramNotifier::format_ai_market_brief(
+            &decision,
+            &sample_scenario_response(),
+            &sample_live_view(),
+        );
+        assert!(message.contains("Action: <b>STANDBY</b> · confidence —"));
+        assert!(!message.contains("confidence 0%"));
+    }
+
+    #[test]
     fn format_ai_market_brief_escapes_dynamic_text_and_handles_none() {
         let mut decision = sample_ai_decision();
         decision.action = "STANDBY<script>".to_string();
@@ -3527,7 +3555,7 @@ mod tests {
 
         let message = TelegramNotifier::format_entry_check(&result);
 
-        assert!(message.contains("Plan: không có kế hoạch hợp lệ"));
+        assert!(message.contains("Plan: NO ACTIVE PLAN"));
         assert!(!message.contains("Entry 3960.00"));
         assert!(message.contains("Đây là check thủ công, KHÔNG phải trade signal tự động."));
     }

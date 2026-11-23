@@ -487,6 +487,7 @@ pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult
         .as_ref()
         .filter(|candidate| !candidate.dedup_key.contains("_SCENARIO_"));
     let mut entry_plan = select_entry_plan(&decision, plan_candidate, &scenarios, &config);
+    let mut invalidate_plan = false;
     if let (Some(plan), Some(candle)) = (entry_plan.as_mut(), candles.last()) {
         if let Some(scenario) = scenarios
             .scenarios
@@ -504,6 +505,7 @@ pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult
             if invalidated {
                 plan.valid = false;
                 plan.early_entry = false;
+                invalidate_plan = true;
                 plan.note
                     .push_str(" · INVALIDATED — giá đã vượt structural stop; zone chỉ tham khảo.");
             } else if scenario_triggered(scenario, candle) {
@@ -514,6 +516,10 @@ pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult
                 plan.note.push_str(" · WAITING — chưa trigger.");
             }
         }
+    }
+    if invalidate_plan {
+        // Do not present an invalidated PRIMARY as the active reference plan.
+        entry_plan = None;
     }
 
     // Every manual `/start-entry` view refreshes the AI Strategist when enabled.
