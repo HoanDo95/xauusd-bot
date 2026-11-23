@@ -3065,6 +3065,7 @@ mod tests {
         assert!(message.contains("PRIMARY"));
         assert!(message.contains("ALTERNATIVE"));
         assert!(message.contains("3872.00"));
+        assert!(message.contains("REFERENCE ONLY — backtest 2022–2026 âm"));
         assert!(message.contains("DISCRETIONARY; KHÔNG PHẢI SNIPER SIGNAL"));
         assert!(message.contains("Score 60/30/10: 78/100"));
         assert!(!message.contains("Lot "));
