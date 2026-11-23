@@ -1683,6 +1683,40 @@ fn collect_levels(
         .collect();
     resistances.sort_by(|left, right| left.price.total_cmp(&right.price));
 
+    // Dynamic S/R sometimes misses the current session's intraday extreme.
+    // Add it as an unconfirmed level when it is close enough to matter.
+    let dedup_tolerance = (atr * 0.05).max(1.0);
+    if let Some(session_low) = recent_swing_low(candles, STRUCTURE_LOOKBACK) {
+        let distance = price - session_low;
+        if distance > 0.0
+            && distance <= atr * INTRADAY_BREAKDOWN_MAX_ATR
+            && !supports
+                .iter()
+                .any(|level| (level.price - session_low).abs() <= dedup_tolerance)
+        {
+            supports.push(LevelPick {
+                price: session_low,
+                htf_confluence: 0,
+            });
+            supports.sort_by(|left, right| right.price.total_cmp(&left.price));
+        }
+    }
+    if let Some(session_high) = recent_swing_high(candles, STRUCTURE_LOOKBACK) {
+        let distance = session_high - price;
+        if distance > 0.0
+            && distance <= atr * INTRADAY_BREAKDOWN_MAX_ATR
+            && !resistances
+                .iter()
+                .any(|level| (level.price - session_high).abs() <= dedup_tolerance)
+        {
+            resistances.push(LevelPick {
+                price: session_high,
+                htf_confluence: 0,
+            });
+            resistances.sort_by(|left, right| left.price.total_cmp(&right.price));
+        }
+    }
+
     (
         build_level_set(&supports, price, atr),
         build_level_set(&resistances, price, atr),
