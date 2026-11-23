@@ -52,8 +52,7 @@ fn daily_plan_key(vietnam_now: DateTime<Utc>, slot: u32) -> String {
 
 fn no_plan_reason(outlook: &MarketOutlook) -> String {
     let mut reason = match outlook.primary.as_ref() {
-        None => "Chưa có PRIMARY hợp lệ.".to_string(),
-        Some(primary) if !primary.valid => "PRIMARY không hợp lệ.".to_string(),
+        None => "Chưa có PRIMARY.".to_string(),
         Some(primary) if primary.confidence < MIN_DAILY_CONFIDENCE => format!(
             "PRIMARY confidence {}% < {}%.",
             primary.confidence, MIN_DAILY_CONFIDENCE
@@ -102,7 +101,7 @@ pub fn spawn_market_view_worker(state: AppState) {
 
             let telegram = state.telegram.read().await.clone();
             let result = match outlook.primary.as_ref() {
-                Some(primary) if primary.valid && primary.confidence >= MIN_DAILY_CONFIDENCE => {
+                Some(primary) if primary.confidence >= MIN_DAILY_CONFIDENCE => {
                     telegram.send_daily_view(&outlook, slot).await
                 }
                 _ => {
