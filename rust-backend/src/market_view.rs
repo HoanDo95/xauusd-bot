@@ -8,6 +8,7 @@
 use crate::market_context::MarketContext;
 use crate::market_strategist::StrategistView;
 use crate::scenarios::{Scenario, ScenarioResponse};
+use crate::zone_plan;
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -381,6 +382,13 @@ fn outlook_scenario(
     };
     let zone_low = round2(anchor - buffer);
     let zone_high = round2(anchor + buffer);
+    let side = match action {
+        "WATCH_SELL" => "SELL",
+        "WATCH_BUY" => "BUY",
+        _ => "",
+    };
+    let zone_levels =
+        (!side.is_empty()).then(|| zone_plan::levels(anchor, side, scenario.take_profit_2));
     Some(OutlookScenario {
         role: scenario.role.trim().to_uppercase(),
         scenario_id: scenario.id.clone(),
@@ -389,9 +397,9 @@ fn outlook_scenario(
         zone_low,
         zone_high,
         trigger: scenario.trigger.clone(),
-        stop_loss: scenario.stop_loss,
-        take_profit_1: scenario.take_profit_1,
-        take_profit_2: scenario.take_profit_2,
+        stop_loss: zone_levels.map(|levels| levels.0),
+        take_profit_1: zone_levels.map(|levels| levels.1),
+        take_profit_2: zone_levels.map(|levels| levels.2),
         confidence: scenario.confidence,
         invalidation: scenario.invalidation.clone(),
         h1_confirmation: Some(h1_confirmation(scenario, context, zone_low, zone_high)),

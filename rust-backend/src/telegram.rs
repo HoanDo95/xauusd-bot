@@ -11,6 +11,7 @@ use crate::retest_scalp::RetestScalpTrade;
 use crate::retest_shadow::RetestLevels;
 use crate::scenarios::{Scenario, ScenarioResponse};
 use crate::session_alerts::SessionBriefing;
+use crate::zone_plan;
 use reqwest::Client;
 use serde_json::json;
 use tracing::{error, info};
@@ -25,11 +26,6 @@ pub struct TelegramNotifier {
     chat_id: String,
 }
 
-const ZONE_SL_POINTS: f64 = 20.0;
-const ZONE_TP1_POINTS: f64 = 20.0;
-const ZONE_TP2_MIN: f64 = 20.0;
-const ZONE_TP2_MAX: f64 = 40.0;
-
 fn zone_alert_mode_enabled() -> bool {
     std::env::var("ZONE_ALERT_MODE")
         .map(|value| {
@@ -39,32 +35,6 @@ fn zone_alert_mode_enabled() -> bool {
             )
         })
         .unwrap_or(false)
-}
-
-/// Reference levels for the zone-advisory profile: fixed 20-point SL, TP1 20,
-/// TP2 from the scenario target clamped to 20..=40 points. Display only.
-fn zone_plan_levels(entry: f64, side: &str, scenario_tp2: Option<f64>) -> (f64, f64, f64, f64) {
-    let is_buy = side.trim().eq_ignore_ascii_case("BUY");
-    let tp2_points = scenario_tp2
-        .map(|tp2| (tp2 - entry).abs())
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(ZONE_TP2_MAX)
-        .clamp(ZONE_TP2_MIN, ZONE_TP2_MAX);
-    if is_buy {
-        (
-            entry - ZONE_SL_POINTS,
-            entry + ZONE_TP1_POINTS,
-            entry + tp2_points,
-            tp2_points,
-        )
-    } else {
-        (
-            entry + ZONE_SL_POINTS,
-            entry - ZONE_TP1_POINTS,
-            entry - tp2_points,
-            tp2_points,
-        )
-    }
 }
 
 impl TelegramNotifier {
@@ -179,9 +149,8 @@ impl TelegramNotifier {
             .replace('>', "&gt;")
     }
 
-    /// Định dạng tin nhắn chuẩn và chuyên nghiệp cho Trader Vàng
-    /// Zone-advisory alert: fixed 20-point SL, TP1 20, TP2 20-40 from the
-    /// scenario target. Never shows lot/risk or position management.
+    /// Zone-advisory alert: fixed 20-point SL, TP1 20 (50% partial), TP2 40-50.
+    /// Never shows lot, account %, risk budget or position management.
     pub fn format_zone_signal_message(signal: &Signal) -> String {
         let side = match signal.signal_type {
             SignalType::Buy => "BUY",
@@ -189,18 +158,24 @@ impl TelegramNotifier {
         };
         let symbol = Self::escape_html(&signal.symbol);
         let (stop_loss, take_profit_1, take_profit_2, tp2_points) =
-            zone_plan_levels(signal.entry_price, side, Some(signal.take_profit_2));
-        let rr2 = if ZONE_SL_POINTS > 0.0 {
-            tp2_points / ZONE_SL_POINTS
-        } else {
-            0.0
-        };
+            zone_plan::levels(signal.entry_price, side, Some(signal.take_profit_2));
+        let rr2 = tp2_points / zone_plan::SL_POINTS;
         format!(
             "🎯 <b>ZONE ALERT — {symbol} · {side}</b>\n\
              Entry (trigger) <code>{:.2}</code>\n\
-             SL <b>20 giá</b> → {:.2} · TP1 <b>20 giá</b> → {:.2} · TP2 <b>{:.1} giá</b> → {:.2} · R:R 1:{:.2}\n\
-             ⚠️ Reference only: không lot/risk, không auto-trade, không phải GOLD SIGNAL.",
-            signal.entry_price, stop_loss, take_profit_1, tp2_points, take_profit_2, rr2
+             SL <b>{:.0} giá</b> → {:.2} · TP1 <b>{:.0} giá</b> → {:.2} (chốt 50%, BE+1)\n\
+             TP2 <b>{:.0}–{:.0} giá</b> → {:.2} ({:.1} giá) · R:R TP2 1:{:.2}\n\
+             ⚠️ Reference only: không lot/risk/account %, không auto-trade, không phải GOLD SIGNAL.",
+            signal.entry_price,
+            zone_plan::SL_POINTS,
+            stop_loss,
+            zone_plan::TP1_POINTS,
+            take_profit_1,
+            zone_plan::TP2_MIN_POINTS,
+            zone_plan::TP2_MAX_POINTS,
+            take_profit_2,
+            tp2_points,
+            rr2
         )
     }
 
@@ -752,22 +727,23 @@ impl TelegramNotifier {
         } else {
             let entry = (scenario.zone_low + scenario.zone_high) / 2.0;
             let (stop_loss, take_profit_1, take_profit_2, tp2_points) =
-                zone_plan_levels(entry, side, scenario.take_profit_2);
-            let rr2 = tp2_points / ZONE_SL_POINTS;
+                zone_plan::levels(entry, side, scenario.take_profit_2);
+            let rr2 = tp2_points / zone_plan::SL_POINTS;
             format!(
-                "\n🎯 Zone plan: Limit <code>{entry:.2}</code> · SL 20 giá → {stop_loss:.2} · TP1 20 giá → {take_profit_1:.2} · TP2 {tp2_points:.1} giá → {take_profit_2:.2} · R:R 1:{rr2:.2} (reference, no lot/risk)"
+                "\n🎯 Zone plan: Limit <code>{entry:.2}</code> · SL {:.0} giá → {stop_loss:.2} · TP1 {:.0} giá → {take_profit_1:.2} (50%, BE+1) · TP2 {:.0}–{:.0} giá → {take_profit_2:.2} ({tp2_points:.1} giá) · R:R TP2 1:{rr2:.2} (reference, no lot/risk)",
+                zone_plan::SL_POINTS,
+                zone_plan::TP1_POINTS,
+                zone_plan::TP2_MIN_POINTS,
+                zone_plan::TP2_MAX_POINTS
             )
         };
         format!(
-            "{} — <b>{}</b>\nZone: <code>{:.2}–{:.2}</code>\nTrigger: {}{zone_plan}\nSL {} · TP1 {} · TP2 {} · Conf {}%\nInvalidation: {}{}",
+            "{} — <b>{}</b>\nZone: <code>{:.2}–{:.2}</code>\nTrigger: {}{zone_plan}\nConf {}%\nInvalidation: {}{}",
             label,
             Self::escape_html(&scenario.action),
             scenario.zone_low,
             scenario.zone_high,
             Self::escape_html(&scenario.trigger),
-            format_level(scenario.stop_loss),
-            format_level(scenario.take_profit_1),
-            format_level(scenario.take_profit_2),
             scenario.confidence,
             Self::escape_html(&scenario.invalidation),
             h1
@@ -1900,11 +1876,6 @@ impl TelegramNotifier {
                 let status = if plan.valid { "VALID" } else { "INVALID" };
                 let side = Self::escape_html(&truncate_chars(&plan.side, 16));
                 let source = Self::escape_html(&truncate_chars(&plan.source, 24));
-                let risk_reward = if plan.risk_reward.is_finite() {
-                    format!("1:{:.2}", plan.risk_reward)
-                } else {
-                    "—".to_string()
-                };
                 let readiness = plan
                     .readiness
                     .map(|value| format!(" · readiness {value}%"))
@@ -1915,21 +1886,21 @@ impl TelegramNotifier {
                     ""
                 };
                 let (zsl, ztp1, ztp2, ztp2_points) =
-                    zone_plan_levels(plan.entry, &plan.side, Some(plan.take_profit_2));
-                let zrr2 = ztp2_points / ZONE_SL_POINTS;
+                    zone_plan::levels(plan.entry, &plan.side, Some(plan.take_profit_2));
+                let zrr2 = ztp2_points / zone_plan::SL_POINTS;
                 let mut block = format!(
                     "Plan: {source} (reference) · {side} · {status}{readiness}{early}\n\
-                     Entry {} · SL {} · TP1 {} · TP2 {} · R:R {risk_reward}\n\
-                     🎯 Zone plan: Limit {:.2} · SL 20 giá → {:.2} · TP1 20 giá → {:.2} · TP2 {:.1} giá → {:.2} · R:R 1:{:.2} (reference, no lot/risk)",
-                    format_level(Some(plan.entry)),
-                    format_level(Some(plan.stop_loss)),
-                    format_level(Some(plan.take_profit_1)),
-                    format_level(Some(plan.take_profit_2)),
+                     🎯 Entry {:.2} · SL {:.0} giá → {:.2} · TP1 {:.0} giá → {:.2} (50%, BE+1) · TP2 {:.0}–{:.0} giá → {:.2} ({:.1} giá) · R:R TP2 1:{:.2}\n\
+                     ⚠️ Reference only: không lot/risk/account %.",
                     plan.entry,
+                    zone_plan::SL_POINTS,
                     zsl,
+                    zone_plan::TP1_POINTS,
                     ztp1,
-                    ztp2_points,
+                    zone_plan::TP2_MIN_POINTS,
+                    zone_plan::TP2_MAX_POINTS,
                     ztp2,
+                    ztp2_points,
                     zrr2
                 );
                 if !plan.note.trim().is_empty() {
@@ -2387,7 +2358,7 @@ fn scenario_primary_block(scenario: &Scenario) -> String {
         format!("Trigger: {trigger}"),
     ];
 
-    if let Some(levels) = scenario_levels_line(scenario, true) {
+    if let Some(levels) = scenario_zone_line(scenario, true) {
         lines.push(levels);
     } else {
         let note = scenario
@@ -2426,7 +2397,7 @@ fn scenario_alternate_block(scenario: &Scenario, include_details: bool) -> Strin
         "Trigger: {}",
         TelegramNotifier::escape_html(&truncate_chars(&scenario.trigger, 120))
     )];
-    if let Some(levels) = scenario_levels_line(scenario, false) {
+    if let Some(levels) = scenario_zone_line(scenario, false) {
         parts.push(levels);
     } else {
         let note = scenario
@@ -2457,25 +2428,36 @@ fn scenario_watchlist_line(items: &[&Scenario], truncated: bool) -> String {
     line
 }
 
-/// Entry/SL/TP levels for the compact scenario blocks. Returns None when the
-/// scenario has no numeric entry (e.g. a bounce/rejection waiting for a zone).
-fn scenario_levels_line(scenario: &Scenario, include_tp2: bool) -> Option<String> {
-    let entry = scenario.entry.filter(|value| value.is_finite())?;
-    let mut levels = vec![format!("Entry {entry:.2}")];
-    if let Some(stop_loss) = scenario.stop_loss.filter(|value| value.is_finite()) {
-        levels.push(format!("SL {stop_loss:.2}"));
-    }
-    if let Some(take_profit_1) = scenario.take_profit_1.filter(|value| value.is_finite()) {
-        levels.push(format!("TP1 {take_profit_1:.2}"));
-    }
+/// Zone levels for the compact scenario blocks. Returns None when the scenario
+/// has no numeric entry or no directional bias. The levels are always the
+/// view-only zone profile (SL 20, TP1 20, TP2 40–50), never the structural stop.
+fn scenario_zone_line(scenario: &Scenario, include_tp2: bool) -> Option<String> {
+    let entry = scenario
+        .entry
+        .filter(|value| value.is_finite() && *value > 0.0)?;
+    let side = match scenario.bias.trim().to_uppercase().as_str() {
+        "BULLISH" => "BUY",
+        "BEARISH" => "SELL",
+        _ => return None,
+    };
+    let (stop_loss, take_profit_1, take_profit_2, tp2_points) =
+        zone_plan::levels(entry, side, scenario.take_profit_2);
+    let mut levels = vec![
+        format!("Entry {entry:.2}"),
+        format!("SL {:.0} giá → {stop_loss:.2}", zone_plan::SL_POINTS),
+        format!("TP1 {:.0} giá → {take_profit_1:.2}", zone_plan::TP1_POINTS),
+    ];
     if include_tp2 {
-        if let Some(take_profit_2) = scenario.take_profit_2.filter(|value| value.is_finite()) {
-            levels.push(format!("TP2 {take_profit_2:.2}"));
-        }
+        levels.push(format!(
+            "TP2 {:.0}–{:.0} giá → {take_profit_2:.2} ({tp2_points:.1} giá)",
+            zone_plan::TP2_MIN_POINTS,
+            zone_plan::TP2_MAX_POINTS
+        ));
     }
-    if let Some(risk_reward) = scenario.risk_reward.filter(|value| value.is_finite()) {
-        levels.push(format!("R:R 1:{risk_reward:.2}"));
-    }
+    levels.push(format!(
+        "R:R TP2 1:{:.2}",
+        tp2_points / zone_plan::SL_POINTS
+    ));
     Some(levels.join(" · "))
 }
 
@@ -2633,16 +2615,16 @@ mod tests {
     #[test]
     fn zone_plan_levels_clamp_tp2_and_use_fixed_sl() {
         assert_eq!(
-            zone_plan_levels(100.0, "BUY", Some(130.0)),
-            (80.0, 120.0, 130.0, 30.0)
+            zone_plan::levels(100.0, "BUY", Some(130.0)),
+            (80.0, 120.0, 140.0, 40.0)
         );
         assert_eq!(
-            zone_plan_levels(100.0, "SELL", Some(50.0)),
+            zone_plan::levels(100.0, "SELL", Some(50.0)),
+            (120.0, 80.0, 50.0, 50.0)
+        );
+        assert_eq!(
+            zone_plan::levels(100.0, "SELL", Some(90.0)),
             (120.0, 80.0, 60.0, 40.0)
-        );
-        assert_eq!(
-            zone_plan_levels(100.0, "SELL", Some(90.0)),
-            (120.0, 80.0, 80.0, 20.0)
         );
     }
 
@@ -2653,9 +2635,12 @@ mod tests {
         assert!(message.contains("ZONE ALERT"));
         assert!(message.contains("SL <b>20 giá</b>"));
         assert!(message.contains("TP1 <b>20 giá</b>"));
+        assert!(message.contains("TP2 <b>40–50 giá</b>"));
+        assert!(message.contains("chốt 50%"));
         assert!(message.contains("không phải GOLD SIGNAL"));
         assert!(!message.contains("Lot"));
         assert!(!message.contains("Risk $"));
+        assert!(!message.contains("0.01"));
     }
 
     #[test]
@@ -3242,10 +3227,10 @@ mod tests {
             "D1 BEARISH · H4 BEARISH · H1 NEUTRAL · ATR H4 22.5",
             "🎯 PRIMARY — Bearish breakdown [ALIGNED] [VALID] · confluence 95",
             "Trigger: Đóng M15 dưới 3960.00 (phá hỗ trợ 3962.00)",
-            "Entry 3960.00 · SL 3968.00 · TP1 3944.00 · TP2 3936.00 · R:R 1:2.00",
+            "Entry 3960.00 · SL 20 giá → 3980.00 · TP1 20 giá → 3940.00 · TP2 40–50 giá → 3920.00 (40.0 giá) · R:R TP2 1:2.00",
             "Invalidation: Đóng M15 ngược hướng.",
             "🔁 ALTERNATE — Bullish breakout [COUNTER] [NOT VALID] · confluence 50",
-            "Trigger: Đóng M15 trên 3997.00 (phá kháng cự 3995.00) · Entry 3997.00 · SL 3990.00 · TP1 4005.00 · R:R 1:1.14",
+            "Trigger: Đóng M15 trên 3997.00 (phá kháng cự 3995.00) · Entry 3997.00 · SL 20 giá → 3977.00 · TP1 20 giá → 4017.00 · R:R TP2 1:2.00",
             "👀 Watchlist: Bullish bounce (not valid) · Bearish rejection (not valid)",
             "Bot sẽ gửi tín hiệu thật khi đủ điều kiện.",
             "không phải entry đã xác nhận.",
@@ -3356,7 +3341,8 @@ mod tests {
             "Selected scenario: PRIMARY",
             "Reason: H4/H1 supply confluence + RSI overbought",
             "Plan: PRIMARY (reference) · SELL · VALID · readiness 90% · EARLY (trigger chưa xác nhận)",
-            "Entry 3960.00 · SL 3968.00 · TP1 3944.00 · TP2 3936.00 · R:R 1:2.00",
+            "🎯 Entry 3960.00 · SL 20 giá → 3980.00 · TP1 20 giá → 3940.00 (50%, BE+1) · TP2 40–50 giá → 3920.00 (40.0 giá) · R:R TP2 1:2.00",
+            "⚠️ Reference only: không lot/risk/account %.",
             "Macro/Flow: ALIGNED · bias BEARISH · 95% — Real yield và DXY cùng hỗ trợ SELL.",
             "Volume: PAXG proxy · BINANCE_PAXG_PROXY",
             "Đây là check thủ công, KHÔNG phải trade signal tự động.",
@@ -3738,7 +3724,7 @@ mod tests {
             "D1 BEARISH · H4 BEARISH · H1 NEUTRAL · ATR H4 22.5",
             "Tin đỏ USD: CPI 20:30 · NFP 21:30 (tối đa 4 tin)",
             "🎯 PRIMARY — Bearish breakdown [ALIGNED] [VALID] · confluence 95",
-            "Entry 3960.00 · SL 3968.00 · TP1 3944.00 · TP2 3936.00 · R:R 1:2.00",
+            "Entry 3960.00 · SL 20 giá → 3980.00 · TP1 20 giá → 3940.00 · TP2 40–50 giá → 3920.00 (40.0 giá) · R:R TP2 1:2.00",
             "🔁 ALTERNATE — Bullish breakout [COUNTER] [NOT VALID] · confluence 50",
             "👀 Watchlist: Bullish bounce (not valid) · Bearish rejection (not valid)",
             "Action: WAIT — chờ trigger của PRIMARY.",

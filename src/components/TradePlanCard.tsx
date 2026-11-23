@@ -46,9 +46,9 @@ function planLine(label: string, scenario: OutlookScenario | null): string {
     `${label}: ${actionLabel(scenario.action)}`,
     `Zone ${price(scenario.zone_low)}–${price(scenario.zone_high)}`,
     `Trigger ${scenario.trigger}`,
-    `SL ${price(scenario.stop_loss)}`,
-    `TP1 ${price(scenario.take_profit_1)}`,
-    `TP2 ${price(scenario.take_profit_2)}`,
+    `SL20 ${price(scenario.stop_loss)}`,
+    `TP1 20 ${price(scenario.take_profit_1)}`,
+    `TP2 40–50 ${price(scenario.take_profit_2)}`,
     `Conf ${scenario.confidence}%`,
     `Invalidation: ${scenario.invalidation}`,
   ].join(' · ');
@@ -97,17 +97,17 @@ const PlanBlock: React.FC<{
       <p className="text-[11px] text-neutral-300 leading-relaxed">{scenario.trigger}</p>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[10px] font-mono">
         <div>
-          <div className="text-neutral-500 uppercase">SL</div>
+          <div className="text-neutral-500 uppercase">SL 20</div>
           <div className="text-rose-300 font-bold tabular-nums">{price(scenario.stop_loss)}</div>
         </div>
         <div>
-          <div className="text-neutral-500 uppercase">TP1</div>
+          <div className="text-neutral-500 uppercase">TP1 20</div>
           <div className="text-emerald-300 font-bold tabular-nums">
             {price(scenario.take_profit_1)}
           </div>
         </div>
         <div>
-          <div className="text-neutral-500 uppercase">TP2</div>
+          <div className="text-neutral-500 uppercase">TP2 40–50</div>
           <div className="text-emerald-300 font-bold tabular-nums">
             {price(scenario.take_profit_2)}
           </div>

@@ -15,6 +15,31 @@ function price(value: number | null | undefined): string {
   return `$${value.toFixed(2)}`;
 }
 
+/** View-only zone profile: SL 20, TP1 20, TP2 40–50 from the structural target. */
+function zonePlan(scenario: Scenario) {
+  const entry = scenario.entry;
+  if (typeof entry !== 'number' || !Number.isFinite(entry)) return null;
+  const side =
+    scenario.bias?.toUpperCase() === 'BULLISH'
+      ? 'BUY'
+      : scenario.bias?.toUpperCase() === 'BEARISH'
+        ? 'SELL'
+        : null;
+  if (!side) return null;
+  const raw =
+    typeof scenario.take_profit_2 === 'number' && Number.isFinite(scenario.take_profit_2)
+      ? Math.abs(scenario.take_profit_2 - entry)
+      : 50;
+  const tp2Points = Math.min(50, Math.max(40, raw));
+  const direction = side === 'BUY' ? 1 : -1;
+  return {
+    stopLoss: entry - direction * 20,
+    takeProfit1: entry + direction * 20,
+    takeProfit2: entry + direction * tp2Points,
+    riskReward: tp2Points / 20,
+  };
+}
+
 function timeLabel(value?: string): string {
   if (!value) return '—';
   const parsed = new Date(value);
@@ -176,6 +201,7 @@ const ScenarioTile: React.FC<{ scenario: Scenario; role: ScenarioRole }> = ({
   role,
 }) => {
   const confidence = Math.max(0, Math.min(100, scenario.confidence || 0));
+  const zone = zonePlan(scenario);
   const isPrimary = role === 'PRIMARY';
   const roleLabel = isPrimary ? '🎯 PRIMARY' : '🔁 ALTERNATE';
   const roleTone = isPrimary
@@ -228,16 +254,16 @@ const ScenarioTile: React.FC<{ scenario: Scenario; role: ScenarioRole }> = ({
 
       <div className="grid grid-cols-2 gap-2 font-mono">
         <Level label="Entry" value={price(scenario.entry)} valueClass="text-white" />
-        <Level label="SL" value={price(scenario.stop_loss)} valueClass="text-rose-400" />
-        <Level label="TP1" value={price(scenario.take_profit_1)} valueClass="text-emerald-400" />
-        <Level label="TP2" value={price(scenario.take_profit_2)} valueClass="text-emerald-300" />
+        <Level label="SL (20)" value={price(zone?.stopLoss)} valueClass="text-rose-400" />
+        <Level label="TP1 (20)" value={price(zone?.takeProfit1)} valueClass="text-emerald-400" />
         <Level
-          label="R:R"
-          value={
-            typeof scenario.risk_reward === 'number'
-              ? `1:${scenario.risk_reward.toFixed(2)}`
-              : '—'
-          }
+          label="TP2 (40–50)"
+          value={price(zone?.takeProfit2)}
+          valueClass="text-emerald-300"
+        />
+        <Level
+          label="R:R TP2"
+          value={zone ? `1:${zone.riskReward.toFixed(2)}` : '—'}
           valueClass="text-sky-300"
         />
         <div className="flex flex-col gap-0.5">

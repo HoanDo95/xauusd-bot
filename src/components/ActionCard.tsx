@@ -345,22 +345,22 @@ export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 font-mono">
                 <Metric label="Entry" value={price(entryPlan.entry)} />
                 <Metric
-                  label="Stop Loss"
+                  label="SL (20 giá)"
                   value={price(entryPlan.stop_loss)}
                   valueClass="text-rose-400"
                 />
                 <Metric
-                  label="TP1"
+                  label="TP1 (20 giá)"
                   value={price(entryPlan.take_profit_1)}
                   valueClass="text-emerald-400"
                 />
                 <Metric
-                  label="TP2"
+                  label="TP2 (40–50 giá)"
                   value={price(entryPlan.take_profit_2)}
                   valueClass="text-emerald-300"
                 />
                 <Metric
-                  label="R:R"
+                  label="R:R TP2"
                   value={
                     Number.isFinite(entryPlan.risk_reward)
                       ? `1:${entryPlan.risk_reward.toFixed(2)}`
@@ -370,6 +370,10 @@ export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
                 />
                 <Metric label="Side" value={entryPlan.side} />
               </div>
+              <p className="text-[10px] text-neutral-400 leading-relaxed">
+                <span className="text-neutral-500">Zone view:</span> không lot/risk/account % —
+                chỉ là vùng tham khảo.
+              </p>
               <p className="text-[10px] text-neutral-400 leading-relaxed">
                 <span className="text-neutral-500">Note:</span> {entryPlan.note}
               </p>
@@ -544,19 +548,23 @@ export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
 
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 font-mono">
             <Metric label="Entry" value={price(primary.entry)} />
-            <Metric label="Stop Loss" value={price(primary.stop_loss)} valueClass="text-rose-400" />
             <Metric
-              label="TP1"
+              label="SL (20 giá)"
+              value={price(primary.stop_loss)}
+              valueClass="text-rose-400"
+            />
+            <Metric
+              label="TP1 (20 giá)"
               value={price(primary.take_profit_1)}
               valueClass="text-emerald-400"
             />
             <Metric
-              label="TP2"
+              label="TP2 (40–50 giá)"
               value={price(primary.take_profit_2)}
               valueClass="text-emerald-300"
             />
             <Metric
-              label="R:R"
+              label="R:R TP2"
               value={
                 typeof primary.risk_reward === 'number'
                   ? `1:${primary.risk_reward.toFixed(2)}`

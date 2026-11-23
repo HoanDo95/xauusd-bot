@@ -158,17 +158,17 @@ function ScenarioBlock({
       ) : null}
       <div className="grid grid-cols-3 gap-2 text-[10px]">
         <div>
-          <div className="text-neutral-500 uppercase tracking-wider">SL</div>
+          <div className="text-neutral-500 uppercase tracking-wider">SL 20</div>
           <div className="font-mono font-bold text-rose-300">{level(scenario.stop_loss)}</div>
         </div>
         <div>
-          <div className="text-neutral-500 uppercase tracking-wider">TP1</div>
+          <div className="text-neutral-500 uppercase tracking-wider">TP1 20</div>
           <div className="font-mono font-bold text-emerald-300">
             {level(scenario.take_profit_1)}
           </div>
         </div>
         <div>
-          <div className="text-neutral-500 uppercase tracking-wider">TP2</div>
+          <div className="text-neutral-500 uppercase tracking-wider">TP2 40–50</div>
           <div className="font-mono font-bold text-emerald-300">
             {level(scenario.take_profit_2)}
           </div>

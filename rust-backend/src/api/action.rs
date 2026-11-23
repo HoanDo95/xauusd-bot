@@ -3,6 +3,7 @@ use crate::ai_decision::AiDecision;
 use crate::macro_flow::{align_signal_with_macro_flow, MacroFlowSnapshot};
 use crate::models::Signal;
 use crate::scenarios::{Scenario, ScenarioResponse};
+use crate::zone_plan;
 use axum::{extract::State, response::IntoResponse, Json};
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -231,11 +232,29 @@ fn blocked_filter_reason(filters: Option<&Value>) -> String {
 }
 
 fn primary_scenario(scenarios: &ScenarioResponse) -> Option<Scenario> {
-    scenarios
+    let mut scenario = scenarios
         .scenarios
         .iter()
         .find(|scenario| scenario.role.eq_ignore_ascii_case("PRIMARY"))
-        .cloned()
+        .cloned()?;
+    let Some(entry) = scenario
+        .entry
+        .filter(|value| value.is_finite() && *value > 0.0)
+    else {
+        return Some(scenario);
+    };
+    let side = match scenario.bias.trim().to_uppercase().as_str() {
+        "BULLISH" => "BUY",
+        "BEARISH" => "SELL",
+        _ => return Some(scenario),
+    };
+    let (stop_loss, take_profit_1, take_profit_2, tp2_points) =
+        zone_plan::levels(entry, side, scenario.take_profit_2);
+    scenario.stop_loss = Some(stop_loss);
+    scenario.take_profit_1 = Some(take_profit_1);
+    scenario.take_profit_2 = Some(take_profit_2);
+    scenario.risk_reward = Some(tp2_points / zone_plan::SL_POINTS);
+    Some(scenario)
 }
 
 /// Pure response builder for `/api/action-view` (no locks, no side effects).

@@ -16,13 +16,12 @@ use crate::macro_flow::align_signal_with_macro_flow;
 use crate::market_panorama::{build_market_panorama, MarketPanorama};
 use crate::market_strategist::StrategistView;
 use crate::models::{BotConfig, Signal, SignalType};
-use crate::risk_manager::PositionSizer;
 use crate::rsi::rsi_snapshot;
 use crate::scenario_signal::{best_early_entry_scenario, signal_from_scenario};
 use crate::scenarios::{scenario_triggered, Scenario, ScenarioResponse};
-use crate::signal_validation::{validate_risk_budget, validate_signal_levels};
 use crate::storage::PersistentStore;
 use crate::volume_delta::compute_delta;
+use crate::zone_plan;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -36,8 +35,10 @@ pub(crate) const STANDBY_PLAN_NOTE: &str = "AI STANDBY — kế hoạch tham kh�
 pub(crate) const MARKET_CLOSED_MESSAGE: &str =
     "Thị trường vàng đóng cửa cuối tuần — không có entry check. Weekend brief 07:00.";
 
-/// Reference entry plan derived from a deterministic candidate or scenario.
-/// It is display-only; it is never inserted as a trade signal.
+/// Zone-advisory reference plan derived from a deterministic candidate or
+/// scenario. Levels use the fixed zone profile (SL 20, TP1 20, TP2 40–50), not
+/// the structural stop. It is display-only; it is never inserted as a trade
+/// signal and carries no lot, account % or risk budget.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntryPlan {
     /// BUY | SELL
@@ -48,7 +49,9 @@ pub struct EntryPlan {
     pub stop_loss: f64,
     pub take_profit_1: f64,
     pub take_profit_2: f64,
+    /// TP2 reward / 20-point SL (2.0–2.5), not the structural R:R.
     pub risk_reward: f64,
+    /// True when the source levels are ordered. Never an account-risk verdict.
     pub valid: bool,
     /// Scenario confidence / candidate confluence (0..=100), when known.
     pub readiness: Option<u8>,
@@ -79,15 +82,6 @@ pub struct EntryCheckResult {
     pub panorama: Option<MarketPanorama>,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct PlanLevels {
-    entry: f64,
-    stop_loss: f64,
-    take_profit_1: f64,
-    take_profit_2: f64,
-    risk_reward: Option<f64>,
-}
-
 fn action_signal_type(action: &str) -> Option<SignalType> {
     match action.trim().to_uppercase().as_str() {
         "BUY" => Some(SignalType::Buy),
@@ -111,119 +105,123 @@ fn bias_matches_action(bias: &str, action: &str) -> bool {
     }
 }
 
-fn scenario_levels(scenario: &Scenario) -> Option<PlanLevels> {
-    let entry = scenario
-        .entry
-        .filter(|value| value.is_finite() && *value > 0.0)?;
-    let stop_loss = scenario
-        .stop_loss
-        .filter(|value| value.is_finite() && *value > 0.0)?;
-    let take_profit_1 = scenario
-        .take_profit_1
-        .filter(|value| value.is_finite() && *value > 0.0)?;
-    let take_profit_2 = scenario
-        .take_profit_2
-        .filter(|value| value.is_finite() && *value > 0.0)?;
+fn levels_ordered(
+    side: SignalType,
+    entry: f64,
+    stop_loss: f64,
+    take_profit_1: f64,
+    take_profit_2: f64,
+) -> bool {
+    if !entry.is_finite()
+        || entry <= 0.0
+        || !stop_loss.is_finite()
+        || stop_loss <= 0.0
+        || !take_profit_1.is_finite()
+        || take_profit_1 <= 0.0
+        || !take_profit_2.is_finite()
+        || take_profit_2 <= 0.0
+    {
+        return false;
+    }
 
-    Some(PlanLevels {
+    match side {
+        SignalType::Buy => {
+            stop_loss < entry && entry < take_profit_1 && take_profit_1 < take_profit_2
+        }
+        SignalType::Sell => {
+            stop_loss > entry && entry > take_profit_1 && take_profit_1 > take_profit_2
+        }
+    }
+}
+
+fn candidate_levels_ordered(candidate: &Signal) -> bool {
+    levels_ordered(
+        candidate.signal_type,
+        candidate.entry_price,
+        candidate.stop_loss,
+        candidate.take_profit_1,
+        candidate.take_profit_2,
+    )
+}
+
+/// A scenario with no structural SL/TP is still a valid entry zone; only a
+/// fully specified but reversed set of levels is flagged as not ordered.
+fn scenario_levels_ordered(scenario: &Scenario) -> bool {
+    let Some(side) = scenario_signal_type(&scenario.bias) else {
+        return true;
+    };
+    let Some(entry) = scenario
+        .entry
+        .filter(|value| value.is_finite() && *value > 0.0)
+    else {
+        return true;
+    };
+    let Some(stop_loss) = scenario.stop_loss else {
+        return true;
+    };
+    let Some(take_profit_1) = scenario.take_profit_1 else {
+        return true;
+    };
+    let Some(take_profit_2) = scenario.take_profit_2 else {
+        return true;
+    };
+
+    levels_ordered(side, entry, stop_loss, take_profit_1, take_profit_2)
+}
+
+/// Build the zone-advisory reference plan. Levels are the fixed zone profile;
+/// the underlying source only contributes the entry and the structural TP2
+/// distance. Account risk, lot size and margin are deliberately not evaluated.
+fn build_entry_plan(
+    side: SignalType,
+    source: &str,
+    entry: f64,
+    scenario_tp2: Option<f64>,
+    note: String,
+    source_valid: bool,
+) -> EntryPlan {
+    let (stop_loss, take_profit_1, take_profit_2, tp2_points) =
+        zone_plan::levels(entry, side.as_str(), scenario_tp2);
+    let risk_reward = tp2_points / zone_plan::SL_POINTS;
+    let mut plan = EntryPlan {
+        side: side.as_str().to_string(),
+        source: source.trim().to_uppercase(),
         entry,
         stop_loss,
         take_profit_1,
         take_profit_2,
-        risk_reward: scenario.risk_reward,
-    })
-}
-
-/// Build one reference plan and apply the same structural/risk checks the live
-/// scanner uses. A failed check keeps the plan visible with `valid=false` and a
-/// human-readable reason, so the dashboard/Telegram can explain why it is unsafe.
-fn build_entry_plan(
-    side: SignalType,
-    source: &str,
-    levels: PlanLevels,
-    note: String,
-    config: &BotConfig,
-) -> EntryPlan {
-    let risk = (levels.entry - levels.stop_loss).abs();
-    let computed_risk_reward = if risk > 0.0 && risk.is_finite() {
-        (levels.take_profit_1 - levels.entry).abs() / risk
-    } else {
-        0.0
-    };
-    let risk_reward = levels
-        .risk_reward
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(computed_risk_reward);
-
-    let mut plan = EntryPlan {
-        side: side.as_str().to_string(),
-        source: source.trim().to_uppercase(),
-        entry: levels.entry,
-        stop_loss: levels.stop_loss,
-        take_profit_1: levels.take_profit_1,
-        take_profit_2: levels.take_profit_2,
         risk_reward,
-        valid: false,
+        valid: source_valid && entry.is_finite() && entry > 0.0,
         readiness: None,
         early_entry: false,
         advisory: false,
         note,
     };
-
-    let mut errors = Vec::new();
-    if let Err(err) = validate_signal_levels(
-        side,
-        plan.entry,
-        plan.stop_loss,
-        plan.take_profit_1,
-        plan.take_profit_2,
-        config.min_risk_reward,
-    ) {
-        errors.push(err);
-    }
-
-    if risk.is_finite() && risk > 0.0 {
-        let sizing = PositionSizer::calculate_lot_size(
-            config.account_balance,
-            config.risk_percentage,
-            risk,
-            (plan.take_profit_1 - plan.entry).abs(),
-            (plan.take_profit_2 - plan.entry).abs(),
-            plan.entry,
-            config.account_leverage,
-        );
-        if let Err(err) = validate_risk_budget(config, &sizing) {
-            errors.push(err);
-        }
-    } else {
-        errors.push("risk distance không hợp lệ".to_string());
-    }
-
-    plan.valid = errors.is_empty();
     if !plan.valid {
-        let reason = errors.join("; ");
+        let reason = if entry.is_finite() && entry > 0.0 {
+            format!(
+                "nguồn không hợp lệ: {} levels phải đúng thứ tự; zone plan vẫn là tham khảo",
+                side.as_str()
+            )
+        } else {
+            "entry không hợp lệ".to_string()
+        };
         plan.note = if plan.note.trim().is_empty() {
             format!("Không hợp lệ: {reason}")
         } else {
             format!("{} — không hợp lệ: {reason}", plan.note)
         };
     }
-
     plan
 }
 
-fn plan_from_candidate(candidate: &Signal, config: &BotConfig) -> EntryPlan {
+fn plan_from_candidate(candidate: &Signal) -> EntryPlan {
     let side = candidate.signal_type;
     let mut plan = build_entry_plan(
         side,
         "CANDIDATE",
-        PlanLevels {
-            entry: candidate.entry_price,
-            stop_loss: candidate.stop_loss,
-            take_profit_1: candidate.take_profit_1,
-            take_profit_2: candidate.take_profit_2,
-            risk_reward: Some(candidate.risk_reward_ratio),
-        },
+        candidate.entry_price,
+        Some(candidate.take_profit_2),
         if candidate.dedup_key.contains("_SCENARIO_") {
             format!(
                 "Kế hoạch tham khảo từ scenario {} — entry tại trigger, chờ xác nhận.",
@@ -235,7 +233,7 @@ fn plan_from_candidate(candidate: &Signal, config: &BotConfig) -> EntryPlan {
                 side.as_str()
             )
         },
-        config,
+        candidate_levels_ordered(candidate),
     );
     plan.readiness = Some(candidate.confluence_score);
     plan.early_entry = !candidate.is_entry_filled
@@ -245,13 +243,22 @@ fn plan_from_candidate(candidate: &Signal, config: &BotConfig) -> EntryPlan {
 
 fn plan_from_scenario(scenario: &Scenario, config: &BotConfig, note: String) -> Option<EntryPlan> {
     let side = scenario_signal_type(&scenario.bias)?;
-    let levels = scenario_levels(scenario)?;
+    let entry = scenario
+        .entry
+        .filter(|value| value.is_finite() && *value > 0.0)?;
     let source = if scenario.role.trim().is_empty() {
         "PRIMARY".to_string()
     } else {
         scenario.role.trim().to_uppercase()
     };
-    let mut plan = build_entry_plan(side, &source, levels, note, config);
+    let mut plan = build_entry_plan(
+        side,
+        &source,
+        entry,
+        scenario.take_profit_2,
+        note,
+        scenario_levels_ordered(scenario),
+    );
     plan.readiness = Some(scenario.confidence);
     plan.early_entry = scenario.confidence >= config.early_entry_min_confidence;
     Some(plan)
@@ -276,7 +283,7 @@ pub(crate) fn select_entry_plan(
             if let Some(candidate) =
                 candidate.filter(|candidate| candidate.signal_type.as_str() == action.as_str())
             {
-                return Some(plan_from_candidate(candidate, config));
+                return Some(plan_from_candidate(candidate));
             }
 
             let role = decision
@@ -291,7 +298,9 @@ pub(crate) fn select_entry_plan(
             let scenario = scenarios.scenarios.iter().find(|scenario| {
                 scenario.role.eq_ignore_ascii_case(&role)
                     && bias_matches_action(&scenario.bias, &action)
-                    && scenario_levels(scenario).is_some()
+                    && scenario
+                        .entry
+                        .is_some_and(|value| value.is_finite() && value > 0.0)
             })?;
             let note = format!("Kế hoạch tham khảo từ kịch bản {role}.");
             plan_from_scenario(scenario, config, note)
@@ -301,20 +310,20 @@ pub(crate) fn select_entry_plan(
                 .scenarios
                 .iter()
                 .find(|scenario| scenario.role.eq_ignore_ascii_case("PRIMARY"))?;
-            let primary_plan = plan_from_scenario(primary, config, STANDBY_PLAN_NOTE.to_string())?;
-            if primary_plan.valid {
-                return Some(primary_plan);
+            if let Some(plan) = plan_from_scenario(primary, config, STANDBY_PLAN_NOTE.to_string()) {
+                return Some(plan);
             }
 
-            // The PRIMARY can be structurally invalid (e.g. SL distance beyond
-            // the risk budget). Keep it visible, but also show a deterministic
-            // advisory plan from the first valid scenario. Levels always come
-            // from the scenario; the AI never invents them.
-            if let Some(valid) = scenarios
-                .scenarios
-                .iter()
-                .find(|scenario| scenario.valid && scenario_levels(scenario).is_some())
-            {
+            // A PRIMARY with no numeric entry is still shown as a compact
+            // reference. If it has no zone at all, fall back to the first valid
+            // scenario with an entry. Levels always come from the scenario; the
+            // AI never invents them and the view never sizes a position.
+            if let Some(valid) = scenarios.scenarios.iter().find(|scenario| {
+                scenario.valid
+                    && scenario
+                        .entry
+                        .is_some_and(|value| value.is_finite() && value > 0.0)
+            }) {
                 if valid.id != primary.id {
                     if let Some(mut advisory) = plan_from_scenario(
                         valid,
@@ -324,14 +333,12 @@ pub(crate) fn select_entry_plan(
                             valid.role
                         ),
                     ) {
-                        if advisory.valid {
-                            advisory.advisory = true;
-                            return Some(advisory);
-                        }
+                        advisory.advisory = true;
+                        return Some(advisory);
                     }
                 }
             }
-            Some(primary_plan)
+            None
         }
         _ => None,
     }
@@ -683,16 +690,13 @@ mod tests {
         assert_eq!(plan.side, "BUY");
         assert_eq!(plan.source, "CANDIDATE");
         assert_eq!(plan.entry, 2684.5);
-        assert_eq!(plan.stop_loss, 2674.0);
-        assert_eq!(plan.take_profit_1, 2705.5);
-        assert_eq!(plan.take_profit_2, 2716.0);
+        assert_eq!(plan.stop_loss, 2664.5);
+        assert_eq!(plan.take_profit_1, 2704.5);
+        assert_eq!(plan.take_profit_2, 2724.5);
         assert_eq!(plan.risk_reward, 2.0);
         assert_eq!(plan.readiness, Some(90));
         assert!(!plan.early_entry);
-        assert!(
-            plan.valid,
-            "valid candidate must pass level + budget checks"
-        );
+        assert!(plan.valid, "valid candidate must pass zone-plan checks");
         assert!(plan.note.contains("candidate"));
     }
 
@@ -707,9 +711,9 @@ mod tests {
         assert_eq!(plan.side, "BUY");
         assert_eq!(plan.source, "PRIMARY");
         assert_eq!(plan.entry, 2701.0);
-        assert_eq!(plan.stop_loss, 2691.0);
+        assert_eq!(plan.stop_loss, 2681.0);
         assert_eq!(plan.take_profit_1, 2721.0);
-        assert_eq!(plan.take_profit_2, 2731.0);
+        assert_eq!(plan.take_profit_2, 2741.0);
         assert_eq!(plan.readiness, Some(85));
         assert!(!plan.early_entry);
         assert!(plan.valid);
@@ -744,6 +748,31 @@ mod tests {
         assert!(plan.valid);
         assert!(plan.note.contains("AI STANDBY"));
         assert!(plan.note.contains("chưa phải entry"));
+    }
+
+    #[test]
+    fn wide_structural_stop_does_not_block_zone_view() {
+        // The real PRIMARY uses a ~61.75-point structural stop. The view must
+        // still show the fixed 20-point zone stop instead of rejecting it on the
+        // account risk budget or the old 45-point structural cap.
+        let decision = decision("STANDBY", None);
+        let mut primary = scenario("PRIMARY", "BEARISH");
+        primary.entry = Some(3490.31);
+        primary.stop_loss = Some(3552.06);
+        primary.take_profit_1 = Some(3366.80);
+        primary.take_profit_2 = Some(3305.06);
+        primary.risk_reward = Some(2.0);
+        let scenarios = scenario_response(vec![primary]);
+        let mut cfg = config();
+        cfg.risk_percentage = 0.5;
+
+        let plan = select_entry_plan(&decision, None, &scenarios, &cfg).expect("zone plan");
+
+        assert!(plan.valid);
+        assert_eq!(plan.stop_loss, 3510.31);
+        assert_eq!(plan.take_profit_1, 3470.31);
+        assert_eq!(plan.take_profit_2, 3440.31);
+        assert!((plan.risk_reward - 2.5).abs() < 1e-9);
     }
 
     #[test]
