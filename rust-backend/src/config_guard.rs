@@ -101,12 +101,6 @@ pub fn evaluate(config: &BotConfig) -> Vec<ConfigWarning> {
             "session_shadow_enabled=false; session forward sampling stopped.",
         ));
     }
-    if !config.session_shadow_telegram_enabled {
-        warnings.push(ConfigWarning::warning(
-            "session_shadow_telegram_disabled",
-            "session_shadow_telegram_enabled=false; research alerts stopped.",
-        ));
-    }
     if !config.htf_h4_filter_enabled || !config.htf_d1_filter_enabled {
         warnings.push(ConfigWarning::warning(
             "htf_filter_disabled",
