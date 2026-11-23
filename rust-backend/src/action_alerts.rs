@@ -121,6 +121,26 @@ fn scenario_enabled(scenario: &Scenario, config: &BotConfig) -> bool {
     true
 }
 
+/// The zone-view engine can alert on a scenario whose strict structural
+/// `valid` flag is false (for example SL wider than the 45-point cap or TP1
+/// below the 2R strict gate) as long as it still has a trigger and full levels.
+/// The alert carries `STRUCTURE_INVALID` and remains a zone reference, not a
+/// qualified signal.
+fn scenario_alertable(scenario: &Scenario, config: &BotConfig) -> bool {
+    scenario_enabled(scenario, config)
+        && scenario
+            .trigger_price
+            .is_some_and(|value| value.is_finite() && value > 0.0)
+        && !scenario
+            .trigger_direction
+            .trim()
+            .eq_ignore_ascii_case("NONE")
+        && scenario.entry.is_some()
+        && scenario.stop_loss.is_some()
+        && scenario.take_profit_1.is_some()
+        && scenario.take_profit_2.is_some()
+}
+
 fn h4_atr(market: Option<&ScenarioMarket>) -> f64 {
     market
         .map(|market| market.h4_atr)
@@ -221,6 +241,9 @@ fn setup_flags(
     }
     if !in_session {
         flags.push("OUT_SESSION".to_string());
+    }
+    if !scenario.valid {
+        flags.push("STRUCTURE_INVALID".to_string());
     }
     if is_reference_only_scenario(&scenario.id) {
         flags.push("REFERENCE_ONLY".to_string());
@@ -686,7 +709,6 @@ async fn evaluate_once(state: &AppState) -> Result<(), String> {
 
         if record.status == STATUS_WATCHING
             && !record.pre_alerted
-            && record.scenario.valid
             && scenario_enabled(&record.scenario, &config)
             && record.scenario.confidence >= config.action_watch_min_confidence
         {
@@ -763,14 +785,7 @@ async fn evaluate_once(state: &AppState) -> Result<(), String> {
     // 2) New setups. Track every enabled scenario, but only alert when the
     // trigger crosses on this bar or price enters the watch zone.
     for scenario in &scenarios.scenarios {
-        if !scenario_enabled(scenario, &config) || !scenario.valid {
-            continue;
-        }
-        if scenario.entry.is_none()
-            || scenario.stop_loss.is_none()
-            || scenario.take_profit_1.is_none()
-            || scenario.take_profit_2.is_none()
-        {
+        if !scenario_alertable(scenario, &config) {
             continue;
         }
         if store.setups.contains_key(&scenario.id) || closed_this_tick.contains(&scenario.id) {
@@ -1215,6 +1230,23 @@ mod tests {
         let mut bounce = scenario(true, Some(2701.0), "TOUCH");
         bounce.id = "bullish_bounce".to_string();
         assert!(!scenario_enabled(&bounce, &config));
+    }
+
+    #[test]
+    fn structurally_invalid_scenario_with_levels_is_still_alertable() {
+        let mut scenario = scenario(false, Some(2701.0), "ABOVE");
+        assert!(!scenario.valid);
+        assert!(scenario_alertable(&scenario, &config()));
+
+        scenario.trigger_price = None;
+        assert!(!scenario_alertable(&scenario, &config()));
+    }
+
+    #[test]
+    fn invalid_structure_adds_a_visible_flag() {
+        let scenario = scenario(false, Some(2701.0), "ABOVE");
+        let flags = setup_flags(&scenario, Some(&market()), true);
+        assert!(flags.iter().any(|flag| flag == "STRUCTURE_INVALID"));
     }
 
     #[test]

@@ -607,6 +607,14 @@ impl TelegramNotifier {
         }
     }
 
+    fn setup_structure_note(flags: &[String]) -> &'static str {
+        if flags.iter().any(|flag| flag == "STRUCTURE_INVALID") {
+            "⚠️ Structure INVALID — zone reference only; không phải qualified signal.\n"
+        } else {
+            ""
+        }
+    }
+
     fn setup_session_label(in_session: bool) -> &'static str {
         if in_session {
             "IN"
@@ -660,6 +668,7 @@ impl TelegramNotifier {
         let invalidation = Self::escape_html(&truncate_chars(&scenario.invalidation, 180));
         let context_line = Self::escape_html(&truncate_chars(context_line, 180));
         let setup_text = Self::escape_html(&truncate_chars(&scenario.trigger, 180));
+        let structure_note = Self::setup_structure_note(flags);
         format!(
             "👀 <b>PRE_ALERT — SETUP WATCHING</b> — {name}\n\
              XAU/USD · <b>{side}</b> · Conf {confidence}% · M15 close <code>{price:.2}</code> · session {session} · {flags}\n\
@@ -670,7 +679,7 @@ impl TelegramNotifier {
              Confirmation: {confirmation}\n\
              Invalidation: {invalidation}\n\
              Macro/Flow: {alignment}\n\
-             ⏳ <b>CHƯA phải entry.</b> Chờ nến M15 đóng xác nhận. Không lot/risk/account %.",
+             {structure_note}⏳ <b>CHƯA phải entry.</b> Chờ nến M15 đóng xác nhận. Không lot/risk/account %.",
             confidence = scenario.confidence,
             session = Self::setup_session_label(in_session),
             flags = Self::setup_flags_line(flags)
@@ -707,6 +716,7 @@ impl TelegramNotifier {
         let invalidation = Self::escape_html(&truncate_chars(&scenario.invalidation, 180));
         let context_line = Self::escape_html(&truncate_chars(context_line, 180));
         let setup_text = Self::escape_html(&truncate_chars(&scenario.trigger, 180));
+        let structure_note = Self::setup_structure_note(flags);
         format!(
             "🎯 <b>TRIGGERED — SETUP CONFIRMED</b> — {name}\n\
              XAU/USD · <b>{side}</b> · M15 close <code>{candle_close:.2}</code> · session {session}\n\
@@ -718,7 +728,7 @@ impl TelegramNotifier {
              Retest zone <code>{retest_low:.2}–{retest_high:.2}</code> · Confirmation: {confirmation}\n\
              Invalidation: {invalidation}\n\
              Macro/Flow: {alignment}\n\
-             🔒 <b>View-only:</b> không lot, không risk %, không account size.\n\
+             {structure_note}🔒 <b>View-only:</b> không lot, không risk %, không account size.\n\
              ⚠️ Cảnh báo trigger của kịch bản, KHÔNG phải sniper signal; không auto-trade.",
             confidence = scenario.confidence,
             session = Self::setup_session_label(in_session),
@@ -3378,6 +3388,30 @@ mod tests {
         assert!(message.contains("OUT_SESSION"));
         assert!(message.contains("View-only"));
         assert!(!message.contains("Lot "));
+    }
+
+    #[test]
+    fn triggered_message_marks_invalid_structure_as_zone_reference() {
+        let mut scenario = base_scenario("bullish_breakout", "Bullish breakout", "BULLISH");
+        scenario.valid = false;
+        let flags = vec!["STRUCTURE_INVALID".to_string()];
+
+        let message = TelegramNotifier::format_triggered_message(
+            &scenario,
+            2705.25,
+            true,
+            &flags,
+            2699.0,
+            2703.0,
+            2698.0,
+            2702.0,
+            "M15 close giữ trên 2701.00 sau retest",
+            "RSI M15 55.0 · daily +0.50%",
+        );
+
+        assert!(message.contains("STRUCTURE_INVALID"));
+        assert!(message.contains("Structure INVALID"));
+        assert!(message.contains("zone reference only"));
     }
 
     #[test]
