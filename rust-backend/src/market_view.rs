@@ -367,12 +367,15 @@ fn pick_alternative(scenarios: &ScenarioResponse) -> Option<&Scenario> {
     scenarios
         .scenarios
         .iter()
-        .find(|scenario| scenario.role.eq_ignore_ascii_case("ALTERNATE"))
+        .find(|scenario| {
+            scenario.role.eq_ignore_ascii_case("ALTERNATE")
+                && !is_reference_only_scenario(&scenario.id)
+        })
         .or_else(|| {
-            scenarios
-                .scenarios
-                .iter()
-                .find(|scenario| scenario.role.eq_ignore_ascii_case("WATCHLIST"))
+            scenarios.scenarios.iter().find(|scenario| {
+                scenario.role.eq_ignore_ascii_case("WATCHLIST")
+                    && !is_reference_only_scenario(&scenario.id)
+            })
         })
 }
 

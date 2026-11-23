@@ -1067,9 +1067,19 @@ fn rank_scenarios(mut scenarios: Vec<Scenario>) -> Vec<Scenario> {
         .iter()
         .enumerate()
         .skip(1)
-        .find(|(_, scenario)| biases_are_opposite(&primary_bias, &scenario.bias))
+        .find(|(_, scenario)| {
+            !is_reference_only_scenario(&scenario.id)
+                && biases_are_opposite(&primary_bias, &scenario.bias)
+        })
         .map(|(index, _)| index)
-        .or_else(|| (scenarios.len() > 1).then_some(1));
+        .or_else(|| {
+            scenarios
+                .iter()
+                .enumerate()
+                .skip(1)
+                .find(|(_, scenario)| !is_reference_only_scenario(&scenario.id))
+                .map(|(index, _)| index)
+        });
 
     for (index, scenario) in scenarios.iter_mut().enumerate() {
         scenario.role = if index == 0 {
@@ -2696,16 +2706,19 @@ mod tests {
     fn reference_only_bounce_never_becomes_primary() {
         let ranked = rank_scenarios(vec![
             ranked_scenario("bearish_breakdown", "BEARISH", "ALIGNED", false, 100),
+            ranked_scenario("bullish_breakout", "BULLISH", "ALIGNED", false, 90),
             ranked_scenario("bullish_bounce", "BULLISH", "ALIGNED", true, 300),
         ]);
 
         assert_eq!(ranked[0].id, "bearish_breakdown");
         assert_eq!(ranked[0].role, "PRIMARY");
+        assert_eq!(ranked[1].id, "bullish_breakout");
+        assert_eq!(ranked[1].role, "ALTERNATE");
         let bounce = ranked
             .iter()
             .find(|scenario| scenario.id == "bullish_bounce")
             .expect("bounce stays visible");
-        assert_eq!(bounce.role, "ALTERNATE");
+        assert_eq!(bounce.role, "WATCHLIST");
     }
 
     #[test]
