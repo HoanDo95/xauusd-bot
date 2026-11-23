@@ -8,13 +8,17 @@ use crate::analyzer::GoldMarketAnalyzer;
 use crate::api::{compute_market_outlook, current_scenarios, AppState};
 use crate::market_context::{MarketContext, TimeframeContext};
 use crate::market_view::{H1Confirmation, MarketScore, OutlookScenario};
-use crate::models::SupportResistanceZone;
+use crate::models::{BotConfig, SupportResistanceZone};
 use crate::news_filter::ImpactLevel;
-use crate::scenarios::Scenario;
+use crate::scenarios::{is_reference_only_scenario, Scenario};
 use crate::storage::PersistentStore;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MarketPanorama {
@@ -96,11 +100,26 @@ pub struct PanoramaScenario {
     pub bias: String,
     pub action: String,
     pub valid: bool,
+    /// False for reference-only or config-disabled scenarios. The realtime
+    /// engine never sends a normal TRIGGERED alert for them.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub zone_low: f64,
     pub zone_high: f64,
     pub trigger_price: Option<f64>,
     pub trigger_direction: String,
     pub trigger_timeframe: String,
+    /// BREAKOUT | BREAKDOWN | TOUCH | NONE
+    #[serde(default)]
+    pub trigger_type: String,
+    /// Zone to watch after a breakout/breakdown; display-only.
+    #[serde(default)]
+    pub retest_low: Option<f64>,
+    #[serde(default)]
+    pub retest_high: Option<f64>,
+    /// Human-readable confirmation rule after the trigger.
+    #[serde(default)]
+    pub confirmation: String,
     pub entry: Option<f64>,
     pub stop_loss: Option<f64>,
     pub take_profit_1: Option<f64>,
@@ -241,7 +260,11 @@ fn panorama_scenario(
     outlook_scenario: Option<&OutlookScenario>,
     price: f64,
     h4_atr: Option<f64>,
+    config: &BotConfig,
 ) -> PanoramaScenario {
+    let enabled = !is_reference_only_scenario(&scenario.id)
+        && (!scenario.id.eq_ignore_ascii_case("bearish_rejection")
+            || config.bearish_rejection_enabled);
     let anchor = scenario.entry.or(scenario.trigger_price).unwrap_or(price);
     let buffer = (h4_atr.unwrap_or(10.0) * 0.10).max(1.5);
     let (zone_low, zone_high, action, h1_confirmation) = match outlook_scenario {
@@ -258,6 +281,53 @@ fn panorama_scenario(
             None,
         ),
     };
+    let trigger_type = if scenario.trigger_price.is_none() {
+        "NONE"
+    } else {
+        match scenario.trigger_direction.trim().to_uppercase().as_str() {
+            "ABOVE" => "BREAKOUT",
+            "BELOW" => "BREAKDOWN",
+            "TOUCH" => "TOUCH",
+            _ => "NONE",
+        }
+    }
+    .to_string();
+    let trigger = scenario.trigger_price.or(scenario.entry).unwrap_or(price);
+    let retest_buffer = (h4_atr.unwrap_or(10.0) * 0.25).max(2.0);
+    let (retest_low, retest_high) = if trigger_type == "NONE" {
+        (None, None)
+    } else {
+        let (low, high) = match trigger_type.as_str() {
+            "BREAKOUT" => (
+                round2(trigger - retest_buffer),
+                round2(trigger + retest_buffer * 0.25),
+            ),
+            "BREAKDOWN" => (
+                round2(trigger - retest_buffer * 0.25),
+                round2(trigger + retest_buffer),
+            ),
+            "TOUCH" => (zone_low, zone_high),
+            _ => (
+                round2(trigger - retest_buffer),
+                round2(trigger + retest_buffer),
+            ),
+        };
+        (Some(low), Some(high))
+    };
+    let confirmation = match trigger_type.as_str() {
+        "BREAKOUT" => format!("M15 close giữ trên {trigger:.2} sau retest"),
+        "BREAKDOWN" => format!("M15 close giữ dưới {trigger:.2} sau retest"),
+        "TOUCH" => {
+            let comparison = if scenario.bias.eq_ignore_ascii_case("BEARISH") {
+                "dưới"
+            } else {
+                "trên"
+            };
+            format!("M15 close {comparison} {trigger:.2} sau touch")
+        }
+        _ => "Chờ nến M15 đóng xác nhận trigger.".to_string(),
+    };
+
     PanoramaScenario {
         role: scenario.role.trim().to_uppercase(),
         scenario_id: scenario.id.clone(),
@@ -265,11 +335,16 @@ fn panorama_scenario(
         bias: scenario.bias.clone(),
         action,
         valid: scenario.valid,
+        enabled,
         zone_low,
         zone_high,
         trigger_price: scenario.trigger_price.map(round2),
         trigger_direction: scenario.trigger_direction.clone(),
         trigger_timeframe: scenario.trigger_timeframe.clone(),
+        trigger_type,
+        retest_low,
+        retest_high,
+        confirmation,
         entry: scenario.entry.map(round2),
         stop_loss: scenario.stop_loss.map(round2),
         take_profit_1: scenario.take_profit_1.map(round2),
@@ -369,6 +444,7 @@ pub async fn build_market_panorama(state: &AppState) -> MarketPanorama {
                         outlook_map.get(scenario.id.as_str()).copied(),
                         price,
                         h4_atr,
+                        &config,
                     )
                 })
                 .collect::<Vec<_>>()

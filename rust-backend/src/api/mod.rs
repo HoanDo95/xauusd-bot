@@ -128,6 +128,8 @@ pub struct AppState {
     pub action_trigger_last_sent: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
     /// Setup đang theo dõi (đã gửi 1 watching alert). None = chưa có setup.
     pub active_watch_setup: Arc<RwLock<Option<WatchedSetup>>>,
+    /// Realtime setup-alert state for every enabled scenario.
+    pub setup_alerts: Arc<RwLock<crate::setup_state::SetupAlertStore>>,
     /// Các slot Daily View đã gửi, key `YYYY-MM-DD:HH` theo giờ Việt Nam.
     pub daily_view_sent: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
     /// Daily plan đã freeze cho slot hiện tại (07/13/19 VN). Scanner + Market View
@@ -169,6 +171,7 @@ pub async fn persist_state(state: &AppState) -> Result<(), String> {
         sent_session_alerts: state.sent_session_alerts.read().await.clone(),
         active_watch_setup: state.active_watch_setup.read().await.clone(),
         action_watch_last_sent: state.action_trigger_last_sent.read().await.clone(),
+        setup_alerts: state.setup_alerts.read().await.clone(),
         daily_view_sent: state.daily_view_sent.read().await.clone(),
         retest_watch: state.retest_watch.read().await.clone(),
         retest_trade: state.active_retest_trade.read().await.clone(),

@@ -1496,15 +1496,16 @@ export const ConfigPanel: React.FC<Props> = ({
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="flex flex-col gap-1">
                 <div className="text-xs font-bold text-sky-300 uppercase tracking-wider">
-                  👀 SETUP WATCHING + SCENARIO TRIGGER — không phải sniper signal
+                  ⚡ REALTIME SETUP ALERTS — PRE_ALERT / TRIGGERED / INVALIDATED
                 </div>
                 <p className="text-[11px] text-neutral-400 leading-relaxed max-w-2xl">
-                  Gửi Telegram đúng <strong className="text-neutral-200">1 lần</strong> khi giá tiến
-                  gần trigger của kịch bản PRIMARY (chỉ vùng + trigger, không Entry/SL/TP). Khi nến
-                  M15 đóng cửa xác nhận trigger, bot gửi thêm một alert
-                  <strong className="text-neutral-200"> SCENARIO TRIGGER</strong> với đầy đủ
-                  Entry/SL/TP để bạn tự quyết định. Alert này không phải GOLD SIGNAL đã qua AI/volume
-                  confirmation và không ảnh hưởng lệnh thật.
+                  Chạy trên nến M15 đã đóng cho <strong className="text-neutral-200">mọi kịch bản
+                  enabled</strong> (không chỉ PRIMARY). <strong className="text-neutral-200">PRE_ALERT</strong>
+                  {' '}chỉ gửi vùng + khoảng cách + cảnh báo, không Entry/SL/TP.{' '}
+                  <strong className="text-neutral-200">TRIGGERED</strong> gửi đủ Entry/SL/TP1/TP2 +
+                  flags. <strong className="text-neutral-200">INVALIDATED</strong> báo hủy setup,
+                  không mời entry mới. Tất cả là view-only: không lot/risk/account %.
+                  Kịch bản reference-only/disabled không bao giờ bắn TRIGGERED.
                 </p>
               </div>
               <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
@@ -1517,7 +1518,7 @@ export const ConfigPanel: React.FC<Props> = ({
                   className="accent-sky-500 w-4 h-4 rounded cursor-pointer"
                 />
                 <span className="font-semibold text-white">
-                  Bật SETUP WATCHING + SCENARIO TRIGGER alerts
+                  Bật realtime setup alerts
                 </span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
@@ -1538,7 +1539,7 @@ export const ConfigPanel: React.FC<Props> = ({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-neutral-300">
-                  Cooldown SETUP WATCHING
+                  Cooldown PRE_ALERT
                 </label>
                 <div className="relative">
                   <input
@@ -1621,7 +1622,7 @@ export const ConfigPanel: React.FC<Props> = ({
               </div>
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-neutral-300">
-                  Min confidence PRIMARY
+                  Min confidence cho PRE_ALERT
                 </label>
                 <input
                   type="number"
@@ -1642,7 +1643,8 @@ export const ConfigPanel: React.FC<Props> = ({
                   className="w-full bg-neutral-950 border border-neutral-800 focus:border-sky-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40"
                 />
                 <span className="text-[11px] text-neutral-500">
-                  0–100, mặc định 60. Chỉ cảnh báo khi PRIMARY đủ mạnh.
+                  0–100, mặc định 60. TRIGGERED vẫn bắn cho kịch bản enabled dù confidence thấp;
+                  ngưỡng này chỉ lọc PRE_ALERT.
                 </span>
               </div>
             </div>
@@ -2127,6 +2129,25 @@ export const ConfigPanel: React.FC<Props> = ({
                 className="w-full bg-neutral-950 border border-neutral-800 focus:border-sky-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
               />
               <span className="text-[11px] text-neutral-500">ID kênh / nhóm nhận thông báo tín hiệu</span>
+            </div>
+
+            <div className="flex flex-col gap-1.5 md:col-span-2">
+              <label className="text-xs font-semibold text-neutral-300">
+                Kênh phụ cho Setup Alerts (tùy chọn)
+              </label>
+              <input
+                type="text"
+                placeholder="-1003925170452 hoặc nhiều ID cách nhau dấu phẩy"
+                value={formData.telegram_alert_chat_ids ?? ''}
+                onChange={(e) =>
+                  setFormData({ ...formData, telegram_alert_chat_ids: e.target.value })
+                }
+                className="w-full bg-neutral-950 border border-neutral-800 focus:border-sky-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
+              />
+              <span className="text-[11px] text-neutral-500">
+                Nhận PRE_ALERT / TRIGGERED / INVALIDATED bằng cùng bot token. Bot phải là admin
+                của kênh và có quyền Post Messages.
+              </span>
             </div>
 
             <div className="flex flex-col gap-1.5 md:col-span-2">

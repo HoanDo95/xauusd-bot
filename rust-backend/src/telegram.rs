@@ -1,7 +1,7 @@
 use crate::ai_decision::AiDecision;
 use crate::api::EntryCheckResult;
 use crate::divergence_alerts::DivergenceAlert;
-use crate::market_panorama::{MarketPanorama, PanoramaScenario, ZoneView};
+use crate::market_panorama::{HtfLevelView, MarketPanorama, PanoramaScenario, ZoneView};
 use crate::market_view::{MarketOutlook, OutlookScenario};
 use crate::models::{
     DailyMacroReport, EconomicEvent, EntryType, ImpactLevel, Signal, SignalStatus, SignalType,
@@ -136,6 +136,88 @@ impl TelegramNotifier {
                 error!("❌ Không thể gửi lệnh Telegram: {}", err);
                 Err(format!("Network Error: {err}"))
             }
+        }
+    }
+
+    /// Send one HTML message to an explicit chat ID using the configured bot
+    /// token. Used by the setup-alert fan-out so the primary channel and the
+    /// optional secondary channel receive the same event.
+    pub async fn send_html_message_to(&self, chat_id: &str, text: &str) -> Result<i64, String> {
+        if self.bot_token.is_empty() || chat_id.trim().is_empty() {
+            info!("⚠️ [Telegram Simulator] HTML message tới chat trống (chưa cấu hình)");
+            return Ok(1001);
+        }
+
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.bot_token);
+        let payload = json!({
+            "chat_id": chat_id.trim(),
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true
+        });
+
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let body: serde_json::Value =
+                        resp.json().await.map_err(|e| e.without_url().to_string())?;
+                    Ok(body["result"]["message_id"].as_i64().unwrap_or(0))
+                } else {
+                    let err_text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Lỗi không xác định".into());
+                    Err(format!("Telegram API Error: {err_text}"))
+                }
+            }
+            Err(err) => Err(format!("Network Error: {}", err.without_url())),
+        }
+    }
+
+    /// Fan out one setup event to the primary chat and optional extra chats.
+    /// Returns every successful `(chat_id, message_id)` pair. A failure on one
+    /// extra channel does not hide a successful primary-channel send.
+    pub async fn send_setup_alert_text(
+        &self,
+        text: &str,
+        extra_chat_ids: &[String],
+    ) -> Result<Vec<(String, i64)>, String> {
+        if self.bot_token.is_empty() {
+            info!("⚠️ [Telegram Simulator] Setup alert (chưa cấu hình token)");
+            return Ok(Vec::new());
+        }
+
+        let mut targets: Vec<String> = Vec::new();
+        if !self.chat_id.trim().is_empty() {
+            targets.push(self.chat_id.trim().to_string());
+        }
+        for chat_id in extra_chat_ids {
+            let chat_id = chat_id.trim();
+            if !chat_id.is_empty() && !targets.iter().any(|value| value == chat_id) {
+                targets.push(chat_id.to_string());
+            }
+        }
+        if targets.is_empty() {
+            info!("⚠️ [Telegram Simulator] Setup alert (chưa cấu hình chat ID)");
+            return Ok(Vec::new());
+        }
+
+        let mut sent = Vec::new();
+        let mut errors = Vec::new();
+        for chat_id in targets {
+            match self.send_html_message_to(&chat_id, text).await {
+                Ok(message_id) => sent.push((chat_id, message_id)),
+                Err(err) => errors.push(format!("{chat_id}: {err}")),
+            }
+        }
+
+        if sent.is_empty() && !errors.is_empty() {
+            Err(errors.join("; "))
+        } else {
+            if !errors.is_empty() {
+                error!("❌ Setup alert gửi lỗi một phần: {}", errors.join("; "));
+            }
+            Ok(sent)
         }
     }
 
@@ -507,6 +589,170 @@ impl TelegramNotifier {
              Macro/Flow: {macro_alignment}\n\
              Volume: tick/proxy tùy nguồn — chỉ là volume tương đối, không phải volume XAU/USD thật.\n\
              Đây là cảnh báo trigger của kịch bản, KHÔNG phải sniper signal đã xác nhận."
+        )
+    }
+
+    fn setup_flags_line(flags: &[String]) -> String {
+        if flags.is_empty() {
+            "Flags: —".to_string()
+        } else {
+            format!(
+                "Flags: <b>{}</b>",
+                flags
+                    .iter()
+                    .map(|flag| Self::escape_html(flag))
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            )
+        }
+    }
+
+    fn setup_session_label(in_session: bool) -> &'static str {
+        if in_session {
+            "IN"
+        } else {
+            "OUT"
+        }
+    }
+
+    fn setup_side(scenario: &Scenario) -> &'static str {
+        match scenario.bias.trim().to_uppercase().as_str() {
+            "BULLISH" => "BUY",
+            "BEARISH" => "SELL",
+            _ => "NONE",
+        }
+    }
+
+    fn setup_trigger_condition(scenario: &Scenario) -> String {
+        match (scenario.trigger_price, scenario.trigger_direction.as_str()) {
+            (Some(price), "ABOVE") => format!("M15 close &gt; {price:.2}"),
+            (Some(price), "BELOW") => format!("M15 close &lt; {price:.2}"),
+            (Some(price), "TOUCH") => format!("M15 touch {price:.2}"),
+            (Some(price), _) => format!("M15 {price:.2}"),
+            (None, _) => "—".to_string(),
+        }
+    }
+
+    /// PRE_ALERT: price is inside/near the scenario zone but the M15 candle has
+    /// NOT confirmed the trigger. Deliberately contains **no Entry/SL/TP/Lot**.
+    #[allow(clippy::too_many_arguments)]
+    pub fn format_pre_alert_message(
+        scenario: &Scenario,
+        price: f64,
+        distance: f64,
+        watch_distance: f64,
+        distance_atr: Option<f64>,
+        in_session: bool,
+        flags: &[String],
+        zone_low: f64,
+        zone_high: f64,
+        confirmation: &str,
+        context_line: &str,
+    ) -> String {
+        let name = Self::escape_html(&truncate_chars(&scenario.name, 80));
+        let side = Self::setup_side(scenario);
+        let trigger = Self::setup_trigger_condition(scenario);
+        let distance_atr = distance_atr
+            .map(|value| format!("{value:.2}×ATR"))
+            .unwrap_or_else(|| "—".to_string());
+        let alignment = Self::escape_html(&truncate_chars(&scenario.macro_alignment, 40));
+        let confirmation = Self::escape_html(&truncate_chars(confirmation, 160));
+        let invalidation = Self::escape_html(&truncate_chars(&scenario.invalidation, 180));
+        let context_line = Self::escape_html(&truncate_chars(context_line, 180));
+        let setup_text = Self::escape_html(&truncate_chars(&scenario.trigger, 180));
+        format!(
+            "👀 <b>PRE_ALERT — SETUP WATCHING</b> — {name}\n\
+             XAU/USD · <b>{side}</b> · Conf {confidence}% · M15 close <code>{price:.2}</code> · session {session} · {flags}\n\
+             Zone test <code>{zone_low:.2}–{zone_high:.2}</code> · Trigger {trigger}\n\
+             Setup: {setup_text}\n\
+             Cách trigger <code>{distance:.2}</code> điểm ({distance_atr}) · ngưỡng watch {watch_distance:.2}\n\
+             Context: {context_line}\n\
+             Confirmation: {confirmation}\n\
+             Invalidation: {invalidation}\n\
+             Macro/Flow: {alignment}\n\
+             ⏳ <b>CHƯA phải entry.</b> Chờ nến M15 đóng xác nhận. Không lot/risk/account %.",
+            confidence = scenario.confidence,
+            session = Self::setup_session_label(in_session),
+            flags = Self::setup_flags_line(flags)
+        )
+    }
+
+    /// TRIGGERED: the scenario trigger was confirmed by a closed M15 candle.
+    /// Full reference levels + flags, but still view-only (no lot/risk).
+    #[allow(clippy::too_many_arguments)]
+    pub fn format_triggered_message(
+        scenario: &Scenario,
+        candle_close: f64,
+        in_session: bool,
+        flags: &[String],
+        zone_low: f64,
+        zone_high: f64,
+        retest_low: f64,
+        retest_high: f64,
+        confirmation: &str,
+        context_line: &str,
+    ) -> String {
+        let name = Self::escape_html(&truncate_chars(&scenario.name, 80));
+        let role = Self::escape_html(&truncate_chars(&scenario.role, 24));
+        let side = Self::setup_side(scenario);
+        let trigger = Self::setup_trigger_condition(scenario);
+        let entry = scenario
+            .entry
+            .or(scenario.trigger_price)
+            .unwrap_or(candle_close);
+        let (stop_loss, take_profit_1, take_profit_2, tp2_points) =
+            zone_plan::levels(entry, side, scenario.take_profit_2);
+        let alignment = Self::escape_html(&truncate_chars(&scenario.macro_alignment, 40));
+        let confirmation = Self::escape_html(&truncate_chars(confirmation, 160));
+        let invalidation = Self::escape_html(&truncate_chars(&scenario.invalidation, 180));
+        let context_line = Self::escape_html(&truncate_chars(context_line, 180));
+        let setup_text = Self::escape_html(&truncate_chars(&scenario.trigger, 180));
+        format!(
+            "🎯 <b>TRIGGERED — SETUP CONFIRMED</b> — {name}\n\
+             XAU/USD · <b>{side}</b> · M15 close <code>{candle_close:.2}</code> · session {session}\n\
+             {role} · Conf {confidence}% · {flags}\n\
+             Trigger {trigger} · Zone <code>{zone_low:.2}–{zone_high:.2}</code>\n\
+             Setup: {setup_text}\n\
+             Context: {context_line}\n\
+             Entry <code>{entry:.2}</code> · SL 20 giá → {stop_loss:.2} · TP1 20 giá → {take_profit_1:.2} (50%, BE+1) · TP2 40–50 giá → {take_profit_2:.2} ({tp2_points:.1} giá) · R:R TP2 1:{rr:.2}\n\
+             Retest zone <code>{retest_low:.2}–{retest_high:.2}</code> · Confirmation: {confirmation}\n\
+             Invalidation: {invalidation}\n\
+             Macro/Flow: {alignment}\n\
+             🔒 <b>View-only:</b> không lot, không risk %, không account size.\n\
+             ⚠️ Cảnh báo trigger của kịch bản, KHÔNG phải sniper signal; không auto-trade.",
+            confidence = scenario.confidence,
+            session = Self::setup_session_label(in_session),
+            flags = Self::setup_flags_line(flags),
+            rr = tp2_points / zone_plan::SL_POINTS
+        )
+    }
+
+    /// INVALIDATED: the tracked setup violated its structural invalidation.
+    /// No new entry is offered; this only cancels the reference plan.
+    pub fn format_invalidated_message(
+        scenario: &Scenario,
+        candle_close: f64,
+        in_session: bool,
+        flags: &[String],
+        reason: &str,
+    ) -> String {
+        let name = Self::escape_html(&truncate_chars(&scenario.name, 80));
+        let role = Self::escape_html(&truncate_chars(&scenario.role, 24));
+        let side = Self::setup_side(scenario);
+        let alignment = Self::escape_html(&truncate_chars(&scenario.macro_alignment, 40));
+        let invalidation = Self::escape_html(&truncate_chars(&scenario.invalidation, 180));
+        let reason = Self::escape_html(&truncate_chars(reason, 220));
+        format!(
+            "🛑 <b>INVALIDATED — SETUP CANCELLED</b> — {name}\n\
+             XAU/USD · <b>{side}</b> · M15 close <code>{candle_close:.2}</code> · session {session}\n\
+             {role} · {flags}\n\
+             Lý do: {reason}\n\
+             Invalidation: {invalidation}\n\
+             Macro/Flow: {alignment}\n\
+             🚫 Setup đã hủy — không còn entry/SL/TP active. Không vào lệnh mới.\n\
+             🔒 View-only: không lot, không risk %, không account size.",
+            session = Self::setup_session_label(in_session),
+            flags = Self::setup_flags_line(flags)
         )
     }
 
@@ -1508,6 +1754,9 @@ impl TelegramNotifier {
         if is_reference_only_scenario(&scenario.scenario_id) {
             return "REFERENCE ONLY";
         }
+        if !scenario.enabled {
+            return "DISABLED";
+        }
         let Some(price) = price.filter(|value| value.is_finite() && *value > 0.0) else {
             return "WAITING";
         };
@@ -1578,15 +1827,31 @@ impl TelegramNotifier {
                 tp2_points / zone_plan::SL_POINTS
             )
         };
+        let trigger_type = if scenario.trigger_type.trim().is_empty() {
+            "NONE"
+        } else {
+            scenario.trigger_type.as_str()
+        };
+        let retest_line = match (scenario.retest_low, scenario.retest_high) {
+            (Some(low), Some(high)) => format!(
+                "Retest zone <code>{low:.2}–{high:.2}</code> · Xác nhận: {}",
+                Self::escape_html(&truncate_chars(&scenario.confirmation, 160))
+            ),
+            _ => format!(
+                "Xác nhận: {}",
+                Self::escape_html(&truncate_chars(&scenario.confirmation, 160))
+            ),
+        };
         let mut lines = vec![
             format!(
                 "{role} — <b>{name}</b> · {action} · Conf {}% · {status}",
                 scenario.confidence
             ),
             format!(
-                "Zone <code>{:.2}–{:.2}</code> · Trigger {trigger}",
+                "Zone <code>{:.2}–{:.2}</code> · Trigger {trigger} ({trigger_type})",
                 scenario.zone_low, scenario.zone_high
             ),
+            retest_line,
             levels_line,
             format!(
                 "Invalidation: {}",
@@ -1598,6 +1863,8 @@ impl TelegramNotifier {
                 "⚠️ REFERENCE ONLY — backtest 2022–2026 âm; không phải qualified PRIMARY."
                     .to_string(),
             );
+        } else if !scenario.enabled {
+            lines.push("⚠️ DISABLED — không bắn TRIGGERED; chỉ hiển thị tham khảo.".to_string());
         }
         if let Some(h1) = scenario.h1_confirmation.as_ref() {
             let momentum = h1
@@ -1649,6 +1916,72 @@ impl TelegramNotifier {
         (supports, resistances)
     }
 
+    /// Render HTF levels as a separate block. Dynamic S/R is reclassified by
+    /// current price first, so a stale "S" above price cannot hide the ceiling.
+    fn panorama_htf_lines(panorama: &MarketPanorama) -> Vec<String> {
+        let Some(price) = panorama
+            .price
+            .filter(|value| value.is_finite() && *value > 0.0)
+        else {
+            return Vec::new();
+        };
+        let atr = panorama.volatility.h4_atr.unwrap_or(10.0).max(1.0);
+        let tolerance = (atr * 0.10).max(1.0);
+        let (supports, resistances) = Self::panorama_zone_groups(panorama);
+        let dynamic: Vec<&ZoneView> = supports.iter().chain(resistances.iter()).copied().collect();
+
+        let mut levels: Vec<&HtfLevelView> = panorama.zones.htf_levels.iter().collect();
+        levels.sort_by(|left, right| {
+            (left.price - price)
+                .abs()
+                .total_cmp(&(right.price - price).abs())
+        });
+
+        let mut lines = Vec::new();
+        let mut shown_resistance = 0;
+        let mut shown_support = 0;
+        for level in levels {
+            if level.price.is_finite() && level.price > price && shown_resistance < 2 {
+                if dynamic.iter().any(|zone| {
+                    level.price >= zone.min_price - tolerance
+                        && level.price <= zone.max_price + tolerance
+                }) {
+                    continue;
+                }
+                lines.push(format!(
+                    "R {:.2} · {} · {} ATR",
+                    level.price,
+                    Self::escape_html(&truncate_chars(&level.timeframe, 12)),
+                    level
+                        .distance_atr
+                        .map(|value| format!("{value:.2}"))
+                        .unwrap_or_else(|| "—".to_string())
+                ));
+                shown_resistance += 1;
+                continue;
+            }
+            if level.price.is_finite() && level.price < price && shown_support < 2 {
+                if dynamic.iter().any(|zone| {
+                    level.price >= zone.min_price - tolerance
+                        && level.price <= zone.max_price + tolerance
+                }) {
+                    continue;
+                }
+                lines.push(format!(
+                    "S {:.2} · {} · {} ATR",
+                    level.price,
+                    Self::escape_html(&truncate_chars(&level.timeframe, 12)),
+                    level
+                        .distance_atr
+                        .map(|value| format!("{value:.2}"))
+                        .unwrap_or_else(|| "—".to_string())
+                ));
+                shown_support += 1;
+            }
+        }
+        lines
+    }
+
     fn format_panorama_block(panorama: &MarketPanorama) -> String {
         let mut lines = Vec::new();
         lines.push("🧭 <b>MARKET PANORAMA</b>".to_string());
@@ -1690,6 +2023,10 @@ impl TelegramNotifier {
             Self::escape_html(&panorama.session)
         ));
         lines.push("⏱ <b>Session rule:</b> split 07:00–20:00 + 22:00–05:00 VN (20:00–22:00 OUT by design).".to_string());
+        lines.push(
+            "⚡ <b>Setup alerts:</b> rebuild trên nến M15 đã đóng; Daily View levels có thể freeze theo slot."
+                .to_string(),
+        );
         if let Some(score) = panorama.score.as_ref() {
             lines.push(format!(
                 "Score 60/30/10: {}/100 · Structure {}/60 · Trigger {}/30 · Macro {}/10",
@@ -1724,6 +2061,11 @@ impl TelegramNotifier {
         if !zone_lines.is_empty() {
             lines.push("📍 <b>Vùng theo dõi</b>".to_string());
             lines.extend(zone_lines);
+        }
+        let htf_lines = Self::panorama_htf_lines(panorama);
+        if !htf_lines.is_empty() {
+            lines.push("📍 <b>HTF levels</b> (R trên giá / S dưới giá)".to_string());
+            lines.extend(htf_lines);
         }
 
         let scenario_limit = if panorama.scenarios.len() > 3 {
@@ -3009,6 +3351,90 @@ mod tests {
     }
 
     #[test]
+    fn triggered_setup_message_shows_levels_flags_and_no_lot() {
+        let scenario = base_scenario("bullish_breakout", "Bullish breakout", "BULLISH");
+        let flags = vec!["COUNTER_TREND".to_string(), "OUT_SESSION".to_string()];
+
+        let message = TelegramNotifier::format_triggered_message(
+            &scenario,
+            2705.25,
+            false,
+            &flags,
+            2699.0,
+            2703.0,
+            2698.0,
+            2702.0,
+            "M15 close giữ trên 2701.00 sau retest",
+            "RSI M15 55.0 · daily +0.50%",
+        );
+
+        assert!(message.contains("TRIGGERED — SETUP CONFIRMED"));
+        assert!(message.contains("Entry <code>"));
+        assert!(message.contains("SL 20 giá"));
+        assert!(message.contains("TP1 20 giá"));
+        assert!(message.contains("TP2 40–50 giá"));
+        assert!(message.contains("Retest zone"));
+        assert!(message.contains("COUNTER_TREND"));
+        assert!(message.contains("OUT_SESSION"));
+        assert!(message.contains("View-only"));
+        assert!(!message.contains("Lot "));
+    }
+
+    #[test]
+    fn pre_alert_message_has_no_entry_sl_or_tp() {
+        let scenario = base_scenario("bullish_breakout", "Bullish breakout", "BULLISH");
+        let message = TelegramNotifier::format_pre_alert_message(
+            &scenario,
+            2698.0,
+            3.0,
+            10.0,
+            Some(0.25),
+            true,
+            &[],
+            2695.0,
+            2705.0,
+            "M15 close giữ trên 2701.00 sau retest",
+            "RSI M15 55.0 · daily +0.50%",
+        );
+
+        assert!(message.contains("PRE_ALERT — SETUP WATCHING"));
+        assert!(message.contains("Cách trigger"));
+        assert!(message.contains("CHƯA phải entry"));
+        assert!(!message.contains("Entry <code>"));
+        assert!(!message.contains("SL 20 giá"));
+        assert!(!message.contains("TP1"));
+        assert!(!message.contains("TP2"));
+        assert!(!message.contains("Lot "));
+    }
+
+    #[test]
+    fn invalidated_message_cancels_without_new_entry() {
+        let scenario = base_scenario("bullish_breakout", "Bullish breakout", "BULLISH");
+        let message = TelegramNotifier::format_invalidated_message(
+            &scenario,
+            2697.0,
+            true,
+            &["HIGH_RISK".to_string()],
+            "M15 close 2697.00 vi phạm invalidation 2698.00",
+        );
+
+        assert!(message.contains("INVALIDATED — SETUP CANCELLED"));
+        assert!(message.contains("vi phạm invalidation"));
+        assert!(message.contains("không còn entry/SL/TP active"));
+        assert!(message.contains("HIGH_RISK"));
+    }
+
+    #[tokio::test]
+    async fn setup_alert_fanout_without_token_is_a_simulator_success() {
+        let notifier = TelegramNotifier::new(String::new(), String::new());
+        let sent = notifier
+            .send_setup_alert_text("<b>test</b>", &["-100123".to_string()])
+            .await
+            .expect("simulator");
+        assert!(sent.is_empty());
+    }
+
+    #[test]
     fn format_market_view_contains_plan_and_no_lot() {
         let outlook = MarketOutlook {
             bot_state: BotState::MarketView,
@@ -3490,11 +3916,16 @@ mod tests {
                 bias: "BEARISH".to_string(),
                 action: "WATCH_SELL".to_string(),
                 valid: true,
+                enabled: true,
                 zone_low: 3773.85,
                 zone_high: 3780.43,
                 trigger_price: Some(3777.14),
                 trigger_direction: "BELOW".to_string(),
                 trigger_timeframe: "M15".to_string(),
+                trigger_type: "BREAKDOWN".to_string(),
+                retest_low: Some(3770.0),
+                retest_high: Some(3780.0),
+                confirmation: "M15 close giữ dưới 3777.14 sau retest".to_string(),
                 entry: Some(3777.14),
                 stop_loss: Some(3818.25),
                 take_profit_1: Some(3694.91),

@@ -101,6 +101,40 @@ fn default_trigger_timeframe() -> String {
     "M15".to_string()
 }
 
+impl Scenario {
+    /// Structural invalidation level parsed from the human-readable
+    /// `invalidation` text. Used by the realtime setup engine so a scenario is
+    /// cancelled at the level the report actually shows (the broken S/R level),
+    /// not only at the wider protective stop.
+    pub fn invalidation_price(&self) -> Option<f64> {
+        parse_last_price(&self.invalidation)
+    }
+}
+
+/// Extract the last finite positive number from a scenario text. The scenario
+/// builder emits a single level in invalidation strings such as
+/// `Đóng M15 trở lại dưới 3558.74`; returning the last number keeps the parser
+/// stable when a prefix also contains a timeframe number (M15).
+pub fn parse_last_price(text: &str) -> Option<f64> {
+    let mut found = None;
+    for token in text.split_whitespace() {
+        // Ignore labels such as `M15` or `H4`; only pure numeric tokens are
+        // candidate price levels.
+        if token.chars().any(|ch| ch.is_ascii_alphabetic()) {
+            continue;
+        }
+        let cleaned = token
+            .trim_matches(|ch: char| !ch.is_ascii_digit() && ch != '.' && ch != '-' && ch != '+')
+            .trim_end_matches(['.', ',', ';', ':']);
+        if let Ok(value) = cleaned.parse::<f64>() {
+            if value.is_finite() && value > 0.0 {
+                found = Some(value);
+            }
+        }
+    }
+    found
+}
+
 /// A setup that already produced one SETUP WATCHING alert.
 ///
 /// Persisted in `bot_state.json` so restarts/deploys do not re-send the same
@@ -2795,6 +2829,24 @@ mod tests {
     fn breakdown_keeps_confluence_support_when_it_is_in_window() {
         let selected = select_breakdown_support(3614.0, 53.0, Some(3575.24), &[3602.72, 3575.24]);
         assert_eq!(selected, Some(3575.24));
+    }
+
+    #[test]
+    fn invalidation_price_parses_the_structural_level() {
+        assert_eq!(
+            parse_last_price("Đóng M15 trở lại dưới 3558.74"),
+            Some(3558.74)
+        );
+        assert_eq!(parse_last_price("Đóng M15 dưới 2690.00"), Some(2690.00));
+        assert_eq!(parse_last_price("Không áp dụng — thiếu vùng hỗ trợ."), None);
+        assert_eq!(parse_last_price("M15 close above 3785.36"), Some(3785.36));
+    }
+
+    #[test]
+    fn scenario_invalidation_price_uses_the_visible_text() {
+        let mut scenario = trigger_scenario("BELOW", Some(2701.0));
+        scenario.invalidation = "Đóng M15 trở lại trên 2711.00".to_string();
+        assert_eq!(scenario.invalidation_price(), Some(2711.0));
     }
 
     #[test]

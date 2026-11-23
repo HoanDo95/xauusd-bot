@@ -1,6 +1,7 @@
 use crate::models::{BotConfig, DailyMacroReport, Signal};
 use crate::retest_shadow::{RetestTrade, RetestWatch};
 use crate::scenarios::WatchedSetup;
+use crate::setup_state::SetupAlertStore;
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -27,6 +28,10 @@ pub struct PersistentState {
     /// Backstop cooldown theo vùng trigger (scenario + direction + zone bucket).
     #[serde(default)]
     pub action_watch_last_sent: HashMap<String, DateTime<Utc>>,
+    /// Realtime setup-alert state: PRE_ALERT/TRIGGERED/INVALIDATED transitions,
+    /// frozen scenario levels and restart-safe dedup keys.
+    #[serde(default)]
+    pub setup_alerts: SetupAlertStore,
     /// Các slot Daily View đã gửi, key `YYYY-MM-DD:HH` theo giờ Việt Nam.
     #[serde(default)]
     pub daily_view_sent: HashMap<String, DateTime<Utc>>,

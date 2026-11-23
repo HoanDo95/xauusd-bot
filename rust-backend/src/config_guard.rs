@@ -101,6 +101,12 @@ pub fn evaluate(config: &BotConfig) -> Vec<ConfigWarning> {
             "session_shadow_enabled=false; session forward sampling stopped.",
         ));
     }
+    if !config.action_trigger_alert_enabled {
+        warnings.push(ConfigWarning::warning(
+            "setup_alerts_disabled",
+            "action_trigger_alert_enabled=false; realtime PRE_ALERT/TRIGGERED/INVALIDATED stopped.",
+        ));
+    }
     if !config.htf_h4_filter_enabled || !config.htf_d1_filter_enabled {
         warnings.push(ConfigWarning::warning(
             "htf_filter_disabled",
@@ -233,6 +239,15 @@ mod tests {
         let warnings = evaluate(&config);
         assert!(warnings.iter().any(|w| w.code == "confirmation_disabled"));
         assert!(has_errors(&warnings));
+    }
+
+    #[test]
+    fn setup_alerts_off_is_a_warning_not_an_error() {
+        let mut config = frozen_profile();
+        config.action_trigger_alert_enabled = false;
+        let warnings = evaluate(&config);
+        assert!(warnings.iter().any(|w| w.code == "setup_alerts_disabled"));
+        assert!(!has_errors(&warnings));
     }
 
     #[test]

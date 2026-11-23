@@ -615,11 +615,19 @@ export interface PanoramaScenario {
   bias: string;
   action: string;
   valid: boolean;
+  /** False for reference-only or config-disabled scenarios. */
+  enabled?: boolean;
   zone_low: number;
   zone_high: number;
   trigger_price: number | null;
   trigger_direction: string;
   trigger_timeframe: string;
+  /** BREAKOUT | BREAKDOWN | TOUCH | NONE */
+  trigger_type?: string;
+  /** Display-only retest window after a breakout/breakdown. */
+  retest_low?: number | null;
+  retest_high?: number | null;
+  confirmation?: string;
   entry: number | null;
   stop_loss: number | null;
   take_profit_1: number | null;
@@ -840,6 +848,8 @@ export interface BotConfig {
   account_leverage?: number;
   telegram_bot_token: string;
   telegram_chat_id: string;
+  /** Extra chat IDs (comma-separated) for PRE_ALERT/TRIGGERED/INVALIDATED; same bot token. */
+  telegram_alert_chat_ids?: string;
   is_active: boolean;
   kill_switch_enabled: boolean;
   pre_news_buffer_minutes: number;

@@ -79,6 +79,7 @@ const DEFAULT_CONFIG: BotConfig = {
   account_leverage: 100,
   telegram_bot_token: '',
   telegram_chat_id: '',
+  telegram_alert_chat_ids: '',
   is_active: true,
   kill_switch_enabled: true,
   pre_news_buffer_minutes: 30,

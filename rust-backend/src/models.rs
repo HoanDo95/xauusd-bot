@@ -300,6 +300,10 @@ pub struct BotConfig {
     pub telegram_bot_token: String,
     /// Telegram Chat ID
     pub telegram_chat_id: String,
+    /// Chat ID phụ (cách nhau dấu phẩy) nhận PRE_ALERT/TRIGGERED/INVALIDATED.
+    /// Dùng cùng bot token; mặc định rỗng.
+    #[serde(default)]
+    pub telegram_alert_chat_ids: String,
     /// Trạng thái hoạt động
     pub is_active: bool,
     /// Bật/Tắt cơ chế dừng giao dịch khi có tin vĩ mô lớn (News Kill Switch)
@@ -760,6 +764,7 @@ impl Default for BotConfig {
             account_leverage: 100.0,
             telegram_bot_token: "".to_string(),
             telegram_chat_id: "".to_string(),
+            telegram_alert_chat_ids: "".to_string(),
             is_active: true,
             kill_switch_enabled: true,
             pre_news_buffer_minutes: 30,
@@ -966,6 +971,13 @@ impl BotConfig {
 
         self.telegram_bot_token = self.telegram_bot_token.trim().to_string();
         self.telegram_chat_id = self.telegram_chat_id.trim().to_string();
+        self.telegram_alert_chat_ids = self
+            .telegram_alert_chat_ids
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join(",");
         self.webhook_passphrase = self.webhook_passphrase.trim().to_string();
         self
     }

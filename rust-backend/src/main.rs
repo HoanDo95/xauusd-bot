@@ -49,7 +49,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let news_impact_path = store.path().with_file_name("news_reactions.json");
     let news_impact_store = NewsImpactStore::new(news_impact_path);
     let initial_news_impact = news_impact_store.load();
-    let persisted = store.load();
+    let mut persisted = store.load();
+    // The single frozen `active_watch_setup` belonged to the old PRIMARY-only
+    // watcher. The realtime engine tracks every enabled scenario in
+    // `setup_alerts`; a stale legacy setup must not block the scanner.
+    if persisted.active_watch_setup.is_some() {
+        info!("🧹 Bỏ legacy active_watch_setup; setup engine đã thay thế watcher PRIMARY-only.");
+        persisted.active_watch_setup = None;
+    }
     let daily_plan_store = DailyPlanStore::from_env();
     let initial_daily_plan = daily_plan_store.load();
     let mut config = persisted.config.sanitized();
@@ -204,6 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         divergence_last_sent: Arc::new(RwLock::new(std::collections::HashMap::new())),
         action_trigger_last_sent: Arc::new(RwLock::new(persisted.action_watch_last_sent)),
         active_watch_setup: Arc::new(RwLock::new(persisted.active_watch_setup)),
+        setup_alerts: Arc::new(RwLock::new(persisted.setup_alerts)),
         daily_view_sent: Arc::new(RwLock::new(persisted.daily_view_sent)),
         daily_plan: Arc::new(RwLock::new(initial_daily_plan)),
         daily_plan_store,

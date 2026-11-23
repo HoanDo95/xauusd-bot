@@ -7,8 +7,11 @@
 //!
 //! Schema v1:
 //! - `scenario_observed`: one valid PRIMARY observation per M15 close.
-//! - `setup_created`: a SETUP WATCHING alert was sent; levels are frozen.
-//! - `setup_closed`: the watched setup expired/invalidated before triggering.
+//! - `setup_created` / `setup_closed`: legacy PRIMARY-only watcher lifecycle.
+//! - `setup_pre_alert`: realtime engine sent a PRE_ALERT; levels are frozen.
+//! - `setup_triggered`: realtime engine sent a TRIGGERED alert.
+//! - `setup_invalidated`: realtime engine cancelled a watched setup.
+//! - `setup_expired`: realtime engine dropped a setup after 8 M15 bars.
 //! - `triggered`: the M15 close crossed the frozen trigger (confirmation may
 //!   still pass or fail).
 //! - `ai_review`: AI action/confidence/model for that trigger, including
