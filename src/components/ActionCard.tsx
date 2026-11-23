@@ -327,7 +327,7 @@ export const ActionCard: React.FC<Props> = ({ data, aiDecision }) => {
                     : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
                 }`}
               >
-                Plan {entryPlan.source} · {entryPlan.valid ? 'VALID' : 'INVALID'}
+                Plan {entryPlan.source} · {entryPlan.valid ? 'ZONE OK' : 'INVALID'}
                 {entryPlan.readiness != null ? ` · readiness ${entryPlan.readiness}%` : ''}
               </span>
             )}

@@ -1,7 +1,7 @@
 use crate::ai_decision::AiDecision;
 use crate::api::EntryCheckResult;
 use crate::divergence_alerts::DivergenceAlert;
-use crate::market_panorama::{MarketPanorama, PanoramaScenario};
+use crate::market_panorama::{MarketPanorama, PanoramaScenario, ZoneView};
 use crate::market_view::{MarketOutlook, OutlookScenario};
 use crate::models::{
     DailyMacroReport, EconomicEvent, EntryType, ImpactLevel, Signal, SignalStatus, SignalType,
@@ -11,6 +11,7 @@ use crate::retest_scalp::RetestScalpTrade;
 use crate::retest_shadow::RetestLevels;
 use crate::scenarios::{is_reference_only_scenario, Scenario, ScenarioResponse};
 use crate::session_alerts::SessionBriefing;
+use crate::signal_review::truncate_sentences;
 use crate::zone_plan;
 use reqwest::Client;
 use serde_json::json;
@@ -1602,18 +1603,46 @@ impl TelegramNotifier {
     /// Đây là check theo yêu cầu: AI decision + entry plan tham khảo từ
     /// candidate/scenario. KHÔNG phải trade signal, không quota, không auto-trade.
     /// Mọi text động đều được escape HTML trước khi gửi.
-    fn format_panorama_scenario(scenario: &PanoramaScenario) -> String {
+    fn panorama_trigger_status(scenario: &PanoramaScenario, price: Option<f64>) -> &'static str {
+        if is_reference_only_scenario(&scenario.scenario_id) {
+            return "REFERENCE ONLY";
+        }
+        let Some(price) = price.filter(|value| value.is_finite() && *value > 0.0) else {
+            return "WAITING";
+        };
+        if let Some(stop_loss) = scenario.stop_loss.filter(|value| value.is_finite()) {
+            let invalidated = match scenario.bias.trim().to_uppercase().as_str() {
+                "BEARISH" => price >= stop_loss,
+                "BULLISH" => price <= stop_loss,
+                _ => false,
+            };
+            if invalidated {
+                return "INVALIDATED";
+            }
+        }
+        let triggered = match scenario.trigger_direction.trim().to_uppercase().as_str() {
+            "ABOVE" => scenario
+                .trigger_price
+                .is_some_and(|trigger| price > trigger),
+            "BELOW" => scenario
+                .trigger_price
+                .is_some_and(|trigger| price < trigger),
+            "TOUCH" => price >= scenario.zone_low && price <= scenario.zone_high,
+            _ => false,
+        };
+        if triggered {
+            "TRIGGERED"
+        } else {
+            "WAITING"
+        }
+    }
+
+    fn format_panorama_scenario(scenario: &PanoramaScenario, price: Option<f64>) -> String {
         let role = Self::escape_html(&truncate_chars(&scenario.role, 24));
         let name = Self::escape_html(&truncate_chars(&scenario.name, 80));
         let action = Self::escape_html(&truncate_chars(&scenario.action, 24));
         let reference_only = is_reference_only_scenario(&scenario.scenario_id);
-        let status = if reference_only {
-            " · REFERENCE ONLY"
-        } else if scenario.valid {
-            ""
-        } else {
-            " · INVALID"
-        };
+        let status = Self::panorama_trigger_status(scenario, price);
         let trigger = match (scenario.trigger_price, scenario.trigger_direction.as_str()) {
             (Some(price), "ABOVE") => format!("M15 close &gt; {price:.2}"),
             (Some(price), "BELOW") => format!("M15 close &lt; {price:.2}"),
@@ -1650,7 +1679,7 @@ impl TelegramNotifier {
         };
         let mut lines = vec![
             format!(
-                "{role} — <b>{name}</b> · {action} · Conf {}%{status}",
+                "{role} — <b>{name}</b> · {action} · Conf {}% · {status}",
                 scenario.confidence
             ),
             format!(
@@ -1682,6 +1711,41 @@ impl TelegramNotifier {
             ));
         }
         lines.join("\n")
+    }
+
+    /// Display-only reclassification: a level above current price is resistance,
+    /// below is support. This prevents stale analyzer labels from showing an
+    /// "S" above the live price or an "R" below it.
+    fn panorama_zone_groups(panorama: &MarketPanorama) -> (Vec<&ZoneView>, Vec<&ZoneView>) {
+        let Some(price) = panorama
+            .price
+            .filter(|value| value.is_finite() && *value > 0.0)
+        else {
+            return (
+                panorama.zones.supports.iter().take(3).collect(),
+                panorama.zones.resistances.iter().take(3).collect(),
+            );
+        };
+
+        let mut zones: Vec<&ZoneView> = panorama
+            .zones
+            .supports
+            .iter()
+            .chain(panorama.zones.resistances.iter())
+            .collect();
+        zones.sort_by(|left, right| left.distance_usd.total_cmp(&right.distance_usd));
+        zones.dedup_by(|left, right| (left.price - right.price).abs() < 0.01);
+
+        let mut supports = Vec::new();
+        let mut resistances = Vec::new();
+        for zone in zones {
+            if zone.price < price && supports.len() < 3 {
+                supports.push(zone);
+            } else if zone.price > price && resistances.len() < 3 {
+                resistances.push(zone);
+            }
+        }
+        (supports, resistances)
     }
 
     fn format_panorama_block(panorama: &MarketPanorama) -> String {
@@ -1732,7 +1796,8 @@ impl TelegramNotifier {
         }
 
         let mut zone_lines = Vec::new();
-        for zone in panorama.zones.supports.iter().take(3) {
+        let (supports, resistances) = Self::panorama_zone_groups(panorama);
+        for zone in supports {
             zone_lines.push(format!(
                 "S {:.2}–{:.2} · {} touches · {} ATR",
                 zone.min_price,
@@ -1743,7 +1808,7 @@ impl TelegramNotifier {
                     .unwrap_or_else(|| "—".to_string())
             ));
         }
-        for zone in panorama.zones.resistances.iter().take(3) {
+        for zone in resistances {
             zone_lines.push(format!(
                 "R {:.2}–{:.2} · {} touches · {} ATR",
                 zone.min_price,
@@ -1766,7 +1831,7 @@ impl TelegramNotifier {
         };
         for scenario in panorama.scenarios.iter().take(scenario_limit) {
             lines.push(String::new());
-            lines.push(Self::format_panorama_scenario(scenario));
+            lines.push(Self::format_panorama_scenario(scenario, panorama.price));
         }
 
         if let Some(macro_block) = panorama.macro_block.as_ref() {
@@ -1909,7 +1974,7 @@ impl TelegramNotifier {
 
         let plan_block = match &result.entry_plan {
             Some(plan) => {
-                let status = if plan.valid { "VALID" } else { "INVALID" };
+                let status = if plan.valid { "ZONE OK" } else { "INVALID" };
                 let side = Self::escape_html(&truncate_chars(&plan.side, 16));
                 let source = Self::escape_html(&truncate_chars(&plan.source, 24));
                 let readiness = plan
@@ -1958,7 +2023,7 @@ impl TelegramNotifier {
                     "🧠 AI Strategist (advisory) — {} · {}\n{}",
                     Self::escape_html(&truncate_chars(&view.model, 40)),
                     Self::escape_html(&truncate_chars(&view.prompt_version, 40)),
-                    Self::escape_html(&truncate_chars(&view.market_view, 600))
+                    Self::escape_html(&truncate_sentences(&view.market_view, 1200))
                 );
                 if let Some(primary_id) = view.primary_scenario_id.as_ref() {
                     block.push_str(&format!(
@@ -2013,7 +2078,7 @@ impl TelegramNotifier {
             Self::escape_html(&truncate_chars(symbol, 40)),
             Self::escape_html(&truncate_chars(selected, 24))
         );
-        let body: String = body.chars().take(3400).collect();
+        let body: String = body.chars().take(3900).collect();
         format!("{body}\n{footer}")
     }
 
@@ -3402,7 +3467,7 @@ mod tests {
             "Action: <b>SELL</b> · confidence 78%",
             "Selected scenario: PRIMARY",
             "Reason: H4/H1 supply confluence + RSI overbought",
-            "Plan: PRIMARY (reference) · SELL · VALID · readiness 90% · EARLY (trigger chưa xác nhận)",
+            "Plan: PRIMARY (reference) · SELL · ZONE OK · readiness 90% · EARLY (trigger chưa xác nhận)",
             "🎯 Entry 3960.00 · SL 20 giá → 3980.00 · TP1 20 giá → 3940.00 (50%, BE+1) · TP2 40–50 giá → 3920.00 (40.0 giá) · R:R TP2 1:2.00",
             "⚠️ Reference only: không lot/risk/account %.",
             "Macro/Flow: ALIGNED · bias BEARISH · 95% — Real yield và DXY cùng hỗ trợ SELL.",
@@ -3521,6 +3586,27 @@ mod tests {
                 h1_bias: "BEARISH".to_string(),
                 ..Default::default()
             },
+            zones: crate::market_panorama::ZonesBlock {
+                supports: vec![crate::market_panorama::ZoneView {
+                    price: 3810.0,
+                    min_price: 3810.0,
+                    max_price: 3810.0,
+                    touch_count: 2,
+                    strength: 1.0,
+                    distance_usd: 10.0,
+                    distance_atr: Some(0.5),
+                }],
+                resistances: vec![crate::market_panorama::ZoneView {
+                    price: 3790.0,
+                    min_price: 3790.0,
+                    max_price: 3790.0,
+                    touch_count: 2,
+                    strength: 1.0,
+                    distance_usd: 10.0,
+                    distance_atr: Some(0.5),
+                }],
+                ..Default::default()
+            },
             scenarios: vec![PanoramaScenario {
                 role: "PRIMARY".to_string(),
                 scenario_id: "bearish_breakdown".to_string(),
@@ -3553,6 +3639,9 @@ mod tests {
             "MARKET PANORAMA",
             "Biến động",
             "PRIMARY — <b>Bearish breakdown</b>",
+            "WAITING",
+            "R 3810.00–3810.00",
+            "S 3790.00–3790.00",
             "Trigger M15 close &lt; 3777.14",
             "Đây là view tham khảo, KHÔNG phải sniper signal",
         ] {

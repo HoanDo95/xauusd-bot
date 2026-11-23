@@ -124,6 +124,35 @@ pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> String {
     }
 }
 
+/// Character cap that prefers a sentence boundary, so AI prose never ends in
+/// the middle of a clause. Falls back to the last whitespace, then a hard cap.
+pub(crate) fn truncate_sentences(value: &str, max_chars: usize) -> String {
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+
+    let prefix: String = trimmed.chars().take(max_chars).collect();
+    let mut cut = prefix.len();
+    for delimiter in ['.', '!', '?', '\n'] {
+        if let Some(position) = prefix.rfind(delimiter) {
+            cut = cut.min(position + delimiter.len_utf8());
+        }
+    }
+    if cut == prefix.len() {
+        if let Some(position) = prefix.rfind(char::is_whitespace) {
+            cut = position;
+        }
+    }
+
+    let body = trimmed[..cut].trim_end();
+    if body.is_empty() {
+        format!("{}…", prefix.trim_end())
+    } else {
+        format!("{body}…")
+    }
+}
+
 pub(crate) fn format_timeframe_context(label: &str, context: &TimeframeContext) -> String {
     let support = context
         .nearest_support
@@ -688,7 +717,8 @@ pub(crate) async fn post_ai_chat_completion(
                 { "role": "user", "content": prompt }
             ],
             "response_format": { "type": "json_object" },
-            "temperature": temperature
+            "temperature": temperature,
+            "max_tokens": 800
         });
 
         for attempt in 0..=AI_MAX_RATE_LIMIT_RETRIES {
@@ -851,6 +881,15 @@ mod tests {
     use crate::macro_flow::{CotSnapshot, MacroFlowScorecard, MacroMetric};
     use crate::models::{EntryType, SignalStatus, SignalType, Timeframe};
     use chrono::TimeZone;
+
+    #[test]
+    fn truncate_sentences_stops_at_a_sentence_boundary() {
+        let text = "Câu một ngắn. Câu hai dài hơn nhiều và sẽ bị cắt.";
+        let out = truncate_sentences(text, 20);
+        assert!(out.starts_with("Câu một ngắn."));
+        assert!(out.ends_with('…'));
+        assert!(!out.contains("Câu hai"));
+    }
 
     #[test]
     fn retry_after_delay_uses_header_and_falls_back() {

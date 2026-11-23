@@ -493,10 +493,25 @@ pub(crate) async fn run_entry_check(state: &AppState) -> Result<EntryCheckResult
             .iter()
             .find(|scenario| scenario.role.eq_ignore_ascii_case(&plan.source))
         {
-            if scenario_triggered(scenario, candle) {
+            let price = live_price
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .unwrap_or(candle.close);
+            let invalidated = match scenario.bias.trim().to_uppercase().as_str() {
+                "BEARISH" => scenario.stop_loss.is_some_and(|stop| price >= stop),
+                "BULLISH" => scenario.stop_loss.is_some_and(|stop| price <= stop),
+                _ => false,
+            };
+            if invalidated {
+                plan.valid = false;
+                plan.early_entry = false;
+                plan.note
+                    .push_str(" · INVALIDATED — giá đã vượt structural stop; zone chỉ tham khảo.");
+            } else if scenario_triggered(scenario, candle) {
                 plan.early_entry = false;
                 plan.note
                     .push_str(" · Trigger đã chạm — không còn là early entry, chờ vùng mới.");
+            } else {
+                plan.note.push_str(" · WAITING — chưa trigger.");
             }
         }
     }

@@ -11,7 +11,7 @@ use crate::models::Candle;
 use crate::scenarios::{is_reference_only_scenario, Scenario, ScenarioResponse};
 use crate::signal_review::{
     normalize_json_content, post_ai_chat_completion, resolve_review_settings, review_session_id,
-    truncate_chars,
+    truncate_chars, truncate_sentences,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -50,6 +50,7 @@ NGUYÊN TẮC BẮT BUỘC:\n\
 6. Nếu dữ liệu thiếu/mâu thuẫn, ghi rõ trong risk_notes; vẫn giữ Market View thay vì im lặng.\n\
 7. CHỈ chọn scenario có valid=true. Scenario valid=false (ví dụ bearish_rejection đang tắt vì backtest âm) chỉ để tham khảo, KHÔNG được chọn làm PRIMARY/ALTERNATIVE.\n\
 8. `bullish_bounce` là REFERENCE_ONLY (backtest 2022–2026 âm). KHÔNG được chọn làm PRIMARY/ALTERNATIVE; chỉ có thể nhắc trong market_view/risk_notes.\n\
+9. Viết cực gọn: market_view tối đa 3 câu / 120 từ; risk_notes tối đa 3 ý, mỗi ý dưới 20 từ. Không lặp lại số liệu đã có trong brief.\n\
 \n\
 TRẢ VỀ JSON THUẦN (không markdown, không giải thích ngoài JSON):\n\
 {\"market_view\":\"2-3 câu\",\"structure\":\"TREND_BULL|TREND_BEAR|TECHNICAL_PULLBACK|RANGE|REVERSAL_WATCH|MIXED\",\"primary_scenario_id\":\"id hoặc null\",\"primary_action\":\"WATCH_SELL|WATCH_BUY|STAND_ASIDE\",\"alternative_scenario_id\":\"id hoặc null\",\"risk_notes\":[\"tối đa 3 ghi chú ngắn\"]}";
@@ -205,7 +206,7 @@ pub fn parse_strategist_content(
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
-    let market_view = truncate_chars(market_view, 800);
+    let market_view = truncate_sentences(market_view, 1500);
     let structure = value
         .get("structure")
         .and_then(|value| value.as_str())
