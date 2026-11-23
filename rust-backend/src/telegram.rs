@@ -1606,7 +1606,14 @@ impl TelegramNotifier {
         let role = Self::escape_html(&truncate_chars(&scenario.role, 24));
         let name = Self::escape_html(&truncate_chars(&scenario.name, 80));
         let action = Self::escape_html(&truncate_chars(&scenario.action, 24));
-        let status = if scenario.valid { "" } else { " · INVALID" };
+        let reference_only = is_reference_only_scenario(&scenario.scenario_id);
+        let status = if reference_only {
+            " · REFERENCE ONLY"
+        } else if scenario.valid {
+            ""
+        } else {
+            " · INVALID"
+        };
         let trigger = match (scenario.trigger_price, scenario.trigger_direction.as_str()) {
             (Some(price), "ABOVE") => format!("M15 close &gt; {price:.2}"),
             (Some(price), "BELOW") => format!("M15 close &lt; {price:.2}"),
@@ -1614,10 +1621,33 @@ impl TelegramNotifier {
             (Some(price), _) => format!("M15 {price:.2}"),
             (None, _) => "—".to_string(),
         };
-        let risk_reward = scenario
-            .risk_reward
-            .map(|value| format!("1:{value:.2}"))
-            .unwrap_or_else(|| "—".to_string());
+        let side = if scenario.action.to_uppercase().contains("SELL") {
+            "SELL"
+        } else if scenario.action.to_uppercase().contains("BUY") {
+            "BUY"
+        } else {
+            ""
+        };
+        let zone_entry = scenario
+            .entry
+            .unwrap_or((scenario.zone_low + scenario.zone_high) / 2.0);
+        let levels_line = if side.is_empty() {
+            "SL — · TP1 — · TP2 — · R:R —".to_string()
+        } else {
+            let (stop_loss, take_profit_1, take_profit_2, tp2_points) =
+                zone_plan::levels(zone_entry, side, scenario.take_profit_2);
+            format!(
+                "SL {:.0} giá → {:.2} · TP1 {:.0} giá → {:.2} · TP2 {:.0}–{:.0} giá → {:.2} · R:R TP2 1:{:.2}",
+                zone_plan::SL_POINTS,
+                stop_loss,
+                zone_plan::TP1_POINTS,
+                take_profit_1,
+                zone_plan::TP2_MIN_POINTS,
+                zone_plan::TP2_MAX_POINTS,
+                take_profit_2,
+                tp2_points / zone_plan::SL_POINTS
+            )
+        };
         let mut lines = vec![
             format!(
                 "{role} — <b>{name}</b> · {action} · Conf {}%{status}",
@@ -1627,17 +1657,18 @@ impl TelegramNotifier {
                 "Zone <code>{:.2}–{:.2}</code> · Trigger {trigger}",
                 scenario.zone_low, scenario.zone_high
             ),
-            format!(
-                "SL {} · TP1 {} · TP2 {} · R:R {risk_reward}",
-                format_level(scenario.stop_loss),
-                format_level(scenario.take_profit_1),
-                format_level(scenario.take_profit_2)
-            ),
+            levels_line,
             format!(
                 "Invalidation: {}",
                 Self::escape_html(&truncate_chars(&scenario.invalidation, 180))
             ),
         ];
+        if reference_only {
+            lines.push(
+                "⚠️ REFERENCE ONLY — backtest 2022–2026 âm; không phải qualified PRIMARY."
+                    .to_string(),
+            );
+        }
         if let Some(h1) = scenario.h1_confirmation.as_ref() {
             let momentum = h1
                 .momentum_atr
