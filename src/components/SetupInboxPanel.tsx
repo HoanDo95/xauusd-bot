@@ -135,6 +135,7 @@ function eventMeta(event: SetupInboxEvent): {
 function SetupCard({ setup }: { setup: SetupInboxItem }) {
   const trigger = setup.trigger_price ?? null;
   const distance = setup.distance_now;
+  const far = !setup.stale && distance != null && distance > setup.watch_distance * 1.5;
   const level = (value: number | null) => (value == null ? '—' : value.toFixed(2));
 
   return (
@@ -146,11 +147,15 @@ function SetupCard({ setup }: { setup: SetupInboxItem }) {
             <span className="text-[10px] font-mono uppercase tracking-wider text-neutral-500">
               {setup.role} · {setup.bias} · {setup.confidence}%
             </span>
-            {setup.stale && (
+            {setup.stale ? (
               <span className="px-2 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-[10px] font-bold text-amber-300">
                 STALE
               </span>
-            )}
+            ) : far ? (
+              <span className="px-2 py-0.5 rounded border border-sky-500/40 bg-sky-500/10 text-[10px] font-bold text-sky-300">
+                FAR
+              </span>
+            ) : null}
           </div>
           <div className="text-[11px] font-mono text-neutral-400">
             #{setup.setup_id} · updated {timeLabel(setup.updated_at)}
