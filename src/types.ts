@@ -967,6 +967,8 @@ export interface BotConfig {
   divergence_alert_cooldown_minutes?: number;
   /** Telegram alert when the PRIMARY scenario trigger is hit on a closed M15 candle. Default true. */
   action_trigger_alert_enabled?: boolean;
+  /** Quiet mode: only Daily/Scenario actionable + CONFIRMED SIGNAL on Telegram; PRE_ALERT/INVALIDATED stay in Setup Inbox. Default true. */
+  action_quiet_mode?: boolean;
   /** Shadow retest research: journal/Telegram only, never a signal or quota. Default true. */
   retest_shadow_enabled?: boolean;
   /** Session shadow: confirmed scenario in all sessions, journal-only. Default false. */

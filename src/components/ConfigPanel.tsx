@@ -1473,6 +1473,19 @@ export const ConfigPanel: React.FC<Props> = ({
               <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
                 <input
                   type="checkbox"
+                  checked={formData.action_quiet_mode ?? true}
+                  onChange={(e) =>
+                    setFormData({ ...formData, action_quiet_mode: e.target.checked })
+                  }
+                  className="accent-sky-500 w-4 h-4 rounded cursor-pointer"
+                />
+                <span className="font-semibold text-sky-200">
+                  Quiet mode — chỉ gửi CONFIRMED SIGNAL + Daily/Scenario
+                </span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 select-none">
+                <input
+                  type="checkbox"
                   checked={formData.retest_shadow_enabled ?? true}
                   onChange={(e) =>
                     setFormData({ ...formData, retest_shadow_enabled: e.target.checked })

@@ -40,6 +40,7 @@ mod news;
 mod news_impact;
 mod scanner;
 mod scenarios;
+mod setup_inbox;
 mod signals;
 mod simulation;
 mod telegram;
@@ -60,6 +61,7 @@ use news::{
 use news_impact::{get_news_impact, get_news_impact_summary};
 use scanner::{send_scenario_telegram, start_scanner, stop_scanner};
 use scenarios::get_scenarios;
+use setup_inbox::get_setup_inbox;
 use signals::{close_all_signals, get_all_signals, get_stats};
 use simulation::simulate_setup;
 use telegram::{send_signal_telegram, trigger_test_telegram};
@@ -199,6 +201,8 @@ pub fn create_router(state: AppState) -> Router {
             "/api/trigger-journal/summary",
             get(journal::get_trigger_journal_summary),
         )
+        // Setup Inbox: read-only grouped setups + recent events + signals
+        .route("/api/setup-inbox", get(get_setup_inbox))
         .route("/api/market-view", get(market_view::get_market_view))
         .route(
             "/api/market-view/strategist",

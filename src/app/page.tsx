@@ -57,6 +57,7 @@ import { HtfChartCard } from '../components/HtfChartCard';
 import { CandlestickChart } from '../components/CandlestickChart';
 import { SimulateToolbar } from '../components/SimulateToolbar';
 import { SignalCard } from '../components/SignalCard';
+import { SetupInboxPanel } from '../components/SetupInboxPanel';
 import { SignalModal } from '../components/SignalModal';
 import { ConfigPanel } from '../components/ConfigPanel';
 import { NewsKillSwitchBanner } from '../components/NewsKillSwitchBanner';
@@ -144,6 +145,7 @@ const DEFAULT_CONFIG: BotConfig = {
   divergence_alert_h4: true,
   divergence_alert_cooldown_minutes: 60,
   action_trigger_alert_enabled: true,
+  action_quiet_mode: true,
   action_trigger_cooldown_minutes: 120,
   action_watch_distance_atr: 1.0,
   action_watch_max_distance_points: 15,
@@ -834,6 +836,8 @@ export default function DashboardPage() {
         )}
 
         {/* Tab 2: Full Signal Alerts Feed & Table */}
+        {currentTab === 'inbox' && <SetupInboxPanel />}
+
         {currentTab === 'signals' && (
           <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5 flex flex-col gap-4">
             <div className="flex flex-wrap items-center justify-between gap-4">

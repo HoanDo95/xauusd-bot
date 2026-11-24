@@ -830,8 +830,16 @@ async fn evaluate_once(state: &AppState) -> Result<(), String> {
                     &flags,
                     &reason,
                 );
-                if send_setup_message(&telegram, &text, &[], "INVALIDATED", &record.setup_id).await
-                {
+                let sent = if config.action_quiet_mode {
+                    info!(
+                        "🔇 [Setup Engine] INVALIDATED {} quiet mode — state only.",
+                        record.setup_id
+                    );
+                    true
+                } else {
+                    send_setup_message(&telegram, &text, &[], "INVALIDATED", &record.setup_id).await
+                };
+                if sent {
                     let mut updated = record.clone();
                     updated.mark_invalidated(now, candle.timestamp);
                     store.setups.remove(&id);
@@ -981,7 +989,16 @@ async fn evaluate_once(state: &AppState) -> Result<(), String> {
                 &confirmation,
                 &context_line,
             );
-            if send_setup_message(&telegram, &text, &[], "PRE_ALERT", &record.setup_id).await {
+            let sent = if config.action_quiet_mode {
+                info!(
+                    "🔇 [Setup Engine] PRE_ALERT {} quiet mode — state only.",
+                    record.setup_id
+                );
+                true
+            } else {
+                send_setup_message(&telegram, &text, &[], "PRE_ALERT", &record.setup_id).await
+            };
+            if sent {
                 let mut updated = record.clone();
                 updated.mark_pre_alert(now, candle.timestamp);
                 store.setups.insert(id.clone(), updated.clone());
@@ -1123,7 +1140,16 @@ async fn evaluate_once(state: &AppState) -> Result<(), String> {
                     &confirmation,
                     &context_line,
                 );
-                if send_setup_message(&telegram, &text, &[], "PRE_ALERT", &record.setup_id).await {
+                let sent = if config.action_quiet_mode {
+                    info!(
+                        "🔇 [Setup Engine] PRE_ALERT {} quiet mode — state only.",
+                        record.setup_id
+                    );
+                    true
+                } else {
+                    send_setup_message(&telegram, &text, &[], "PRE_ALERT", &record.setup_id).await
+                };
+                if sent {
                     let mut updated = record.clone();
                     updated.mark_pre_alert(now, candle.timestamp);
                     store.setups.insert(scenario.id.clone(), updated.clone());

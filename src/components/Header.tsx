@@ -3,7 +3,7 @@
 import React from 'react';
 import { BotConfig } from '../types';
 
-export type DashboardTab = 'monitor' | 'signals' | 'webhook' | 'config';
+export type DashboardTab = 'monitor' | 'signals' | 'inbox' | 'webhook' | 'config';
 
 interface Props {
   currentTab: DashboardTab;
@@ -37,6 +37,7 @@ export const Header: React.FC<Props> = ({
   const tabs: Array<{ id: DashboardTab; label: string }> = [
     { id: 'monitor', label: 'Live Trading Desk' },
     { id: 'signals', label: 'Signal Alerts' },
+    { id: 'inbox', label: 'Setup Inbox' },
     { id: 'webhook', label: 'News & Webhook' },
     { id: 'config', label: 'Sniper Config' },
   ];

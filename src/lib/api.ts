@@ -71,6 +71,77 @@ export interface ScenarioTelegramResponse {
   message?: string;
 }
 
+export interface SetupInboxItem {
+  setup_id: string;
+  scenario_id: string;
+  name: string;
+  role: string;
+  bias: string;
+  status: string;
+  valid: boolean;
+  confidence: number;
+  trigger_price: number | null;
+  trigger_direction: string;
+  entry: number | null;
+  stop_loss: number | null;
+  take_profit_1: number | null;
+  take_profit_2: number | null;
+  invalidation: string;
+  distance_now: number | null;
+  distance_atr: number | null;
+  watch_distance: number;
+  stale: boolean;
+  session: string;
+  flags: string[];
+  pre_alerted: boolean;
+  last_event_bar: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InboxSignal {
+  id: string;
+  source: 'SETUP_ENGINE' | 'SCANNER' | 'SCANNER_SCENARIO' | 'SIMULATION' | string;
+  side: string;
+  entry: number;
+  stop_loss: number;
+  take_profit_1: number;
+  take_profit_2: number;
+  status: string;
+  created_at: string;
+  outcome_at: string | null;
+  dedup_key: string;
+  ai_verdict: string | null;
+  ai_confidence: number | null;
+  telegram_message_id: number | null;
+  is_simulated: boolean;
+}
+
+export interface SetupInboxEvent {
+  event: string;
+  setup_id?: string | null;
+  scenario_id?: string | null;
+  scenario_name?: string | null;
+  created_at?: string | null;
+  candle_timestamp?: number | null;
+  reason?: string | null;
+  signal_id?: string | null;
+  [key: string]: unknown;
+}
+
+export interface SetupInboxResponse {
+  generatedAt: string;
+  lastBar: number | null;
+  price: number | null;
+  session: string;
+  quietMode: boolean;
+  watchDistance: number;
+  h4Atr: number;
+  setups: SetupInboxItem[];
+  signals: InboxSignal[];
+  events: SetupInboxEvent[];
+}
+
 export interface HealthResponse {
   status: string;
   symbol: string;
@@ -532,6 +603,11 @@ export async function runAiEntryCheck(): Promise<AiEntryCheckResponse> {
       message: 'AI Entry Check chưa sẵn sàng từ backend.',
     };
   }
+}
+
+/** GET /api/setup-inbox — read-only grouped setups, recent events and signals. */
+export function fetchSetupInbox(): Promise<SetupInboxResponse> {
+  return request<SetupInboxResponse>('/api/setup-inbox');
 }
 
 /** POST /api/calculate-lot — server-side position sizing. */

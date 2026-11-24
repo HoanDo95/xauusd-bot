@@ -139,6 +139,7 @@ pub(super) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "rsiFilterEnabled": config.rsi_filter_enabled,
         "divergenceAlertEnabled": config.divergence_alert_enabled,
         "actionTriggerAlertEnabled": config.action_trigger_alert_enabled,
+        "actionQuietMode": config.action_quiet_mode,
         "actionWatchDistanceAtr": config.action_watch_distance_atr,
         "actionWatchMaxDistancePoints": config.action_watch_max_distance_points,
         "actionWatchMinConfidence": config.action_watch_min_confidence,

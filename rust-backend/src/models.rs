@@ -515,6 +515,11 @@ pub struct BotConfig {
     /// không Entry/SL/TP/Lot. Mặc định true.
     #[serde(default = "default_true")]
     pub action_trigger_alert_enabled: bool,
+    /// Quiet mode: chỉ gửi Daily/Scenario actionable + CONFIRMED SIGNAL.
+    /// PRE_ALERT/INVALIDATED vẫn được ghi state/journal cho Setup Inbox nhưng
+    /// không bắn Telegram. Mặc định BẬT.
+    #[serde(default = "default_true")]
+    pub action_quiet_mode: bool,
     /// Bật shadow research retest (chỉ journal/Telegram research, không signal/quota).
     #[serde(default = "default_true")]
     pub retest_shadow_enabled: bool,
@@ -829,6 +834,7 @@ impl Default for BotConfig {
             divergence_alert_h4: true,
             divergence_alert_cooldown_minutes: default_divergence_alert_cooldown(),
             action_trigger_alert_enabled: true,
+            action_quiet_mode: true,
             retest_shadow_enabled: true,
             action_trigger_cooldown_minutes: default_action_trigger_cooldown(),
             action_watch_distance_atr: default_action_watch_distance_atr(),
