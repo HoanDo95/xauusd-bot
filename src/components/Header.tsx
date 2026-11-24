@@ -34,10 +34,6 @@ export const Header: React.FC<Props> = ({
   dataSource,
   onOpenTestModal,
 }) => {
-  const quotaEnabled = config.daily_quota_enabled ?? false;
-  const maxSignals = Math.max(1, config.max_signals_per_day || 1);
-  const quotaReached = quotaEnabled && signalsToday >= maxSignals;
-
   const tabs: Array<{ id: DashboardTab; label: string }> = [
     { id: 'monitor', label: 'Live Trading Desk' },
     { id: 'signals', label: 'Signal Alerts' },
@@ -57,7 +53,7 @@ export const Header: React.FC<Props> = ({
             Gold Sniper Bot
           </span>
           <span className="text-[10px] text-neutral-500 font-mono">
-            {quotaEnabled ? `${maxSignals} Signals / Day` : 'Unlimited Signals'} · XAU/USD
+            Unlimited Signals · XAU/USD
           </span>
         </div>
       </div>
@@ -80,27 +76,10 @@ export const Header: React.FC<Props> = ({
       {/* Zone 3: Sniper Quota, Free Feed Badge, Ticker & Action */}
       <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
         <div
-          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-mono font-semibold whitespace-nowrap ${
-            quotaReached
-              ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
-              : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-          }`}
-          title={
-            quotaEnabled
-              ? 'Số lệnh THẬT đã fill hôm nay / giới hạn đã bật. Simulation và view không tính.'
-              : 'Không giới hạn số lệnh/ngày. Dedup theo nến vẫn chặn alert trùng.'
-          }
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-mono font-semibold whitespace-nowrap bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+          title="Số lệnh THẬT đã fill hôm nay. Không còn giới hạn số lệnh/ngày; dedup theo nến vẫn chặn alert trùng."
         >
-          <span>
-            {quotaEnabled
-              ? `🎯 Lệnh thật: ${signalsToday}/${maxSignals} · view không tính`
-              : '🎯 Lệnh thật: Không giới hạn'}
-          </span>
-          {quotaEnabled && (
-            <span className={quotaReached ? 'text-amber-400' : 'text-emerald-500'}>
-              {quotaReached ? '· Đã đủ lệnh' : '· Sẵn sàng'}
-            </span>
-          )}
+          <span>🎯 Lệnh thật hôm nay: {signalsToday} · view không tính</span>
         </div>
 
         <div

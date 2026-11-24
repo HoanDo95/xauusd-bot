@@ -335,64 +335,13 @@ export const ConfigPanel: React.FC<Props> = ({
         {/* Section 2: Optional Daily Quota & Session Filter */}
         <div className="flex flex-col gap-4">
           <div className="text-xs font-bold text-emerald-400 uppercase tracking-wider border-b border-neutral-800 pb-2 flex items-center justify-between">
-            <span>2. Giới hạn lệnh/ngày (tùy chọn) & Bộ lọc phiên</span>
+            <span>2. Bộ lọc phiên & Risk guardrails</span>
             <span className="text-neutral-500 text-[11px] normal-case font-normal">
-              Chỉ lệnh thật mới tính; simulation/view/zone không tính
+              Không còn giới hạn số lệnh/ngày
             </span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-            {/* Daily quota toggle */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-neutral-300">
-                Giới hạn lệnh thật/ngày
-              </label>
-              <label className="flex items-start gap-2 bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={formData.daily_quota_enabled ?? false}
-                  onChange={(e) =>
-                    setFormData({ ...formData, daily_quota_enabled: e.target.checked })
-                  }
-                  className="accent-emerald-500 w-4 h-4 rounded cursor-pointer mt-0.5"
-                />
-                <span className="text-[11px] text-neutral-300 leading-snug">
-                  {formData.daily_quota_enabled ? 'ĐANG BẬT — có giới hạn' : 'ĐANG TẮT — không giới hạn'}
-                </span>
-              </label>
-              <span className="text-[11px] text-neutral-500">
-                Mặc định OFF — bot bắn mọi setup đủ điều kiện. Bật để giới hạn 1–5 lệnh/ngày.
-              </span>
-            </div>
-
-            {/* Max signals per day */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold text-neutral-300">
-                Lệnh thật tối đa / ngày
-              </label>
-              <div className="relative">
-                <input
-                  type="number"
-                  min="1"
-                  max="5"
-                  step="1"
-                  disabled={!(formData.daily_quota_enabled ?? false)}
-                  value={formData.max_signals_per_day ?? 1}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      max_signals_per_day: Math.max(1, Math.min(5, parseInt(e.target.value) || 1)),
-                    })
-                  }
-                  className="w-full bg-neutral-950 border border-neutral-800 focus:border-emerald-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none disabled:opacity-40 disabled:cursor-not-allowed"
-                />
-                <span className="absolute right-3 top-2 text-xs text-neutral-500 font-mono">Lệnh</span>
-              </div>
-              <span className="text-[11px] text-neutral-500">
-                Chỉ áp dụng khi toggle bật (1–5 lệnh/ngày).
-              </span>
-            </div>
-
             {/* Portfolio risk guardrails */}
             <div className="flex flex-col gap-2 md:col-span-2 xl:col-span-4 rounded-xl border border-rose-500/30 bg-rose-500/5 p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2133,7 +2082,7 @@ export const ConfigPanel: React.FC<Props> = ({
 
             <div className="flex flex-col gap-1.5 md:col-span-2">
               <label className="text-xs font-semibold text-neutral-300">
-                Kênh phụ cho Setup Alerts (tùy chọn)
+                Kênh phụ cho tín hiệu actionable (tùy chọn)
               </label>
               <input
                 type="text"
@@ -2145,7 +2094,8 @@ export const ConfigPanel: React.FC<Props> = ({
                 className="w-full bg-neutral-950 border border-neutral-800 focus:border-sky-500 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none"
               />
               <span className="text-[11px] text-neutral-500">
-                Nhận PRE_ALERT / TRIGGERED / INVALIDATED bằng cùng bot token. Bot phải là admin
+                Nhận Daily View / Scenario View / CONFIRMED SIGNAL khi có setup actionable.
+                PRE_ALERT và INVALIDATED chỉ gửi kênh chính. Dùng cùng bot token; bot phải là admin
                 của kênh và có quyền Post Messages.
               </span>
             </div>

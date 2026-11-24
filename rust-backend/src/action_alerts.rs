@@ -10,12 +10,15 @@
 //! the newly closed bar. This mirrors the scanner's no-lookahead approach and
 //! prevents a breakout trigger from moving above price right after the break.
 //!
-//! The engine never inserts a signal, consumes quota, calls AI or places an
-//! order. Every event is deduped by `scenario_id:transition:bar_timestamp` and
-//! persisted in `bot_state.json`, so restarts cannot replay it.
+//! A confirmed `TRIGGERED` setup inserts one view-only `Signal` (zero lot/risk)
+//! with the same zone levels, unless the candle already owns a signal. The
+//! engine never consumes quota, calls AI as a gate or places an order. Every
+//! event is deduped by `scenario_id:transition:bar_timestamp` and persisted in
+//! `bot_state.json`, so restarts cannot replay it.
 
+use crate::ai_decision::AiDecision;
 use crate::api::{persist_state, AppState};
-use crate::models::{BotConfig, Candle, Timeframe};
+use crate::models::{BotConfig, Candle, EntryType, Signal, SignalStatus, SignalType, Timeframe};
 use crate::scenarios::{
     build_scenarios, is_reference_only_scenario, Scenario, ScenarioMarket, ScenarioResponse,
 };
@@ -26,6 +29,7 @@ use crate::setup_state::{
 use crate::storage::PersistentStore;
 use crate::telegram::TelegramNotifier;
 use crate::trigger_journal::{record, regime_label, TriggerEvent};
+use crate::zone_plan;
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -99,16 +103,6 @@ fn prune_last_sent(last_sent: &mut HashMap<String, DateTime<Utc>>, max: usize) {
     for (key, _) in entries.into_iter().take(last_sent.len() - max) {
         last_sent.remove(&key);
     }
-}
-
-fn parse_extra_chat_ids(config: &BotConfig) -> Vec<String> {
-    config
-        .telegram_alert_chat_ids
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .collect()
 }
 
 fn scenario_enabled(scenario: &Scenario, config: &BotConfig) -> bool {
@@ -394,6 +388,224 @@ async fn live_scenarios(
     ))
 }
 
+enum TriggerOutcome {
+    Sent {
+        signal_id: Option<String>,
+        #[allow(dead_code)]
+        message_id: Option<i64>,
+    },
+    Duplicate,
+    Failed,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn confirmed_setup_signal(
+    setup: &SetupRecord,
+    candle: &Candle,
+    config: &BotConfig,
+    market: Option<&ScenarioMarket>,
+    data_source: &str,
+    now: DateTime<Utc>,
+    telegram_message_id: Option<i64>,
+    last_ai: Option<&AiDecision>,
+) -> Option<Signal> {
+    let scenario = &setup.scenario;
+    let side = match scenario.bias.trim().to_uppercase().as_str() {
+        "BULLISH" => SignalType::Buy,
+        "BEARISH" => SignalType::Sell,
+        _ => return None,
+    };
+    let entry = scenario
+        .entry
+        .or(scenario.trigger_price)
+        .filter(|value| value.is_finite() && *value > 0.0)?;
+    let (stop_loss, take_profit_1, take_profit_2, _tp2_points) =
+        zone_plan::levels(entry, side.as_str(), scenario.take_profit_2);
+    let ordered = match side {
+        SignalType::Buy => {
+            stop_loss < entry && entry < take_profit_1 && take_profit_1 < take_profit_2
+        }
+        SignalType::Sell => {
+            stop_loss > entry && entry > take_profit_1 && take_profit_1 > take_profit_2
+        }
+    };
+    if !ordered {
+        return None;
+    }
+
+    let risk_points = (entry - stop_loss).abs();
+    let reward_tp1 = (take_profit_1 - entry).abs();
+    let reward_tp2 = (take_profit_2 - entry).abs();
+    let risk_reward = if risk_points > 0.0 {
+        reward_tp2 / risk_points
+    } else {
+        0.0
+    };
+
+    let (ai_verdict, ai_confidence, ai_reason) = match last_ai {
+        Some(ai) => (
+            Some("ADVISORY".to_string()),
+            Some(ai.confidence_score),
+            Some(format!(
+                "Cached AI {} ({:.0}%) — advisory only, not blocking: {}",
+                ai.action,
+                ai.confidence_score * 100.0,
+                ai.reason
+            )),
+        ),
+        None => (
+            Some("ADVISORY".to_string()),
+            Some(scenario.confidence as f64 / 100.0),
+            Some(
+                "Realtime setup engine confirmation; AI advisory unavailable, not blocking."
+                    .to_string(),
+            ),
+        ),
+    };
+
+    let rationale = format!(
+        "Confirmed {} setup from the realtime engine. Trigger: {} | Invalidation: {} | Notes: {}",
+        scenario.name,
+        scenario.trigger,
+        scenario.invalidation,
+        scenario.notes.join("; ")
+    );
+
+    Some(Signal {
+        id: format!(
+            "SIG-{}-{}",
+            now.timestamp_millis(),
+            scenario.id.to_uppercase()
+        ),
+        symbol: config.symbol.clone(),
+        signal_type: side,
+        timeframe: Timeframe::M15,
+        entry_price: round2(entry),
+        stop_loss: round2(stop_loss),
+        take_profit_1: round2(take_profit_1),
+        take_profit_2: round2(take_profit_2),
+        risk_points: round2(risk_points),
+        reward_points_tp1: round2(reward_tp1),
+        reward_points_tp2: round2(reward_tp2),
+        risk_reward_ratio: (risk_reward * 100.0).round() / 100.0,
+        volume_surge_ratio: 0.0,
+        recommended_lot_size: 0.0,
+        risk_amount_usd: 0.0,
+        potential_profit_tp1_usd: 0.0,
+        potential_profit_tp2_usd: 0.0,
+        price_action_notes: format!("Realtime setup engine confirmed {}.", scenario.name),
+        volume_analysis_notes: "Confirmed on a closed M15 candle; view-only.".to_string(),
+        full_rationale: rationale,
+        status: SignalStatus::Active,
+        created_at: now,
+        telegram_message_id,
+        dedup_key: format!(
+            "{}_{}_{}",
+            config.symbol, config.timeframe, candle.timestamp
+        ),
+        candle_timestamp: candle.timestamp,
+        is_simulated: false,
+        confluence_score: scenario.confidence,
+        outcome_at: None,
+        entry_type: EntryType::Market,
+        candle_close_price: candle.close,
+        live_market_price: Some(candle.close),
+        retest_limit_price: None,
+        data_source: data_source.to_string(),
+        is_entry_filled: true,
+        ai_verdict,
+        ai_confidence,
+        ai_reason,
+        delta_ratio: None,
+        cvd: None,
+        delta: None,
+        rsi_value: market.and_then(|market| market.rsi_m15),
+        rsi_state: market.map(|market| market.rsi_state.clone()),
+        rsi_divergence: None,
+        macro_flow_alignment: Some(scenario.macro_alignment.clone()),
+        macro_flow_note: market
+            .map(|market| format!("Macro {} {}%", market.macro_bias, market.macro_confidence)),
+        cancel_reason: None,
+        management_note: Some("View-only: no lot/risk. Manage position yourself.".to_string()),
+    })
+}
+
+/// Send the TRIGGERED message and, when this candle has no signal yet, insert a
+/// view-only confirmed signal with the same zone levels. The signal gate makes
+/// this atomic against the scanner's own insert.
+#[allow(clippy::too_many_arguments)]
+async fn send_triggered_signal(
+    state: &AppState,
+    telegram: &TelegramNotifier,
+    text: &str,
+    extra_chat_ids: &[String],
+    setup: &SetupRecord,
+    candle: &Candle,
+    config: &BotConfig,
+    market: Option<&ScenarioMarket>,
+) -> TriggerOutcome {
+    let _gate = state.signal_gate.lock().await;
+
+    let has_signal_for_candle = {
+        let signals = state.signals.read().await;
+        signals
+            .iter()
+            .any(|signal| !signal.is_simulated && signal.candle_timestamp == candle.timestamp)
+    };
+    if has_signal_for_candle {
+        info!(
+            "ℹ️ [Setup Engine] {} trigger bị bỏ qua: đã có signal cho nến {}.",
+            setup.setup_id, candle.timestamp
+        );
+        return TriggerOutcome::Duplicate;
+    }
+
+    let sent = match telegram.send_setup_alert_text(text, extra_chat_ids).await {
+        Ok(sent) => sent,
+        Err(err) => {
+            warn!(
+                "⚠️ [Setup Engine] Không gửi được TRIGGERED {}: {}",
+                setup.setup_id, err
+            );
+            return TriggerOutcome::Failed;
+        }
+    };
+    let message_id = sent.first().map(|(_, message_id)| *message_id);
+
+    let last_ai = state.last_ai_decision.read().await.clone();
+    let data_source = state.active_data_source.read().await.clone();
+    let signal = confirmed_setup_signal(
+        setup,
+        candle,
+        config,
+        market,
+        &data_source,
+        Utc::now(),
+        message_id,
+        last_ai.as_ref(),
+    );
+    let signal_id = signal.as_ref().map(|signal| signal.id.clone());
+    if let Some(signal) = signal {
+        state.signals.write().await.insert(0, signal);
+        if let Err(err) = persist_state(state).await {
+            warn!(
+                "⚠️ [Setup Engine] Không lưu được confirmed signal {}: {}",
+                setup.setup_id, err
+            );
+        }
+    } else {
+        warn!(
+            "⚠️ [Setup Engine] TRIGGERED {} nhưng không build được signal (zone levels).",
+            setup.setup_id
+        );
+    }
+
+    TriggerOutcome::Sent {
+        signal_id,
+        message_id,
+    }
+}
+
 async fn send_setup_message(
     telegram: &TelegramNotifier,
     text: &str,
@@ -539,7 +751,7 @@ async fn evaluate_once(state: &AppState) -> Result<(), String> {
     let watch_distance = watch_distance(&config, market);
     let zone_size = (h4_atr(market) * 0.5).max(5.0);
     let context_line = market_context_line(market);
-    let extra_chat_ids = parse_extra_chat_ids(&config);
+    let extra_chat_ids = crate::telegram::parse_chat_ids(&config.telegram_alert_chat_ids);
     let telegram = state.telegram.read().await.clone();
     let mut all_ok = true;
     let mut closed_this_tick: HashSet<String> = HashSet::new();
@@ -618,14 +830,7 @@ async fn evaluate_once(state: &AppState) -> Result<(), String> {
                     &flags,
                     &reason,
                 );
-                if send_setup_message(
-                    &telegram,
-                    &text,
-                    &extra_chat_ids,
-                    "INVALIDATED",
-                    &record.setup_id,
-                )
-                .await
+                if send_setup_message(&telegram, &text, &[], "INVALIDATED", &record.setup_id).await
                 {
                     let mut updated = record.clone();
                     updated.mark_invalidated(now, candle.timestamp);
@@ -673,31 +878,55 @@ async fn evaluate_once(state: &AppState) -> Result<(), String> {
                     &confirmation,
                     &context_line,
                 );
-                if send_setup_message(
+                match send_triggered_signal(
+                    state,
                     &telegram,
                     &text,
                     &extra_chat_ids,
-                    "TRIGGERED",
-                    &record.setup_id,
+                    &record,
+                    &candle,
+                    &config,
+                    market,
                 )
                 .await
                 {
-                    let mut updated = record.clone();
-                    updated.mark_triggered(now, candle.timestamp, candle.close);
-                    store.setups.insert(id.clone(), updated.clone());
-                    store.mark_sent(key, now);
-                    let event = setup_event(
-                        "setup_triggered",
-                        &updated,
-                        market,
-                        &candle,
-                        now,
-                        in_session,
-                        None,
-                    );
-                    record_journal(state, &config, &event);
-                } else {
-                    all_ok = false;
+                    TriggerOutcome::Sent { signal_id, .. } => {
+                        let mut updated = record.clone();
+                        updated.mark_triggered(now, candle.timestamp, candle.close);
+                        store.setups.insert(id.clone(), updated.clone());
+                        store.mark_sent(key, now);
+                        let mut event = setup_event(
+                            "setup_triggered",
+                            &updated,
+                            market,
+                            &candle,
+                            now,
+                            in_session,
+                            None,
+                        );
+                        event.signal_id = signal_id;
+                        record_journal(state, &config, &event);
+                    }
+                    TriggerOutcome::Duplicate => {
+                        let mut updated = record.clone();
+                        updated.mark_triggered(now, candle.timestamp, candle.close);
+                        store.setups.insert(id.clone(), updated.clone());
+                        store.mark_sent(key, now);
+                        let mut event = setup_event(
+                            "setup_triggered",
+                            &updated,
+                            market,
+                            &candle,
+                            now,
+                            in_session,
+                            Some("duplicate_candle_signal"),
+                        );
+                        event.signal_id = None;
+                        record_journal(state, &config, &event);
+                    }
+                    TriggerOutcome::Failed => {
+                        all_ok = false;
+                    }
                 }
             } else {
                 let mut updated = record.clone();
@@ -752,15 +981,7 @@ async fn evaluate_once(state: &AppState) -> Result<(), String> {
                 &confirmation,
                 &context_line,
             );
-            if send_setup_message(
-                &telegram,
-                &text,
-                &extra_chat_ids,
-                "PRE_ALERT",
-                &record.setup_id,
-            )
-            .await
-            {
+            if send_setup_message(&telegram, &text, &[], "PRE_ALERT", &record.setup_id).await {
                 let mut updated = record.clone();
                 updated.mark_pre_alert(now, candle.timestamp);
                 store.setups.insert(id.clone(), updated.clone());
@@ -817,32 +1038,58 @@ async fn evaluate_once(state: &AppState) -> Result<(), String> {
                     &confirmation,
                     &context_line,
                 );
-                if send_setup_message(
+                match send_triggered_signal(
+                    state,
                     &telegram,
                     &text,
                     &extra_chat_ids,
-                    "TRIGGERED",
-                    &record.setup_id,
+                    &record,
+                    &candle,
+                    &config,
+                    market,
                 )
                 .await
                 {
-                    let mut updated = record.clone();
-                    updated.mark_triggered(now, candle.timestamp, candle.close);
-                    store.setups.insert(scenario.id.clone(), updated.clone());
-                    store.mark_sent(key, now);
-                    let event = setup_event(
-                        "setup_triggered",
-                        &updated,
-                        market,
-                        &candle,
-                        now,
-                        in_session,
-                        None,
-                    );
-                    record_journal(state, &config, &event);
-                    continue;
+                    TriggerOutcome::Sent { signal_id, .. } => {
+                        let mut updated = record.clone();
+                        updated.mark_triggered(now, candle.timestamp, candle.close);
+                        store.setups.insert(scenario.id.clone(), updated.clone());
+                        store.mark_sent(key, now);
+                        let mut event = setup_event(
+                            "setup_triggered",
+                            &updated,
+                            market,
+                            &candle,
+                            now,
+                            in_session,
+                            None,
+                        );
+                        event.signal_id = signal_id;
+                        record_journal(state, &config, &event);
+                        continue;
+                    }
+                    TriggerOutcome::Duplicate => {
+                        let mut updated = record.clone();
+                        updated.mark_triggered(now, candle.timestamp, candle.close);
+                        store.setups.insert(scenario.id.clone(), updated.clone());
+                        store.mark_sent(key, now);
+                        let mut event = setup_event(
+                            "setup_triggered",
+                            &updated,
+                            market,
+                            &candle,
+                            now,
+                            in_session,
+                            Some("duplicate_candle_signal"),
+                        );
+                        event.signal_id = None;
+                        record_journal(state, &config, &event);
+                        continue;
+                    }
+                    TriggerOutcome::Failed => {
+                        all_ok = false;
+                    }
                 }
-                all_ok = false;
             }
         } else if scenario.confidence >= config.action_watch_min_confidence
             && is_approaching(scenario, candle.close, watch_distance)
@@ -876,15 +1123,7 @@ async fn evaluate_once(state: &AppState) -> Result<(), String> {
                     &confirmation,
                     &context_line,
                 );
-                if send_setup_message(
-                    &telegram,
-                    &text,
-                    &extra_chat_ids,
-                    "PRE_ALERT",
-                    &record.setup_id,
-                )
-                .await
-                {
+                if send_setup_message(&telegram, &text, &[], "PRE_ALERT", &record.setup_id).await {
                     let mut updated = record.clone();
                     updated.mark_pre_alert(now, candle.timestamp);
                     store.setups.insert(scenario.id.clone(), updated.clone());
@@ -1230,6 +1469,40 @@ mod tests {
         let mut bounce = scenario(true, Some(2701.0), "TOUCH");
         bounce.id = "bullish_bounce".to_string();
         assert!(!scenario_enabled(&bounce, &config));
+    }
+
+    #[test]
+    fn confirmed_setup_builds_a_view_only_signal() {
+        let setup = SetupRecord::new(
+            "S".to_string(),
+            scenario(true, Some(2701.0), "ABOVE"),
+            fixed_now(),
+            0,
+        );
+        let candle = candle(900_000, 2705.0, 2695.0, 2701.0);
+        let signal = confirmed_setup_signal(
+            &setup,
+            &candle,
+            &config(),
+            Some(&market()),
+            "EXNESS",
+            fixed_now(),
+            Some(123),
+            None,
+        )
+        .expect("confirmed signal");
+
+        assert_eq!(signal.entry_price, 2701.0);
+        assert_eq!(signal.stop_loss, 2681.0);
+        assert_eq!(signal.take_profit_1, 2721.0);
+        assert_eq!(signal.take_profit_2, 2741.0);
+        assert_eq!(signal.recommended_lot_size, 0.0);
+        assert_eq!(signal.risk_amount_usd, 0.0);
+        assert!(signal.is_entry_filled);
+        assert_eq!(signal.candle_timestamp, 900_000);
+        assert_eq!(signal.dedup_key, "XAU/USD_M15_900000");
+        assert_eq!(signal.ai_verdict.as_deref(), Some("ADVISORY"));
+        assert_eq!(signal.telegram_message_id, Some(123));
     }
 
     #[test]

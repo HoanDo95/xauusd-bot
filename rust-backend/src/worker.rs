@@ -1513,8 +1513,16 @@ pub fn spawn_daily_scheduler(state: AppState, scheduler: DailyScheduler) {
                     info!("🌙 [Weekend Brief 07:00] Weekend brief đang tắt.");
                 }
             } else if config.daily_plan_enabled {
+                let extra_chat_ids =
+                    crate::telegram::parse_chat_ids(&config.telegram_alert_chat_ids);
                 match telegram
-                    .send_daily_plan(&live_view, &scenarios, &events, &report)
+                    .send_daily_plan_with_actionable_extra(
+                        &live_view,
+                        &scenarios,
+                        &events,
+                        &report,
+                        &extra_chat_ids,
+                    )
                     .await
                 {
                     Ok(message_id) => info!(

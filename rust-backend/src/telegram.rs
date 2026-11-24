@@ -26,6 +26,54 @@ pub struct TelegramNotifier {
     chat_id: String,
 }
 
+/// Parse a comma-separated chat ID / channel username list.
+pub fn parse_chat_ids(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// A scenario is actionable for the scalp mirror when it is not reference-only
+/// and either structurally valid or already triggered by price.
+fn scenario_is_actionable(scenario: &Scenario, price: Option<f64>) -> bool {
+    if is_reference_only_scenario(&scenario.id) {
+        return false;
+    }
+    if scenario.valid {
+        return true;
+    }
+    let (Some(trigger), Some(price)) = (scenario.trigger_price, price) else {
+        return false;
+    };
+    match scenario.trigger_direction.trim().to_uppercase().as_str() {
+        "ABOVE" => price > trigger,
+        "BELOW" => price < trigger,
+        // TOUCH needs candle wick data; only structural validity is available
+        // in the frozen scenario response.
+        _ => false,
+    }
+}
+
+/// True when the scenario response contains at least one actionable setup.
+pub fn scenarios_are_actionable(response: &ScenarioResponse) -> bool {
+    response
+        .scenarios
+        .iter()
+        .any(|scenario| scenario_is_actionable(scenario, response.price))
+}
+
+/// True when the daily view has a valid/triggered PRIMARY.
+pub fn daily_view_is_actionable(outlook: &MarketOutlook) -> bool {
+    outlook.plan_status.eq_ignore_ascii_case("TRIGGERED")
+        || outlook
+            .primary
+            .as_ref()
+            .is_some_and(|primary| primary.valid)
+}
+
 fn zone_alert_mode_enabled() -> bool {
     std::env::var("ZONE_ALERT_MODE")
         .map(|value| {
@@ -174,6 +222,55 @@ impl TelegramNotifier {
         }
     }
 
+    fn mirror_chat_ids(&self, extra_chat_ids: &[String]) -> Vec<String> {
+        extra_chat_ids
+            .iter()
+            .filter(|chat_id| chat_id.trim() != self.chat_id.trim())
+            .cloned()
+            .collect()
+    }
+
+    /// Send one HTML message to an explicit list of chat IDs. Returns every
+    /// successful `(chat_id, message_id)` pair; a partial failure is logged but
+    /// does not hide successful sends.
+    pub async fn send_html_message_to_chats(
+        &self,
+        text: &str,
+        chat_ids: &[String],
+    ) -> Result<Vec<(String, i64)>, String> {
+        if self.bot_token.is_empty() {
+            info!("⚠️ [Telegram Simulator] HTML fan-out (chưa cấu hình token)");
+            return Ok(Vec::new());
+        }
+
+        let mut sent = Vec::new();
+        let mut errors = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
+        for chat_id in chat_ids {
+            let chat_id = chat_id.trim();
+            if chat_id.is_empty() || seen.iter().any(|value| value == chat_id) {
+                continue;
+            }
+            seen.push(chat_id.to_string());
+            match self.send_html_message_to(chat_id, text).await {
+                Ok(message_id) => sent.push((chat_id.to_string(), message_id)),
+                Err(err) => errors.push(format!("{chat_id}: {err}")),
+            }
+        }
+
+        if sent.is_empty() && !errors.is_empty() {
+            Err(errors.join("; "))
+        } else {
+            if !errors.is_empty() {
+                error!(
+                    "❌ Telegram fan-out gửi lỗi một phần: {}",
+                    errors.join("; ")
+                );
+            }
+            Ok(sent)
+        }
+    }
+
     /// Fan out one setup event to the primary chat and optional extra chats.
     /// Returns every successful `(chat_id, message_id)` pair. A failure on one
     /// extra channel does not hide a successful primary-channel send.
@@ -191,34 +288,13 @@ impl TelegramNotifier {
         if !self.chat_id.trim().is_empty() {
             targets.push(self.chat_id.trim().to_string());
         }
-        for chat_id in extra_chat_ids {
-            let chat_id = chat_id.trim();
-            if !chat_id.is_empty() && !targets.iter().any(|value| value == chat_id) {
-                targets.push(chat_id.to_string());
-            }
-        }
+        targets.extend(extra_chat_ids.iter().cloned());
         if targets.is_empty() {
             info!("⚠️ [Telegram Simulator] Setup alert (chưa cấu hình chat ID)");
             return Ok(Vec::new());
         }
 
-        let mut sent = Vec::new();
-        let mut errors = Vec::new();
-        for chat_id in targets {
-            match self.send_html_message_to(&chat_id, text).await {
-                Ok(message_id) => sent.push((chat_id, message_id)),
-                Err(err) => errors.push(format!("{chat_id}: {err}")),
-            }
-        }
-
-        if sent.is_empty() && !errors.is_empty() {
-            Err(errors.join("; "))
-        } else {
-            if !errors.is_empty() {
-                error!("❌ Setup alert gửi lỗi một phần: {}", errors.join("; "));
-            }
-            Ok(sent)
-        }
+        self.send_html_message_to_chats(text, &targets).await
     }
 
     /// Escape các ký tự đặc biệt của Telegram HTML parse mode.
@@ -718,7 +794,7 @@ impl TelegramNotifier {
         let setup_text = Self::escape_html(&truncate_chars(&scenario.trigger, 180));
         let structure_note = Self::setup_structure_note(flags);
         format!(
-            "🎯 <b>TRIGGERED — SETUP CONFIRMED</b> — {name}\n\
+            "🎯 <b>CONFIRMED SIGNAL — SETUP TRIGGERED</b> — {name}\n\
              XAU/USD · <b>{side}</b> · M15 close <code>{candle_close:.2}</code> · session {session}\n\
              {role} · Conf {confidence}% · {flags}\n\
              Trigger {trigger} · Zone <code>{zone_low:.2}–{zone_high:.2}</code>\n\
@@ -729,7 +805,7 @@ impl TelegramNotifier {
              Invalidation: {invalidation}\n\
              Macro/Flow: {alignment}\n\
              {structure_note}🔒 <b>View-only:</b> không lot, không risk %, không account size.\n\
-             ⚠️ Cảnh báo trigger của kịch bản, KHÔNG phải sniper signal; không auto-trade.",
+             ✅ Đã ghi nhận là SIGNAL xác nhận (view-only). Không phải sniper signal AI; không auto-trade.",
             confidence = scenario.confidence,
             session = Self::setup_session_label(in_session),
             flags = Self::setup_flags_line(flags),
@@ -1076,6 +1152,27 @@ impl TelegramNotifier {
     pub async fn send_daily_view(&self, outlook: &MarketOutlook, slot: u32) -> Result<i64, String> {
         let message_text = Self::format_daily_view_message(outlook, slot);
         self.send_html_message(&message_text).await
+    }
+
+    /// Send the daily view to the primary chat and mirror it to extra channels
+    /// only when the PRIMARY is valid or already triggered.
+    pub async fn send_daily_view_with_actionable_extra(
+        &self,
+        outlook: &MarketOutlook,
+        slot: u32,
+        extra_chat_ids: &[String],
+    ) -> Result<i64, String> {
+        let message_text = Self::format_daily_view_message(outlook, slot);
+        let primary = self.send_html_message(&message_text).await?;
+        if daily_view_is_actionable(outlook) && !extra_chat_ids.is_empty() {
+            if let Err(err) = self
+                .send_html_message_to_chats(&message_text, extra_chat_ids)
+                .await
+            {
+                error!("❌ Daily View mirror lỗi: {}", err);
+            }
+        }
+        Ok(primary)
     }
 
     pub async fn send_daily_view_no_plan(&self, slot: u32, reason: &str) -> Result<i64, String> {
@@ -1534,6 +1631,30 @@ impl TelegramNotifier {
         }
     }
 
+    /// Send the 07:00 daily plan to the primary chat and mirror it to extra
+    /// channels only when at least one non-reference setup is actionable.
+    pub async fn send_daily_plan_with_actionable_extra(
+        &self,
+        live_view: &serde_json::Value,
+        scenarios: &ScenarioResponse,
+        events: &[EconomicEvent],
+        report: &DailyMacroReport,
+        extra_chat_ids: &[String],
+    ) -> Result<i64, String> {
+        let message_text = Self::format_daily_plan(live_view, scenarios, events, report);
+        let primary = self.send_html_message(&message_text).await?;
+        let mirror = self.mirror_chat_ids(extra_chat_ids);
+        if scenarios_are_actionable(scenarios) && !mirror.is_empty() {
+            if let Err(err) = self
+                .send_html_message_to_chats(&message_text, &mirror)
+                .await
+            {
+                error!("❌ Daily Plan mirror lỗi: {}", err);
+            }
+        }
+        Ok(primary)
+    }
+
     /// Weekend brief: news for next week + weekly assessment. It intentionally
     /// contains no entry/SL/TP and no trade signal; gold is closed Sat/Sun.
     pub fn format_weekend_brief(
@@ -1753,6 +1874,32 @@ impl TelegramNotifier {
                 Err(format!("Network Error: {}", err))
             }
         }
+    }
+
+    /// Send the scenario summary to the primary chat and mirror it to extra
+    /// channels only when at least one non-reference setup is actionable.
+    pub async fn send_scenario_summary_with_actionable_extra(
+        &self,
+        live_view: &serde_json::Value,
+        scenarios: &ScenarioResponse,
+        extra_chat_ids: &[String],
+    ) -> Result<i64, String> {
+        if self.bot_token.is_empty() || self.chat_id.is_empty() {
+            info!("⚠️ [Telegram Simulator] Scenario summary (chưa cấu hình token)");
+            return Ok(1001);
+        }
+
+        let message_text = Self::format_scenario_summary(live_view, scenarios);
+        let primary = self.send_html_message(&message_text).await?;
+        if scenarios_are_actionable(scenarios) && !extra_chat_ids.is_empty() {
+            if let Err(err) = self
+                .send_html_message_to_chats(&message_text, extra_chat_ids)
+                .await
+            {
+                error!("❌ Scenario View mirror lỗi: {}", err);
+            }
+        }
+        Ok(primary)
     }
 
     /// Định dạng AI Entry Check thủ công.
@@ -2437,6 +2584,37 @@ impl TelegramNotifier {
         }
     }
 
+    /// Send the AI market brief to the primary chat and mirror it to extra
+    /// channels when the AI action is BUY/SELL or a scenario is actionable.
+    pub async fn send_ai_market_brief_with_actionable_extra(
+        &self,
+        decision: &AiDecision,
+        scenarios: &ScenarioResponse,
+        live_view: &serde_json::Value,
+        extra_chat_ids: &[String],
+    ) -> Result<i64, String> {
+        if self.bot_token.is_empty() || self.chat_id.is_empty() {
+            info!("⚠️ [Telegram Simulator] AI market brief (chưa cấu hình token/chat)");
+            return Ok(1001);
+        }
+
+        let message_text = Self::format_ai_market_brief(decision, scenarios, live_view);
+        let primary = self.send_html_message(&message_text).await?;
+        let actionable = matches!(
+            decision.action.trim().to_uppercase().as_str(),
+            "BUY" | "SELL"
+        ) || scenarios_are_actionable(scenarios);
+        if actionable && !extra_chat_ids.is_empty() {
+            if let Err(err) = self
+                .send_html_message_to_chats(&message_text, extra_chat_ids)
+                .await
+            {
+                error!("❌ AI Market Brief mirror lỗi: {}", err);
+            }
+        }
+        Ok(primary)
+    }
+
     /// Định dạng briefing thông tin trước phiên Âu/Mỹ (không phải tín hiệu vào lệnh).
     pub fn format_session_alert(briefing: &SessionBriefing) -> String {
         let session_name = Self::escape_html(briefing.session.display_name());
@@ -2471,16 +2649,11 @@ impl TelegramNotifier {
                 .join("\n")
         };
 
-        // Only filled real signals count; views/zones never consume this.
-        let fill_line = if briefing.max_signals_per_day == 0 {
-            "📌 <b>Lệnh thật đã fill hôm nay:</b> <code>Không giới hạn</code> · view không tính"
-                .to_string()
-        } else {
-            format!(
-                "📌 <b>Lệnh thật đã fill hôm nay:</b> <code>{}/{}</code> · view không tính",
-                briefing.signals_today, briefing.max_signals_per_day
-            )
-        };
+        // Filled signals are shown as a count only; there is no daily limit.
+        let fill_line = format!(
+            "📌 <b>Lệnh thật đã fill hôm nay:</b> <code>{}</code> · view không tính",
+            briefing.signals_today
+        );
 
         format!(
             "🌍 <b>[PRE-SESSION BRIEFING] {} TRƯỚC {}</b>\n\
@@ -3211,7 +3384,6 @@ mod tests {
                 actual: None,
             }],
             signals_today: 1,
-            max_signals_per_day: 1,
         }
     }
 
@@ -3227,7 +3399,7 @@ mod tests {
         assert!(message.contains("SRC&lt;&amp;&gt;"));
         assert!(message.contains("US &lt;CPI&gt; &amp; &lt;script&gt;"));
         assert!(message.contains("KHÔNG phải lệnh vào trực tiếp"));
-        assert!(message.contains("Lệnh thật đã fill hôm nay:</b> <code>1/1</code>"));
+        assert!(message.contains("Lệnh thật đã fill hôm nay:</b> <code>1</code>"));
         assert!(!message.contains("<script>"));
 
         // Sau khi bỏ các thẻ HTML định dạng hợp lệ, không còn '<' thô nào.
@@ -3248,17 +3420,6 @@ mod tests {
 
         let message = TelegramNotifier::format_session_alert(&briefing);
         assert!(message.contains("Không có tin đỏ trong 12h tới"));
-    }
-
-    #[test]
-    fn format_session_alert_shows_unlimited_fill_when_disabled() {
-        let mut briefing = sample_session_briefing();
-        briefing.max_signals_per_day = 0;
-        briefing.signals_today = 3;
-
-        let message = TelegramNotifier::format_session_alert(&briefing);
-        assert!(message.contains("Lệnh thật đã fill hôm nay:</b> <code>Không giới hạn</code>"));
-        assert!(!message.contains("3/0"));
     }
 
     fn sample_divergence_alert() -> DivergenceAlert {
@@ -3378,7 +3539,7 @@ mod tests {
             "RSI M15 55.0 · daily +0.50%",
         );
 
-        assert!(message.contains("TRIGGERED — SETUP CONFIRMED"));
+        assert!(message.contains("CONFIRMED SIGNAL — SETUP TRIGGERED"));
         assert!(message.contains("Entry <code>"));
         assert!(message.contains("SL 20 giá"));
         assert!(message.contains("TP1 20 giá"));
@@ -4105,6 +4266,27 @@ mod tests {
         assert!(!no_level_block.contains("TP1"));
         assert!(!no_level_block.contains("TP2"));
         assert!(!no_level_block.contains("R:R"));
+    }
+
+    #[test]
+    fn scenario_response_is_actionable_only_when_valid_or_triggered() {
+        let mut response = sample_scenario_response();
+        response.price = Some(100.0);
+        for scenario in &mut response.scenarios {
+            scenario.valid = false;
+            scenario.trigger_price = Some(50.0);
+            scenario.trigger_direction = "BELOW".to_string();
+        }
+        assert!(!scenarios_are_actionable(&response));
+
+        response.scenarios[0].valid = true;
+        assert!(scenarios_are_actionable(&response));
+
+        response.scenarios[0].valid = false;
+        response.scenarios[0].trigger_price = Some(500.0);
+        response.scenarios[0].trigger_direction = "ABOVE".to_string();
+        // price 100 is below an ABOVE trigger, so it is not triggered.
+        assert!(!scenarios_are_actionable(&response));
     }
 
     #[test]

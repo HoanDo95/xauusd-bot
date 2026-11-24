@@ -79,10 +79,6 @@ export const MetricCards: React.FC<Props> = ({
       ? (closedSignals.reduce((acc, s) => acc + rMultiple(s), 0) / closed).toFixed(2)
       : '—';
 
-  const quotaEnabled = config.daily_quota_enabled ?? false;
-  const maxSignals = Math.max(1, config.max_signals_per_day || 1);
-  const quotaReached = quotaEnabled && signalsToday >= maxSignals;
-
   const nearestSupport = supports.length ? supports[0].price : currentPrice - 8;
   const nearestResistance = resistances.length ? resistances[0].price : currentPrice + 8;
 
@@ -97,28 +93,9 @@ export const MetricCards: React.FC<Props> = ({
     <div className="flex flex-col gap-3">
       {/* Prominent Sniper Quota & Free Live Feed Badges */}
       <div className="flex flex-wrap items-center gap-2.5">
-        <div
-          className={`flex items-center gap-2 px-3.5 py-2 rounded-xl border text-xs font-mono font-bold shadow-sm ${
-            quotaReached
-              ? 'bg-amber-500/10 text-amber-300 border-amber-500/40 shadow-amber-500/5'
-              : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/40 shadow-emerald-500/5'
-          }`}
-        >
+        <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl border text-xs font-mono font-bold shadow-sm bg-emerald-500/10 text-emerald-400 border-emerald-500/40 shadow-emerald-500/5">
           <span className="text-base leading-none">🎯</span>
-          <span>
-            {quotaEnabled
-              ? `Lệnh thật: ${signalsToday}/${maxSignals} · view không tính`
-              : 'Lệnh thật: Không giới hạn'}
-          </span>
-          {quotaEnabled && (
-            <span
-              className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ${
-                quotaReached ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'
-              }`}
-            >
-              {quotaReached ? 'Đã đủ lệnh' : 'Sẵn sàng'}
-            </span>
-          )}
+          <span>Lệnh thật hôm nay: {signalsToday} · view không tính</span>
         </div>
 
         <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl border border-sky-500/40 bg-sky-500/10 text-sky-300 text-xs font-mono font-semibold shadow-sm shadow-sky-500/5">
@@ -205,22 +182,17 @@ export const MetricCards: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Metric 4: Daily Giới hạn lệnh thật & SL Buffer */}
+        {/* Metric 4: SL Buffer */}
         <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-3.5">
-          <div className="text-xs text-neutral-400 font-medium">Giới hạn lệnh thật & SL Buffer</div>
+          <div className="text-xs text-neutral-400 font-medium">SL Buffer</div>
           <div className="flex items-baseline gap-2 mt-1">
-            <span className={`text-2xl font-bold font-mono tabular-nums ${quotaReached ? 'text-amber-400' : 'text-emerald-400'}`}>
-              {quotaEnabled ? maxSignals : '∞'}
-            </span>
-            <span className="text-xs text-neutral-500 font-mono">
-              {quotaEnabled ? 'lệnh / ngày' : 'không giới hạn'}
-            </span>
-            <span className="ml-auto text-xs font-bold font-mono text-amber-400 tabular-nums">
+            <span className="text-2xl font-bold font-mono text-emerald-400 tabular-nums">
               {config.gold_sl_buffer_points.toFixed(1)}$
             </span>
+            <span className="text-xs text-neutral-500 font-mono">buffer</span>
           </div>
           <div className="text-xs text-neutral-500 mt-1">
-            SL 5–25$ · M15 8–10$ · H1 15–20$ · Lot tự động
+            Zone view SL 20 giá · structural SL 3–45 · view-only
           </div>
         </div>
       </div>

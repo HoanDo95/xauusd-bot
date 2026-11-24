@@ -159,8 +159,20 @@ async fn handle_update(
             let result = start_scanner_inner(state).await;
             let config_chat = config.telegram_chat_id.trim().parse::<i64>().ok();
             if !result.market_closed && (!result.telegram_sent || config_chat != Some(admin_chat)) {
+                // start_scanner_inner already mirrors an actionable scenario to
+                // the scalp channel when it sends. Only mirror this fallback
+                // copy when the primary send did not happen.
+                let extra_chat_ids = if result.telegram_sent {
+                    Vec::new()
+                } else {
+                    crate::telegram::parse_chat_ids(&config.telegram_alert_chat_ids)
+                };
                 if let Err(err) = notifier
-                    .send_scenario_summary(&result.live_view, &result.scenarios)
+                    .send_scenario_summary_with_actionable_extra(
+                        &result.live_view,
+                        &result.scenarios,
+                        &extra_chat_ids,
+                    )
                     .await
                 {
                     warn!("⚠️ Telegram /start không gửi được scenario view: {}", err);
@@ -204,7 +216,15 @@ async fn handle_update(
             }
             let live_view = current_live_view(state).await;
             let scenarios = current_scenarios(state).await;
-            if let Err(err) = notifier.send_scenario_summary(&live_view, &scenarios).await {
+            let extra_chat_ids = crate::telegram::parse_chat_ids(&config.telegram_alert_chat_ids);
+            if let Err(err) = notifier
+                .send_scenario_summary_with_actionable_extra(
+                    &live_view,
+                    &scenarios,
+                    &extra_chat_ids,
+                )
+                .await
+            {
                 warn!("⚠️ Telegram /view không gửi được scenario view: {}", err);
                 let _ = notifier
                     .send_html_message("⚠️ Không gửi được scenario view.")
@@ -357,8 +377,6 @@ struct StatusSnapshot {
     macro_confidence: u8,
     flow_quality: String,
     signals_today: usize,
-    max_signals_per_day: usize,
-    daily_quota_enabled: bool,
     divergence_enabled: bool,
     ai_review_enabled: bool,
 }
@@ -394,8 +412,6 @@ async fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
         macro_confidence,
         flow_quality,
         signals_today: PersistentStore::count_live_signals_today(&signals, now),
-        max_signals_per_day: config.max_signals_per_day,
-        daily_quota_enabled: config.daily_quota_enabled,
         divergence_enabled: config.divergence_alert_enabled,
         ai_review_enabled: config.ai_signal_review_enabled,
     }
@@ -421,17 +437,10 @@ fn format_status_message(snapshot: &StatusSnapshot) -> String {
         .last_scan_age_secs
         .map(|age| format!("{age}s ago"))
         .unwrap_or_else(|| "—".to_string());
-    let signals_line = if snapshot.daily_quota_enabled {
-        format!(
-            "Lệnh thật đã fill: {}/{} · view không tính",
-            snapshot.signals_today, snapshot.max_signals_per_day
-        )
-    } else {
-        format!(
-            "Lệnh thật đã fill: {} (không giới hạn) · view không tính",
-            snapshot.signals_today
-        )
-    };
+    let signals_line = format!(
+        "Lệnh thật đã fill: {} · view không tính",
+        snapshot.signals_today
+    );
 
     format!(
         "📊 XAUUSD Bot\n\
@@ -545,8 +554,6 @@ mod tests {
             macro_confidence: 95,
             flow_quality: "CONFIRMING".to_string(),
             signals_today: 0,
-            max_signals_per_day: 1,
-            daily_quota_enabled: true,
             divergence_enabled: true,
             ai_review_enabled: false,
         };
@@ -558,7 +565,7 @@ mod tests {
             "Data: TWELVEDATA · volume BINANCE_PAXG_PROXY",
             "Feed: OK · last scan 42s ago",
             "Macro: BEARISH · 95% · CONFIRMING",
-            "Lệnh thật đã fill: 0/1 · view không tính",
+            "Lệnh thật đã fill: 0 · view không tính",
             "Divergence: ON",
             "AI review: OFF",
         ] {
@@ -567,29 +574,6 @@ mod tests {
                 "missing status line: {expected}"
             );
         }
-    }
-
-    #[test]
-    fn status_message_shows_unlimited_when_daily_quota_disabled() {
-        let snapshot = StatusSnapshot {
-            scanner_active: true,
-            data_source: "BINANCE_PAXG".to_string(),
-            volume_source: "BINANCE_PAXG".to_string(),
-            feed_ok: true,
-            last_scan_age_secs: Some(12),
-            macro_bias: "BULLISH".to_string(),
-            macro_confidence: 80,
-            flow_quality: "CONFIRMING".to_string(),
-            signals_today: 3,
-            max_signals_per_day: 1,
-            daily_quota_enabled: false,
-            divergence_enabled: true,
-            ai_review_enabled: true,
-        };
-
-        let message = format_status_message(&snapshot);
-        assert!(message.contains("Lệnh thật đã fill: 3 (không giới hạn) · view không tính"));
-        assert!(!message.contains("Lệnh thật đã fill: 3/1"));
     }
 
     #[test]
@@ -604,8 +588,6 @@ mod tests {
             macro_confidence: 0,
             flow_quality: "—".to_string(),
             signals_today: 1,
-            max_signals_per_day: 1,
-            daily_quota_enabled: true,
             divergence_enabled: false,
             ai_review_enabled: true,
         };
@@ -614,7 +596,7 @@ mod tests {
         assert!(message.contains("Scanner: PAUSED"));
         assert!(message.contains("Feed: DEGRADED · last scan —"));
         assert!(message.contains("Macro: UNKNOWN · 0% · —"));
-        assert!(message.contains("Lệnh thật đã fill: 1/1 · view không tính"));
+        assert!(message.contains("Lệnh thật đã fill: 1 · view không tính"));
         assert!(message.contains("Divergence: OFF"));
         assert!(message.contains("AI review: ON"));
     }

@@ -167,13 +167,27 @@ pub(crate) async fn start_scanner_inner(state: &AppState) -> StartResult {
         (false, Some(TELEGRAM_NOT_CONFIGURED_MESSAGE.to_string()))
     } else {
         let telegram = state.telegram.read().await.clone();
+        let extra_chat_ids = crate::telegram::parse_chat_ids(&config.telegram_alert_chat_ids);
         let send_result = match ai_decision.as_ref() {
             Some(decision) => {
                 telegram
-                    .send_ai_market_brief(decision, &scenarios, &live_view)
+                    .send_ai_market_brief_with_actionable_extra(
+                        decision,
+                        &scenarios,
+                        &live_view,
+                        &extra_chat_ids,
+                    )
                     .await
             }
-            None => telegram.send_scenario_summary(&live_view, &scenarios).await,
+            None => {
+                telegram
+                    .send_scenario_summary_with_actionable_extra(
+                        &live_view,
+                        &scenarios,
+                        &extra_chat_ids,
+                    )
+                    .await
+            }
         };
         match send_result {
             Ok(_) => (true, None),
@@ -272,7 +286,11 @@ pub(super) async fn send_scenario_telegram(State(state): State<AppState>) -> imp
     }
 
     let telegram = state.telegram.read().await.clone();
-    match telegram.send_scenario_summary(&live_view, &scenarios).await {
+    let extra_chat_ids = crate::telegram::parse_chat_ids(&config.telegram_alert_chat_ids);
+    match telegram
+        .send_scenario_summary_with_actionable_extra(&live_view, &scenarios, &extra_chat_ids)
+        .await
+    {
         Ok(_) => (
             StatusCode::OK,
             Json(json!({

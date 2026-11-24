@@ -65,7 +65,6 @@ pub struct SessionBriefing {
     pub nearest_resistance: Option<SupportResistanceZone>,
     pub upcoming_events: Vec<EconomicEvent>,
     pub signals_today: usize,
-    pub max_signals_per_day: usize,
 }
 
 /// Trả về các briefing trước phiên đang nằm trong cửa sổ 15 phút và chưa gửi.
@@ -215,11 +214,6 @@ pub async fn evaluate_and_dispatch(state: &AppState) -> usize {
             nearest_resistance: nearest_resistance(&resistances, current_price),
             upcoming_events: upcoming_events.clone(),
             signals_today,
-            max_signals_per_day: if config.daily_quota_enabled {
-                config.max_signals_per_day
-            } else {
-                0
-            },
         };
 
         match telegram.send_session_alert(&briefing).await {

@@ -185,9 +185,17 @@ pub(super) async fn send_daily_plan_telegram(State(state): State<AppState>) -> i
     let scenarios = current_scenarios(&state).await;
     let events = state.news_filter.read().await.calendar_events.clone();
     let telegram = state.telegram.read().await.clone();
+    let config = state.config.read().await.clone();
+    let extra_chat_ids = crate::telegram::parse_chat_ids(&config.telegram_alert_chat_ids);
 
     match telegram
-        .send_daily_plan(&live_view, &scenarios, &events, &report)
+        .send_daily_plan_with_actionable_extra(
+            &live_view,
+            &scenarios,
+            &events,
+            &report,
+            &extra_chat_ids,
+        )
         .await
     {
         Ok(message_id) => (

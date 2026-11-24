@@ -81,20 +81,6 @@ pub fn evaluate(config: &BotConfig) -> Vec<ConfigWarning> {
             "session_filter_enabled=false; live split session (07:00–20:00 + 22:00–05:00 VN) is disabled.",
         ));
     }
-    if !config.daily_quota_enabled {
-        warnings.push(ConfigWarning::warning(
-            "quota_disabled",
-            "daily_quota_enabled=false; the 3-fills/day cap is not enforced.",
-        ));
-    } else if config.max_signals_per_day != EXPECTED_MAX_SIGNALS_PER_DAY {
-        warnings.push(ConfigWarning::warning(
-            "quota_not_3",
-            format!(
-                "max_signals_per_day={}; expected {}.",
-                config.max_signals_per_day, EXPECTED_MAX_SIGNALS_PER_DAY
-            ),
-        ));
-    }
     if !config.session_shadow_enabled {
         warnings.push(ConfigWarning::warning(
             "session_shadow_disabled",

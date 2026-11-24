@@ -100,9 +100,12 @@ pub fn spawn_market_view_worker(state: AppState) {
             outlook.strategist = strategist;
 
             let telegram = state.telegram.read().await.clone();
+            let extra_chat_ids = crate::telegram::parse_chat_ids(&config.telegram_alert_chat_ids);
             let result = match outlook.primary.as_ref() {
                 Some(primary) if primary.confidence >= MIN_DAILY_CONFIDENCE => {
-                    telegram.send_daily_view(&outlook, slot).await
+                    telegram
+                        .send_daily_view_with_actionable_extra(&outlook, slot, &extra_chat_ids)
+                        .await
                 }
                 _ => {
                     let reason = no_plan_reason(&outlook);

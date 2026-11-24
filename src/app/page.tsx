@@ -217,7 +217,6 @@ export default function DashboardPage() {
 
   const [signals, setSignals] = useState<Signal[]>([]);
   const [signalsToday, setSignalsToday] = useState<number>(0);
-  const [maxSignalsPerDay, setMaxSignalsPerDay] = useState<number>(1);
   const [activeSignal, setActiveSignal] = useState<Signal | null>(null);
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>('M15');
   const [inspectingSignal, setInspectingSignal] = useState<Signal | null>(null);
@@ -273,7 +272,6 @@ export default function DashboardPage() {
       if (Array.isArray(data.signals)) {
         setSignals(data.signals);
         setSignalsToday(data.signalsToday ?? 0);
-        setMaxSignalsPerDay(data.maxSignalsPerDay ?? 1);
         setActiveSignal((prev) => prev ?? data.signals[0] ?? null);
       }
     } catch (err) {
@@ -287,7 +285,6 @@ export default function DashboardPage() {
       const data = await fetchConfig();
       setConfig({ ...DEFAULT_CONFIG, ...data });
       if (data.timeframe) setSelectedTimeframe(data.timeframe);
-      if (data.max_signals_per_day) setMaxSignalsPerDay(data.max_signals_per_day);
     } catch (err) {
       console.error('Lỗi tải cấu hình:', err);
     } finally {
@@ -515,9 +512,6 @@ export default function DashboardPage() {
       const savedConfig = data.config || newConfig;
       setConfig({ ...DEFAULT_CONFIG, ...savedConfig });
       if (savedConfig.timeframe) setSelectedTimeframe(savedConfig.timeframe);
-      if (data.config?.max_signals_per_day) {
-        setMaxSignalsPerDay(data.config.max_signals_per_day);
-      }
       await Promise.all([loadSignals(), loadNewsCalendar()]);
     } catch (err) {
       console.error('Lỗi lưu cấu hình:', err);
@@ -618,8 +612,6 @@ export default function DashboardPage() {
     }
   };
 
-  const quotaReached =
-    (config.daily_quota_enabled ?? false) && signalsToday >= maxSignalsPerDay;
   const emptyPrimary =
     actionView?.primaryScenario ??
     scenarios?.scenarios.find((scenario) => scenario.role === 'PRIMARY') ??
@@ -855,17 +847,8 @@ export default function DashboardPage() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
-                <span
-                  className={`px-2.5 py-1 rounded-md border ${
-                    quotaReached
-                      ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
-                      : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                  }`}
-                >
-                  🎯 Lệnh thật:{' '}
-                  {config.daily_quota_enabled
-                    ? `${signalsToday}/${maxSignalsPerDay} lệnh thật · view không tính`
-                    : 'Không giới hạn'}
+                <span className="px-2.5 py-1 rounded-md border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
+                  🎯 Lệnh thật hôm nay: {signalsToday} · view không tính
                 </span>
                 <span className="px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-md">
                   BUY: {signals.filter((s) => s.signal_type === 'BUY').length}
