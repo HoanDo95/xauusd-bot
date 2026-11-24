@@ -92,7 +92,7 @@ function eventMeta(event: SetupInboxEvent): {
   icon: ReactNode;
   className: string;
 } {
-  switch (event.event) {
+  switch (event.event ?? '') {
     case 'setup_pre_alert':
       return {
         label: 'PRE_ALERT',
@@ -125,7 +125,7 @@ function eventMeta(event: SetupInboxEvent): {
       };
     default:
       return {
-        label: event.event.toUpperCase(),
+        label: (event.event ?? 'EVENT').toUpperCase(),
         icon: <Activity className="w-3.5 h-3.5" />,
         className: 'text-neutral-300 border-neutral-700 bg-neutral-800/60',
       };
@@ -172,7 +172,7 @@ function SetupCard({ setup }: { setup: SetupInboxItem }) {
         <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-2">
           <div className="text-[9px] uppercase tracking-wider text-neutral-500">Trigger</div>
           <div className="text-neutral-200">
-            {trigger == null ? '—' : `${setup.trigger_direction} ${trigger.toFixed(2)}`}
+            {trigger == null ? '—' : `${setup.trigger_direction ?? '—'} ${trigger.toFixed(2)}`}
           </div>
         </div>
         <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-2">
@@ -184,7 +184,7 @@ function SetupCard({ setup }: { setup: SetupInboxItem }) {
         </div>
         <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-2">
           <div className="text-[9px] uppercase tracking-wider text-neutral-500">Watch window</div>
-          <div className="text-neutral-200">{setup.watch_distance.toFixed(2)} pts</div>
+          <div className="text-neutral-200">{(setup.watch_distance ?? 0).toFixed(2)} pts</div>
         </div>
         <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-2">
           <div className="text-[9px] uppercase tracking-wider text-neutral-500">Session</div>
@@ -214,10 +214,10 @@ function SetupCard({ setup }: { setup: SetupInboxItem }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-1.5">
-        {setup.flags.length === 0 ? (
+        {!setup.flags?.length ? (
           <span className="text-[10px] font-mono text-neutral-500">Không có flag</span>
         ) : (
-          setup.flags.map((flag) => (
+          setup.flags?.map((flag) => (
             <span
               key={flag}
               className={`px-1.5 py-0.5 rounded border text-[9px] font-bold ${
@@ -251,7 +251,7 @@ function SignalRow({ signal }: { signal: InboxSignal }) {
         <span
           className={`px-1.5 py-0.5 rounded border text-[9px] font-bold ${sourceStyle(signal.source)}`}
         >
-          {signal.source.replace('_', ' ')}
+          {(signal.source ?? 'UNKNOWN').replace('_', ' ')}
         </span>
       </td>
       <td className="py-2.5 px-2">
@@ -265,15 +265,15 @@ function SignalRow({ signal }: { signal: InboxSignal }) {
           {signal.side}
         </span>
       </td>
-      <td className="py-2.5 px-2 text-right font-mono text-white">{signal.entry.toFixed(2)}</td>
+      <td className="py-2.5 px-2 text-right font-mono text-white">{(signal.entry ?? 0).toFixed(2)}</td>
       <td className="py-2.5 px-2 text-right font-mono text-rose-300">
-        {signal.stop_loss.toFixed(2)}
+        {(signal.stop_loss ?? 0).toFixed(2)}
       </td>
       <td className="py-2.5 px-2 text-right font-mono text-emerald-300">
-        {signal.take_profit_1.toFixed(2)}
+        {(signal.take_profit_1 ?? 0).toFixed(2)}
       </td>
       <td className="py-2.5 px-2 text-right font-mono text-emerald-200">
-        {signal.take_profit_2.toFixed(2)}
+        {(signal.take_profit_2 ?? 0).toFixed(2)}
       </td>
       <td className={`py-2.5 px-2 text-[10px] font-mono font-bold ${signalStatusStyle(signal.status)}`}>
         {signal.status}
@@ -314,11 +314,11 @@ export function SetupInboxPanel() {
   }, [load]);
 
   const staleCount = useMemo(
-    () => data?.setups.filter((setup) => setup.stale).length ?? 0,
+    () => data?.setups?.filter((setup) => setup.stale).length ?? 0,
     [data?.setups]
   );
   const confirmedCount = useMemo(
-    () => data?.signals.filter((signal) => signal.source === 'SETUP_ENGINE').length ?? 0,
+    () => data?.signals?.filter((signal) => signal.source === 'SETUP_ENGINE').length ?? 0,
     [data?.signals]
   );
 
@@ -417,10 +417,10 @@ export function SetupInboxPanel() {
             </h4>
           </div>
           <span className="text-[11px] font-mono text-neutral-500">
-            {data?.setups.length ?? 0} scenario
+            {data?.setups?.length ?? 0} scenario
           </span>
         </div>
-        {data?.setups.length ? (
+        {data?.setups?.length ? (
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
             {data.setups.map((setup) => (
               <SetupCard key={setup.setup_id} setup={setup} />
@@ -442,7 +442,7 @@ export function SetupInboxPanel() {
             </h4>
           </div>
           <span className="text-[11px] font-mono text-neutral-500">
-            {data?.signals.length ?? 0} signal gần nhất
+            {data?.signals?.length ?? 0} signal gần nhất
           </span>
         </div>
         <div className="overflow-x-auto">
@@ -467,7 +467,7 @@ export function SetupInboxPanel() {
             </tbody>
           </table>
         </div>
-        {!data?.signals.length && (
+        {!data?.signals?.length && (
           <p className="text-xs text-neutral-500 mt-3">Chưa có signal nào.</p>
         )}
       </div>
@@ -481,7 +481,7 @@ export function SetupInboxPanel() {
             </h4>
           </div>
           <span className="text-[11px] font-mono text-neutral-500">
-            {data?.events.length ?? 0} event gần nhất
+            {data?.events?.length ?? 0} event gần nhất
           </span>
         </div>
         <div className="flex flex-col gap-1.5 max-h-[420px] overflow-y-auto pr-1">
@@ -509,7 +509,7 @@ export function SetupInboxPanel() {
               </div>
             );
           })}
-          {!data?.events.length && (
+          {!data?.events?.length && (
             <p className="text-xs text-neutral-500">Chưa có event nào.</p>
           )}
         </div>
